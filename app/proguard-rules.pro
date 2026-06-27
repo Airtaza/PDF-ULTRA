@@ -19,3 +19,10 @@
 # If you keep the line number information, uncomment this to
 # hide the original source file name.
 #-renamesourcefileattribute SourceFile
+
+# Prevent PDFium classes and native methods from being stripped or obfuscated
+-keep class com.shockwave.pdfium.** { *; }
+-keep class com.github.barteksc.pdfviewer.** { *; }
+-keepclassmembers class com.shockwave.pdfium.** {
+    native <methods>;
+}
