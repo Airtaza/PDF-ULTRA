@@ -1,0 +1,6 @@
+{
+  "name": "PDF ULTRA",
+  "description": "A lightweight, HD offline PDF reader for Korean Comics (Manhwa) with seamless gapless vertical scrolling and extensible plugins.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
