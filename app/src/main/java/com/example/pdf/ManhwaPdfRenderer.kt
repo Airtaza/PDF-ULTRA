@@ -33,7 +33,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
             parcelFileDescriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
             pdfiumCore = PdfiumCore(context.applicationContext)
             pdfDocument = pdfiumCore!!.newDocument(parcelFileDescriptor)
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             e.printStackTrace()
         }
     }
@@ -49,7 +49,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
                 val heightPt = core.getPageHeightPoint(doc, pageIndex)
                 heightPt.toFloat() / widthPt.toFloat()
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             e.printStackTrace()
             1.414f
         }
@@ -94,7 +94,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
                 memoryCache.put(cacheKey, bitmap)
                 return@withContext bitmap
             }
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             e.printStackTrace()
             null
         }
@@ -116,7 +116,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         try {
             pdfiumCore?.closeDocument(pdfDocument)
             parcelFileDescriptor?.close()
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             e.printStackTrace()
         } finally {
             pdfiumCore = null

@@ -399,7 +399,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
                     renderers[manhwa.id] = r
                     r
                 } else null
-            } catch (e: Exception) {
+            } catch (e: Throwable) {
                 null
             }
         }
@@ -419,11 +419,16 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val file = File(manhwa.filePath)
         if (!file.exists()) return 1.414f
 
-        val renderer = synchronized(renderers) {
-            renderers.getOrPut(manhwa.id) {
-                ManhwaPdfRenderer(application, file)
+        val renderer = try {
+            synchronized(renderers) {
+                renderers.getOrPut(manhwa.id) {
+                    ManhwaPdfRenderer(application, file)
+                }
             }
-        }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            null
+        } ?: return 1.414f
         return renderer.getPageAspectRatio(pageIndex)
     }
 
@@ -433,11 +438,16 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val file = File(manhwa.filePath)
         if (!file.exists()) return null
 
-        val renderer = synchronized(renderers) {
-            renderers.getOrPut(manhwa.id) {
-                ManhwaPdfRenderer(application, file)
+        val renderer = try {
+            synchronized(renderers) {
+                renderers.getOrPut(manhwa.id) {
+                    ManhwaPdfRenderer(application, file)
+                }
             }
-        }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            null
+        } ?: return null
         val scale = if (_hdModeEnabled.value) 2.0f else 1.2f
 
         // Prefetch adjacent slices / pages asynchronously
@@ -464,11 +474,16 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val file = File(manhwa.filePath)
         if (!file.exists()) return null
 
-        val renderer = synchronized(renderers) {
-            renderers.getOrPut(manhwa.id) {
-                ManhwaPdfRenderer(application, file)
+        val renderer = try {
+            synchronized(renderers) {
+                renderers.getOrPut(manhwa.id) {
+                    ManhwaPdfRenderer(application, file)
+                }
             }
-        }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            null
+        } ?: return null
         val scale = if (_hdModeEnabled.value) 2.0f else 1.2f
 
         // Prefetch adjacent pages asynchronously to enable high-performance seamless vertical scrolling
