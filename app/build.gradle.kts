@@ -23,7 +23,7 @@ android {
     testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
     ndk {
-      abiFilters.addAll(setOf("arm64-v8a", "x86_64"))
+      abiFilters.add("arm64-v8a")
     }
   }
 
@@ -53,6 +53,9 @@ android {
     }
     debug {
       signingConfig = signingConfigs.getByName("debugConfig")
+      isMinifyEnabled = true
+      isShrinkResources = true
+      proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
     }
   }
   compileOptions {
