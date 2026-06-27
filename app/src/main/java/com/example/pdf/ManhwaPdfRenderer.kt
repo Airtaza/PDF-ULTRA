@@ -14,9 +14,10 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
     private var parcelFileDescriptor: ParcelFileDescriptor? = null
     private var pdfRenderer: PdfRenderer? = null
+    private val aspectRatios = java.util.concurrent.ConcurrentHashMap<Int, Float>()
 
-    // Cache to hold rendered page bitmaps (size = 30 tiles/slices to avoid OOM while enabling adjacent page prefetching)
-    private val memoryCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(30) {
+    // Cache to hold rendered page bitmaps (increased to 60 slices to keep more pages in memory and prevent scroll reload lag)
+    private val memoryCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(60) {
         override fun entryRemoved(evicted: Boolean, key: String?, oldValue: Bitmap?, newValue: Bitmap?) {
             if (evicted) {
                 oldValue?.recycle()
@@ -36,16 +37,23 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         }
     }
 
-    fun getPageAspectRatio(pageIndex: Int): Float {
-        val renderer = pdfRenderer ?: return 1.414f
-        if (pageIndex < 0 || pageIndex >= renderer.pageCount) return 1.414f
-        return try {
-            synchronized(renderer) {
+    suspend fun getPageAspectRatio(pageIndex: Int): Float = withContext(Dispatchers.IO) {
+        val cached = aspectRatios[pageIndex]
+        if (cached != null) return@withContext cached
+
+        val renderer = pdfRenderer ?: return@withContext 1.414f
+        if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withContext 1.414f
+
+        try {
+            synchronized(this@ManhwaPdfRenderer) {
+                // Double check after acquiring lock
+                val cached2 = aspectRatios[pageIndex]
+                if (cached2 != null) return@synchronized cached2
+
                 val page = renderer.openPage(pageIndex)
-                val width = page.width
-                val height = page.height
-                val ratio = height.toFloat() / width.toFloat()
+                val ratio = page.height.toFloat() / page.width.toFloat()
                 page.close()
+                aspectRatios[pageIndex] = ratio
                 ratio
             }
         } catch (e: Throwable) {
@@ -71,7 +79,13 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withContext null
 
         try {
-            synchronized(renderer) {
+            synchronized(this@ManhwaPdfRenderer) {
+                // Double check cache after lock
+                val cached2 = memoryCache.get(cacheKey)
+                if (cached2 != null && !cached2.isRecycled) {
+                    return@synchronized cached2
+                }
+
                 val page = renderer.openPage(pageIndex)
                 try {
                     val widthPt = page.width
@@ -84,7 +98,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
                     val sliceY = sliceIndex * sliceHeight
                     val actualSliceHeight = (totalHeight - sliceY).coerceAtMost(sliceHeight)
 
-                    if (actualSliceHeight <= 0) return@withContext null
+                    if (actualSliceHeight <= 0) return@synchronized null
 
                     val bitmap = Bitmap.createBitmap(totalWidth, actualSliceHeight, Bitmap.Config.ARGB_8888)
                     bitmap.eraseColor(android.graphics.Color.WHITE)
@@ -98,7 +112,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
                     page.render(bitmap, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                     memoryCache.put(cacheKey, bitmap)
-                    return@withContext bitmap
+                    bitmap
                 } finally {
                     page.close()
                 }
@@ -118,13 +132,16 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
     fun clearCache() {
         memoryCache.evictAll()
+        aspectRatios.clear()
     }
 
     fun close() {
         clearCache()
         try {
-            pdfRenderer?.close()
-            parcelFileDescriptor?.close()
+            synchronized(this) {
+                pdfRenderer?.close()
+                parcelFileDescriptor?.close()
+            }
         } catch (e: Throwable) {
             e.printStackTrace()
         } finally {

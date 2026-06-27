@@ -994,7 +994,7 @@ fun PdfPageSliceItem(
 ) {
     var sliceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isRendering by remember { mutableStateOf(true) }
-    var isVisible by remember { mutableStateOf(false) }
+    var isVisible by remember { mutableStateOf(sliceIndex == 0) }
 
     val context = LocalContext.current
     val screenHeightPx = remember { context.resources.displayMetrics.heightPixels }
@@ -1110,7 +1110,7 @@ fun PdfPageItem(
             val scale = if (hdMode) 2.0f else 1.2f
             val totalWidth = (targetWidth * scale).toInt().coerceAtLeast(400)
             val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
-            val sliceHeight = 1536
+            val sliceHeight = 3072
             val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
 
             Column(

@@ -244,6 +244,25 @@ class ManhwaViewModel(private val application: Application, private val reposito
             selectTabId(tabId)
             _importingState.value = ImportState.Idle
 
+            // Pre-warm the renderer on a background thread so there's absolutely 0ms lag when the reader opens
+            withContext(Dispatchers.IO) {
+                try {
+                    val r = synchronized(renderers) {
+                        renderers.getOrPut(manhwa.id) {
+                            ManhwaPdfRenderer(application, file)
+                        }
+                    }
+                    // Prefetch aspect ratios for the first few pages to make page layout calculation instant
+                    val pageCount = r.pageCount
+                    val startPage = manhwa.lastReadPage
+                    for (i in startPage until (startPage + 5).coerceAtMost(pageCount)) {
+                        r.getPageAspectRatio(i)
+                    }
+                } catch (e: Throwable) {
+                    e.printStackTrace()
+                }
+            }
+
             // Save last opened
             repository.updateManhwa(manhwa.copy(lastOpened = System.currentTimeMillis()))
         }
@@ -413,11 +432,11 @@ class ManhwaViewModel(private val application: Application, private val reposito
         }
     }
 
-    suspend fun getPageAspectRatio(pageIndex: Int): Float {
-        val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return 1.414f
-        val manhwa = tab.manhwa ?: return 1.414f
+    suspend fun getPageAspectRatio(pageIndex: Int): Float = withContext(Dispatchers.IO) {
+        val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext 1.414f
+        val manhwa = tab.manhwa ?: return@withContext 1.414f
         val file = File(manhwa.filePath)
-        if (!file.exists()) return 1.414f
+        if (!file.exists()) return@withContext 1.414f
 
         val renderer = try {
             synchronized(renderers) {
@@ -428,15 +447,15 @@ class ManhwaViewModel(private val application: Application, private val reposito
         } catch (e: Throwable) {
             e.printStackTrace()
             null
-        } ?: return 1.414f
-        return renderer.getPageAspectRatio(pageIndex)
+        } ?: return@withContext 1.414f
+        renderer.getPageAspectRatio(pageIndex)
     }
 
-    suspend fun renderPageSlice(pageIndex: Int, targetWidth: Int, sliceIndex: Int, sliceHeight: Int): Bitmap? {
-        val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return null
-        val manhwa = tab.manhwa ?: return null
+    suspend fun renderPageSlice(pageIndex: Int, targetWidth: Int, sliceIndex: Int, sliceHeight: Int): Bitmap? = withContext(Dispatchers.IO) {
+        val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext null
+        val manhwa = tab.manhwa ?: return@withContext null
         val file = File(manhwa.filePath)
-        if (!file.exists()) return null
+        if (!file.exists()) return@withContext null
 
         val renderer = try {
             synchronized(renderers) {
@@ -447,32 +466,36 @@ class ManhwaViewModel(private val application: Application, private val reposito
         } catch (e: Throwable) {
             e.printStackTrace()
             null
-        } ?: return null
+        } ?: return@withContext null
         val scale = if (_hdModeEnabled.value) 2.0f else 1.2f
 
-        // Prefetch adjacent slices / pages asynchronously
+        // Prefetch adjacent slices / pages asynchronously with a small delay to avoid lock contention with current render
         viewModelScope.launch(Dispatchers.IO) {
+            kotlinx.coroutines.delay(100)
             val totalWidth = (targetWidth * scale).toInt().coerceAtLeast(400)
             val aspect = renderer.getPageAspectRatio(pageIndex)
             val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
             val maxSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt()
 
+            // Prefetch next slice
             if (sliceIndex + 1 < maxSlices) {
                 renderer.renderPageSlice(pageIndex, targetWidth, sliceIndex + 1, sliceHeight, scale)
             }
-            if (sliceIndex - 1 >= 0) {
-                renderer.renderPageSlice(pageIndex, targetWidth, sliceIndex - 1, sliceHeight, scale)
+            // Prefetch first slice of the next page
+            val totalPages = renderer.pageCount
+            if (pageIndex + 1 < totalPages) {
+                renderer.renderPageSlice(pageIndex + 1, targetWidth, 0, sliceHeight, scale)
             }
         }
 
-        return renderer.renderPageSlice(pageIndex, targetWidth, sliceIndex, sliceHeight, scale)
+        renderer.renderPageSlice(pageIndex, targetWidth, sliceIndex, sliceHeight, scale)
     }
 
-    suspend fun renderPage(pageIndex: Int, targetWidth: Int): Bitmap? {
-        val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return null
-        val manhwa = tab.manhwa ?: return null
+    suspend fun renderPage(pageIndex: Int, targetWidth: Int): Bitmap? = withContext(Dispatchers.IO) {
+        val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext null
+        val manhwa = tab.manhwa ?: return@withContext null
         val file = File(manhwa.filePath)
-        if (!file.exists()) return null
+        if (!file.exists()) return@withContext null
 
         val renderer = try {
             synchronized(renderers) {
@@ -483,11 +506,12 @@ class ManhwaViewModel(private val application: Application, private val reposito
         } catch (e: Throwable) {
             e.printStackTrace()
             null
-        } ?: return null
+        } ?: return@withContext null
         val scale = if (_hdModeEnabled.value) 2.0f else 1.2f
 
         // Prefetch adjacent pages asynchronously to enable high-performance seamless vertical scrolling
         viewModelScope.launch(Dispatchers.IO) {
+            kotlinx.coroutines.delay(100)
             val totalPages = renderer.pageCount
             if (pageIndex + 1 < totalPages) {
                 renderer.renderPage(pageIndex + 1, targetWidth, scale)
@@ -495,12 +519,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
             if (pageIndex - 1 >= 0) {
                 renderer.renderPage(pageIndex - 1, targetWidth, scale)
             }
-            if (pageIndex + 2 < totalPages) {
-                renderer.renderPage(pageIndex + 2, targetWidth, scale)
-            }
         }
 
-        return renderer.renderPage(pageIndex, targetWidth, scale)
+        renderer.renderPage(pageIndex, targetWidth, scale)
     }
 
     // --- Bookmarking & Outlining ---
