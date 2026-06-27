@@ -6,9 +6,64 @@ import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import android.util.LruCache
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+
+object BitmapPool {
+    private val pool = ArrayList<Bitmap>()
+
+    fun acquire(width: Int, height: Int, config: Bitmap.Config): Bitmap {
+        synchronized(pool) {
+            val requiredBytes = width * height * when (config) {
+                Bitmap.Config.ARGB_8888 -> 4
+                Bitmap.Config.RGB_565 -> 2
+                else -> 4
+            }
+            val iterator = pool.iterator()
+            while (iterator.hasNext()) {
+                val bitmap = iterator.next()
+                if (!bitmap.isRecycled && bitmap.isMutable) {
+                    if (bitmap.allocationByteCount >= requiredBytes) {
+                        iterator.remove()
+                        return try {
+                            bitmap.reconfigure(width, height, config)
+                            bitmap.eraseColor(android.graphics.Color.WHITE)
+                            bitmap
+                        } catch (e: Throwable) {
+                            Bitmap.createBitmap(width, height, config)
+                        }
+                    }
+                } else {
+                    iterator.remove()
+                }
+            }
+        }
+        return Bitmap.createBitmap(width, height, config)
+    }
+
+    fun release(bitmap: Bitmap?) {
+        if (bitmap == null || !bitmap.isMutable || bitmap.isRecycled) return
+        synchronized(pool) {
+            if (pool.size < 16) {
+                pool.add(bitmap)
+            } else {
+                bitmap.recycle()
+            }
+        }
+    }
+
+    fun clear() {
+        synchronized(pool) {
+            for (bitmap in pool) {
+                bitmap.recycle()
+            }
+            pool.clear()
+        }
+    }
+}
 
 class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
@@ -20,7 +75,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
     private val memoryCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(60) {
         override fun entryRemoved(evicted: Boolean, key: String?, oldValue: Bitmap?, newValue: Bitmap?) {
             if (evicted) {
-                oldValue?.recycle()
+                BitmapPool.release(oldValue)
             }
         }
     }
@@ -32,6 +87,28 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         try {
             parcelFileDescriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
             pdfRenderer = PdfRenderer(parcelFileDescriptor!!)
+            
+            // Asynchronously pre-populate aspect ratios of all pages to make scrolling completely instant
+            val renderer = pdfRenderer
+            if (renderer != null) {
+                val count = renderer.pageCount
+                CoroutineScope(Dispatchers.IO).launch {
+                    try {
+                        for (i in 0 until count) {
+                            if (pdfRenderer == null) break
+                            synchronized(this@ManhwaPdfRenderer) {
+                                if (pdfRenderer == null) return@synchronized
+                                val page = renderer.openPage(i)
+                                val ratio = page.height.toFloat() / page.width.toFloat()
+                                page.close()
+                                aspectRatios[i] = ratio
+                            }
+                        }
+                    } catch (e: Throwable) {
+                        e.printStackTrace()
+                    }
+                }
+            }
         } catch (e: Throwable) {
             e.printStackTrace()
         }
@@ -100,8 +177,8 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
                     if (actualSliceHeight <= 0) return@synchronized null
 
-                    val bitmap = Bitmap.createBitmap(totalWidth, actualSliceHeight, Bitmap.Config.ARGB_8888)
-                    bitmap.eraseColor(android.graphics.Color.WHITE)
+                    // Acquire high-performance reusable bitmap from BitmapPool instead of allocating 20MB+ on heap
+                    val bitmap = BitmapPool.acquire(totalWidth, actualSliceHeight, Bitmap.Config.ARGB_8888)
 
                     val scaleX = totalWidth.toFloat() / widthPt
                     val scaleY = totalHeight.toFloat() / heightPt
@@ -133,6 +210,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
     fun clearCache() {
         memoryCache.evictAll()
         aspectRatios.clear()
+        BitmapPool.clear()
     }
 
     fun close() {
