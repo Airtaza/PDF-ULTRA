@@ -1,6 +1,7 @@
 package com.example.ui
 
 import android.app.Application
+import android.content.Context
 import android.graphics.Bitmap
 import android.net.Uri
 import androidx.compose.ui.geometry.Offset
@@ -40,7 +41,7 @@ data class UltraTab(
 )
 
 enum class TabType {
-    LIBRARY, PLUGINS, READER
+    LIBRARY, PLUGINS, READER, SETTINGS
 }
 
 class ManhwaViewModel(private val application: Application, private val repository: ManhwaRepository) : ViewModel() {
@@ -141,6 +142,18 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _hdModeEnabled = MutableStateFlow(true)
     val hdModeEnabled: StateFlow<Boolean> = _hdModeEnabled.asStateFlow()
 
+    // --- Core Fast-Render & WebP Caching Settings ---
+    private val sharedPrefs = application.getSharedPreferences("manhwa_settings", Context.MODE_PRIVATE)
+
+    private val _qualitySelectionEnabled = MutableStateFlow(sharedPrefs.getBoolean("quality_selection_enabled", true))
+    val qualitySelectionEnabled: StateFlow<Boolean> = _qualitySelectionEnabled.asStateFlow()
+
+    private val _qualityLevel = MutableStateFlow(sharedPrefs.getString("quality_level", "HIGH") ?: "HIGH")
+    val qualityLevel: StateFlow<String> = _qualityLevel.asStateFlow()
+
+    private val _maxStorageAllocation = MutableStateFlow(sharedPrefs.getInt("max_storage_allocation", 500)) // in MB
+    val maxStorageAllocation: StateFlow<Int> = _maxStorageAllocation.asStateFlow()
+
     // --- State: Manhwa Sketch Editor Plugin Properties ---
     private val _activeDrawColor = MutableStateFlow(Color.Red)
     val activeDrawColor: StateFlow<Color> = _activeDrawColor.asStateFlow()
@@ -161,7 +174,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     enum class ReaderTab {
-        Library, Plugins, Reader
+        Library, Plugins, Reader, Settings
     }
 
     enum class ColorMode {
@@ -177,6 +190,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 TabType.LIBRARY -> _selectedTab.value = ReaderTab.Library
                 TabType.PLUGINS -> _selectedTab.value = ReaderTab.Plugins
                 TabType.READER -> _selectedTab.value = ReaderTab.Reader
+                TabType.SETTINGS -> _selectedTab.value = ReaderTab.Settings
             }
         }
     }
@@ -364,6 +378,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
                     selectTabId(activeReaderTab.id)
                 }
             }
+            ReaderTab.Settings -> openSettingsTab()
         }
     }
 
@@ -379,8 +394,14 @@ class ManhwaViewModel(private val application: Application, private val reposito
         viewModelScope.launch {
             _importingState.value = ImportState.Loading
             try {
-                repository.importPdf(uri)
+                val id = repository.importPdf(uri)
                 _importingState.value = ImportState.Success("Successfully imported!")
+                if (!_qualitySelectionEnabled.value) {
+                    val manhwa = repository.getManhwaById(id)
+                    if (manhwa != null) {
+                        openManhwaInTab(manhwa)
+                    }
+                }
             } catch (e: Exception) {
                 _importingState.value = ImportState.Error(e.localizedMessage ?: "Failed to import PDF")
             }
@@ -467,7 +488,15 @@ class ManhwaViewModel(private val application: Application, private val reposito
             e.printStackTrace()
             null
         } ?: return@withContext null
-        val scale = if (_hdModeEnabled.value) 2.0f else 1.2f
+
+        val isCacheEnabled = _qualitySelectionEnabled.value
+        val scale = if (isCacheEnabled) {
+            getQualityScaleFactor(_qualityLevel.value)
+        } else {
+            if (_hdModeEnabled.value) 2.0f else 1.2f
+        }
+        val qualityCompression = getQualityCompression(_qualityLevel.value)
+        val maxStorage = _maxStorageAllocation.value
 
         // Prefetch adjacent slices / pages asynchronously with a small delay to avoid lock contention with current render
         viewModelScope.launch(Dispatchers.IO) {
@@ -479,16 +508,25 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
             // Prefetch next slice
             if (sliceIndex + 1 < maxSlices) {
-                renderer.renderPageSlice(pageIndex, targetWidth, sliceIndex + 1, sliceHeight, scale)
+                renderer.renderPageSlice(
+                    pageIndex, targetWidth, sliceIndex + 1, sliceHeight, scale,
+                    isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
+                )
             }
             // Prefetch first slice of the next page
             val totalPages = renderer.pageCount
             if (pageIndex + 1 < totalPages) {
-                renderer.renderPageSlice(pageIndex + 1, targetWidth, 0, sliceHeight, scale)
+                renderer.renderPageSlice(
+                    pageIndex + 1, targetWidth, 0, sliceHeight, scale,
+                    isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
+                )
             }
         }
 
-        renderer.renderPageSlice(pageIndex, targetWidth, sliceIndex, sliceHeight, scale)
+        renderer.renderPageSlice(
+            pageIndex, targetWidth, sliceIndex, sliceHeight, scale,
+            isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
+        )
     }
 
     suspend fun renderPage(pageIndex: Int, targetWidth: Int): Bitmap? = withContext(Dispatchers.IO) {
@@ -507,21 +545,38 @@ class ManhwaViewModel(private val application: Application, private val reposito
             e.printStackTrace()
             null
         } ?: return@withContext null
-        val scale = if (_hdModeEnabled.value) 2.0f else 1.2f
+
+        val isCacheEnabled = _qualitySelectionEnabled.value
+        val scale = if (isCacheEnabled) {
+            getQualityScaleFactor(_qualityLevel.value)
+        } else {
+            if (_hdModeEnabled.value) 2.0f else 1.2f
+        }
+        val qualityCompression = getQualityCompression(_qualityLevel.value)
+        val maxStorage = _maxStorageAllocation.value
 
         // Prefetch adjacent pages asynchronously to enable high-performance seamless vertical scrolling
         viewModelScope.launch(Dispatchers.IO) {
             kotlinx.coroutines.delay(100)
             val totalPages = renderer.pageCount
             if (pageIndex + 1 < totalPages) {
-                renderer.renderPage(pageIndex + 1, targetWidth, scale)
+                renderer.renderPage(
+                    pageIndex + 1, targetWidth, scale,
+                    isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
+                )
             }
             if (pageIndex - 1 >= 0) {
-                renderer.renderPage(pageIndex - 1, targetWidth, scale)
+                renderer.renderPage(
+                    pageIndex - 1, targetWidth, scale,
+                    isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
+                )
             }
         }
 
-        renderer.renderPage(pageIndex, targetWidth, scale)
+        renderer.renderPage(
+            pageIndex, targetWidth, scale,
+            isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
+        )
     }
 
     // --- Bookmarking & Outlining ---
@@ -569,6 +624,78 @@ class ManhwaViewModel(private val application: Application, private val reposito
         _hdModeEnabled.value = !_hdModeEnabled.value
     }
 
+    // --- Core Fast-Render & WebP Cache Controls ---
+    fun setQualitySelectionEnabled(enabled: Boolean) {
+        _qualitySelectionEnabled.value = enabled
+        sharedPrefs.edit().putBoolean("quality_selection_enabled", enabled).apply()
+    }
+
+    fun setQualityLevel(level: String) {
+        _qualityLevel.value = level
+        sharedPrefs.edit().putString("quality_level", level).apply()
+    }
+
+    fun setMaxStorageAllocation(megabytes: Int) {
+        _maxStorageAllocation.value = megabytes
+        sharedPrefs.edit().putInt("max_storage_allocation", megabytes).apply()
+    }
+
+    fun getQualityScaleFactor(level: String): Float {
+        return when (level) {
+            "MAX" -> 2.0f
+            "HIGH" -> 1.6f
+            "MEDIUM" -> 1.3f
+            "AVERAGE" -> 1.0f
+            "LOW" -> 0.7f
+            else -> 1.6f
+        }
+    }
+
+    fun getQualityCompression(level: String): Int {
+        return when (level) {
+            "MAX" -> 100
+            "HIGH" -> 90
+            "MEDIUM" -> 80
+            "AVERAGE" -> 70
+            "LOW" -> 50
+            else -> 90
+        }
+    }
+
+    fun openSettingsTab() {
+        val existingList = _tabs.value.toMutableList()
+        val settingsTabId = "settings"
+        val existingTab = existingList.find { it.id == settingsTabId }
+        
+        if (existingTab == null) {
+            if (existingList.size >= 3) {
+                // Remove active tab (if it's not library)
+                val activeTabObj = existingList.find { it.id == _activeTabId.value }
+                if (activeTabObj != null && activeTabObj.type != TabType.LIBRARY) {
+                    activeTabObj.manhwa?.let { oldM ->
+                        synchronized(renderers) {
+                            renderers.remove(oldM.id)?.close()
+                        }
+                    }
+                    existingList.remove(activeTabObj)
+                } else {
+                    val anyReader = existingList.find { it.type == TabType.READER }
+                    if (anyReader != null) {
+                        anyReader.manhwa?.let { oldM ->
+                            synchronized(renderers) {
+                                renderers.remove(oldM.id)?.close()
+                            }
+                        }
+                        existingList.remove(anyReader)
+                    }
+                }
+            }
+            existingList.add(UltraTab(id = settingsTabId, title = "Settings", type = TabType.SETTINGS))
+            _tabs.value = existingList
+        }
+        selectTabId(settingsTabId)
+    }
+
     // --- Sketch Editor Controls ---
     fun setDrawColor(color: Color) {
         _activeDrawColor.value = color
@@ -590,6 +717,28 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val currentSketches = _sketches.value.toMutableMap()
         currentSketches.remove(pageIndex)
         _sketches.value = currentSketches
+    }
+
+    // --- WebP Disk Cache Monitoring & Clearing Utilities ---
+    fun getWebpCacheSize(): String {
+        val webpParentDir = File(application.cacheDir, "webp_cache")
+        if (!webpParentDir.exists()) return "0.00 MB"
+        val totalBytes = webpParentDir.walkTopDown().filter { it.isFile && it.extension == "webp" }.sumOf { it.length() }
+        val mb = totalBytes.toDouble() / (1024 * 1024)
+        return String.format("%.2f MB", mb)
+    }
+
+    fun clearAllWebpCache() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val webpParentDir = File(application.cacheDir, "webp_cache")
+            if (webpParentDir.exists()) {
+                webpParentDir.deleteRecursively()
+            }
+            // Clear any active in-memory cache slices as well
+            synchronized(renderers) {
+                renderers.values.forEach { it.clearCache() }
+            }
+        }
     }
 
     override fun onCleared() {

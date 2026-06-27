@@ -53,6 +53,8 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.Bookmark
 import com.example.data.Manhwa
@@ -186,6 +188,14 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
                                         isLogoDropdownExpanded = false
                                         viewModel.openPluginsTab()
                                     },
+                                    leadingIcon = { Icon(Icons.Default.Build, contentDescription = null) }
+                                )
+                                DropdownMenuItem(
+                                    text = { Text("Settings") },
+                                    onClick = {
+                                        isLogoDropdownExpanded = false
+                                        viewModel.openSettingsTab()
+                                    },
                                     leadingIcon = { Icon(Icons.Default.Settings, contentDescription = null) }
                                 )
                                 HorizontalDivider()
@@ -270,6 +280,9 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
                 }
                 activeTab?.type == TabType.PLUGINS -> {
                     PluginsScreen(viewModel = viewModel)
+                }
+                activeTab?.type == TabType.SETTINGS -> {
+                    SettingsScreen(viewModel = viewModel)
                 }
                 else -> {
                     LibraryScreen(viewModel = viewModel)
@@ -1756,6 +1769,325 @@ fun getAdjustedColorMatrix(brightness: Float, contrast: Float, mode: ManhwaViewM
                 0f, 0f, 0f, 1f, 0f
             )
             ColorMatrix(array)
+        }
+    }
+}
+
+// --- SCREEN: Settings Manager ---
+@Composable
+fun SettingsScreen(viewModel: ManhwaViewModel) {
+    val qualitySelectionEnabled by viewModel.qualitySelectionEnabled.collectAsStateWithLifecycle()
+    val qualityLevel by viewModel.qualityLevel.collectAsStateWithLifecycle()
+    val maxStorageAllocation by viewModel.maxStorageAllocation.collectAsStateWithLifecycle()
+    
+    var cacheSizeText by remember { mutableStateOf("0.00 MB") }
+    val context = LocalContext.current
+    
+    LaunchedEffect(Unit, qualityLevel, qualitySelectionEnabled) {
+        cacheSizeText = viewModel.getWebpCacheSize()
+    }
+    
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(MaterialTheme.colorScheme.background)
+            .padding(16.dp)
+            .verticalScroll(rememberScrollState())
+    ) {
+        Text(
+            text = "SYSTEM SETTINGS",
+            fontSize = 20.sp,
+            fontWeight = FontWeight.Black,
+            letterSpacing = 1.2.sp,
+            color = MaterialTheme.colorScheme.onBackground
+        )
+        Spacer(modifier = Modifier.height(6.dp))
+        Text(
+            text = "Configure high-performance cache engines, WebP rendering, and dynamic storage thresholds.",
+            fontSize = 12.sp,
+            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
+            lineHeight = 16.sp
+        )
+
+        Spacer(modifier = Modifier.height(20.dp))
+
+        // --- SECTION 1: QUALITY SELECTION ---
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Settings,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Quality Selection Mode",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "High-speed WebP caching",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                    }
+                    Switch(
+                        checked = qualitySelectionEnabled,
+                        onCheckedChange = { viewModel.setQualitySelectionEnabled(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "When enabled, loaded pages are pre-cached as optimized WebP files on local storage. Subsequent reader loads bypass the PDF renderer entirely, providing near 0ms loading speeds and butter-smooth continuous scrolling.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    lineHeight = 16.sp
+                )
+
+                if (qualitySelectionEnabled) {
+                    Spacer(modifier = Modifier.height(20.dp))
+                    Text(
+                        text = "WEB-P QUALITY LEVEL",
+                        fontWeight = FontWeight.ExtraBold,
+                        fontSize = 11.sp,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    val qualityOptions = listOf("MAX", "HIGH", "MEDIUM", "AVERAGE", "LOW")
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        qualityOptions.forEach { opt ->
+                            val isSelected = qualityLevel == opt
+                            Surface(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(38.dp)
+                                    .clickable { viewModel.setQualityLevel(opt) },
+                                shape = RoundedCornerShape(10.dp),
+                                color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                            ) {
+                                Box(contentAlignment = Alignment.Center) {
+                                    Text(
+                                        text = opt,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    val qualityDesc = when (qualityLevel) {
+                        "MAX" -> "Uncompromised. 2.0x Ultra HD resolution rendering with 100% lossless WebP compression. Perfect for high-density tablets."
+                        "HIGH" -> "Recommended. 1.6x High Definition resolution rendering with 90% WebP quality. Optimal balance of image crispness and small file size."
+                        "MEDIUM" -> "Balanced. 1.3x Standard resolution with 80% WebP quality. High performance and moderate storage footprint."
+                        "AVERAGE" -> "Lightweight. 1.0x native resolution with 70% WebP quality. Gentle on storage, loads very quickly on older devices."
+                        "LOW" -> "Eco. 0.7x reduced resolution with 50% WebP quality. Ultra lightweight, highly compressed, uses absolute minimal storage."
+                        else -> ""
+                    }
+
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
+                            .padding(10.dp)
+                    ) {
+                        Text(
+                            text = qualityDesc,
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.primary,
+                            lineHeight = 15.sp,
+                            fontWeight = FontWeight.Medium
+                        )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- SECTION 2: STORAGE ALLOCATION ---
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Build,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "Storage Allocation Limit",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Auto-delete threshold for cached WebP files",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(16.dp))
+
+                val storageLimits = listOf(
+                    100 to "100 MB",
+                    250 to "250 MB",
+                    500 to "500 MB",
+                    1000 to "1.0 GB",
+                    2000 to "2.0 GB"
+                )
+
+                Text(
+                    text = "MAX CACHE LIMIT",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    storageLimits.forEach { (mb, label) ->
+                        val isSelected = maxStorageAllocation == mb
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clickable { viewModel.setMaxStorageAllocation(mb) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+                Text(
+                    text = "When total WebP disk storage usage exceeds this limit, the application automatically evicts the oldest (least recently accessed) pages to free up offline space. Your original imported PDF files are never modified or deleted.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    lineHeight = 16.sp
+                )
+
+                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column {
+                        Text(
+                            text = "Current WebP Cache:",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = cacheSizeText,
+                            fontSize = 16.sp,
+                            fontWeight = FontWeight.Black,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
+
+                    Button(
+                        onClick = {
+                            viewModel.clearAllWebpCache()
+                            cacheSizeText = "0.00 MB"
+                            Toast.makeText(context, "Successfully cleared all cached WebP pages!", Toast.LENGTH_SHORT).show()
+                        },
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Delete,
+                            contentDescription = "Clear Cache",
+                            tint = MaterialTheme.colorScheme.onErrorContainer,
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Text(
+                            text = "Purge Cache",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp,
+                            color = MaterialTheme.colorScheme.onErrorContainer
+                        )
+                    }
+                }
+            }
         }
     }
 }

@@ -2,6 +2,7 @@ package com.example.pdf
 
 import android.content.Context
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
@@ -11,6 +12,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.FileOutputStream
 
 object BitmapPool {
     private val pool = ArrayList<Bitmap>()
@@ -144,7 +146,11 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         targetWidth: Int,
         sliceIndex: Int,
         sliceHeight: Int,
-        scaleFactor: Float = 1.5f
+        scaleFactor: Float = 1.5f,
+        qualitySelectionEnabled: Boolean = true,
+        qualityLevel: String = "HIGH",
+        qualityCompression: Int = 90,
+        maxStorageAllocationMb: Int = 500
     ): Bitmap? = withContext(Dispatchers.IO) {
         val cacheKey = "${pageIndex}_$sliceIndex"
         val cached = memoryCache.get(cacheKey)
@@ -152,6 +158,37 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
             return@withContext cached
         }
 
+        val webpDir = File(context.cacheDir, "webp_cache/${file.nameWithoutExtension}")
+        val webpFile = File(webpDir, "${pageIndex}_${qualityLevel}.webp")
+
+        if (qualitySelectionEnabled && webpFile.exists() && webpFile.length() > 0) {
+            try {
+                // Read from WebP cache!
+                val fullBitmap = BitmapFactory.decodeFile(webpFile.absolutePath)
+                if (fullBitmap != null) {
+                    val sliceY = sliceIndex * sliceHeight
+                    val actualSliceHeight = (fullBitmap.height - sliceY).coerceAtMost(sliceHeight)
+                    if (actualSliceHeight > 0) {
+                        val sliceBitmap = BitmapPool.acquire(fullBitmap.width, actualSliceHeight, Bitmap.Config.ARGB_8888)
+                        val canvas = android.graphics.Canvas(sliceBitmap)
+                        val srcRect = android.graphics.Rect(0, sliceY, fullBitmap.width, sliceY + actualSliceHeight)
+                        val destRect = android.graphics.Rect(0, 0, fullBitmap.width, actualSliceHeight)
+                        canvas.drawBitmap(fullBitmap, srcRect, destRect, null)
+                        
+                        fullBitmap.recycle()
+                        
+                        // Save to LruCache
+                        memoryCache.put(cacheKey, sliceBitmap)
+                        return@withContext sliceBitmap
+                    }
+                    fullBitmap.recycle()
+                }
+            } catch (e: Throwable) {
+                e.printStackTrace()
+            }
+        }
+
+        // Fallback or Normal PDF Render
         val renderer = pdfRenderer ?: return@withContext null
         if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withContext null
 
@@ -177,7 +214,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
                     if (actualSliceHeight <= 0) return@synchronized null
 
-                    // Acquire high-performance reusable bitmap from BitmapPool instead of allocating 20MB+ on heap
+                    // Acquire high-performance reusable bitmap from BitmapPool
                     val bitmap = BitmapPool.acquire(totalWidth, actualSliceHeight, Bitmap.Config.ARGB_8888)
 
                     val scaleX = totalWidth.toFloat() / widthPt
@@ -189,6 +226,14 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
                     page.render(bitmap, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
                     memoryCache.put(cacheKey, bitmap)
+
+                    // Asynchronously save to WebP cache for future lightning-fast loads!
+                    if (qualitySelectionEnabled) {
+                        CoroutineScope(Dispatchers.IO).launch {
+                            preCachePageAsWebP(pageIndex, targetWidth, scaleFactor, qualityLevel, qualityCompression, maxStorageAllocationMb)
+                        }
+                    }
+
                     bitmap
                 } finally {
                     page.close()
@@ -200,11 +245,97 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         }
     }
 
-    suspend fun renderPage(pageIndex: Int, targetWidth: Int, scaleFactor: Float = 1.5f): Bitmap? {
+    private suspend fun preCachePageAsWebP(
+        pageIndex: Int,
+        targetWidth: Int,
+        scaleFactor: Float,
+        qualityLevel: String,
+        qualityCompression: Int,
+        maxStorageAllocationMb: Int
+    ) = withContext(Dispatchers.IO) {
+        try {
+            val webpDir = File(context.cacheDir, "webp_cache/${file.nameWithoutExtension}")
+            if (!webpDir.exists()) webpDir.mkdirs()
+            val webpFile = File(webpDir, "${pageIndex}_${qualityLevel}.webp")
+            if (webpFile.exists() && webpFile.length() > 0) return@withContext
+
+            val renderer = pdfRenderer ?: return@withContext
+            synchronized(this@ManhwaPdfRenderer) {
+                if (pdfRenderer == null) return@synchronized
+                if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@synchronized
+                
+                val page = renderer.openPage(pageIndex)
+                try {
+                    val widthPt = page.width
+                    val heightPt = page.height
+                    val pageAspectRatio = heightPt.toFloat() / widthPt.toFloat()
+
+                    val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
+                    val totalHeight = (totalWidth * pageAspectRatio).toInt().coerceAtLeast(400)
+
+                    val bitmap = Bitmap.createBitmap(totalWidth, totalHeight, Bitmap.Config.ARGB_8888)
+                    val matrix = Matrix()
+                    matrix.postScale(totalWidth.toFloat() / widthPt, totalHeight.toFloat() / heightPt)
+                    page.render(bitmap, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+
+                    val tempFile = File(webpDir, "${pageIndex}_${qualityLevel}.webp.tmp")
+                    FileOutputStream(tempFile).use { out ->
+                        bitmap.compress(Bitmap.CompressFormat.WEBP, qualityCompression, out)
+                    }
+                    tempFile.renameTo(webpFile)
+                    bitmap.recycle()
+
+                    // evict cache if needed
+                    checkAndManageCacheSize(maxStorageAllocationMb)
+                } catch (e: Throwable) {
+                    e.printStackTrace()
+                } finally {
+                    page.close()
+                }
+            }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun checkAndManageCacheSize(maxSizeMb: Int) {
+        val webpParentDir = File(context.cacheDir, "webp_cache")
+        if (!webpParentDir.exists()) return
+
+        val maxSizeBytes = maxSizeMb.toLong() * 1024 * 1024
+        val allFiles = webpParentDir.walkTopDown().filter { it.isFile && it.extension == "webp" }.toList()
+        
+        var totalSize = allFiles.sumOf { it.length() }
+        if (totalSize > maxSizeBytes) {
+            val sortedFiles = allFiles.sortedBy { f -> f.lastModified() }
+            for (f in sortedFiles) {
+                val size = f.length()
+                if (f.delete()) {
+                    totalSize -= size
+                    if (totalSize <= maxSizeBytes * 0.8) {
+                        break
+                    }
+                }
+            }
+        }
+    }
+
+    suspend fun renderPage(
+        pageIndex: Int,
+        targetWidth: Int,
+        scaleFactor: Float = 1.5f,
+        qualitySelectionEnabled: Boolean = true,
+        qualityLevel: String = "HIGH",
+        qualityCompression: Int = 90,
+        maxStorageAllocationMb: Int = 500
+    ): Bitmap? {
         val aspect = getPageAspectRatio(pageIndex)
         val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
         val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
-        return renderPageSlice(pageIndex, targetWidth, 0, totalHeight, scaleFactor)
+        return renderPageSlice(
+            pageIndex, targetWidth, 0, totalHeight, scaleFactor,
+            qualitySelectionEnabled, qualityLevel, qualityCompression, maxStorageAllocationMb
+        )
     }
 
     fun clearCache() {
