@@ -1654,7 +1654,7 @@ fun PdfPageItem(
                 for (sliceIndex in 0 until numSlices) {
                     PdfPageSliceItem(
                         pageIndex = pageIndex,
-                        targetWidth = (targetWidth * zoomScale).toInt(),
+                        targetWidth = targetWidth,
                         sliceIndex = sliceIndex,
                         sliceHeight = sliceHeight,
                         totalHeight = totalHeight,

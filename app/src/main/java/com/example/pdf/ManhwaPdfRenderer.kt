@@ -2,18 +2,15 @@ package com.example.pdf
 
 import android.content.Context
 import android.graphics.Bitmap
-import android.graphics.BitmapFactory
 import android.graphics.Matrix
 import android.graphics.pdf.PdfRenderer
 import android.os.ParcelFileDescriptor
 import android.util.LruCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
-import java.io.FileOutputStream
 
 object BitmapPool {
     private val pool = ArrayList<Bitmap>()
@@ -73,15 +70,6 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
     private var parcelFileDescriptor: ParcelFileDescriptor? = null
     private var pdfRenderer: PdfRenderer? = null
     private val aspectRatios = java.util.concurrent.ConcurrentHashMap<Int, Float>()
-    private val activeCacheTasks = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
-
-    // Single-threaded background worker for WebP compression to prevent CPU starvation and scrolling lag
-    private val cacheExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "PdfWebpCacheWorker").apply {
-            priority = Thread.MIN_PRIORITY // Run at lowest priority so rendering is never blocked
-        }
-    }
-    private val cacheDispatcher = cacheExecutor.asCoroutineDispatcher()
 
     // Cache to hold rendered page bitmaps. Limit size in bytes to 15% of available JVM heap to prevent OOM/GC freezes.
     private val memoryCache: LruCache<String, Bitmap> = run {
@@ -178,23 +166,6 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
             return@withContext cached
         }
 
-        val webpDir = File(context.cacheDir, "webp_cache/${file.nameWithoutExtension}")
-        val sliceCacheKey = "${pageIndex}_s${sliceIndex}_${qualityLevel}"
-        val webpFile = File(webpDir, "$sliceCacheKey.webp")
-
-        if (qualitySelectionEnabled && webpFile.exists() && webpFile.length() > 0) {
-            try {
-                // Read slice directly from WebP cache - super fast!
-                val sliceBitmap = BitmapFactory.decodeFile(webpFile.absolutePath)
-                if (sliceBitmap != null) {
-                    memoryCache.put(cacheKey, sliceBitmap)
-                    return@withContext sliceBitmap
-                }
-            } catch (e: Throwable) {
-                e.printStackTrace()
-            }
-        }
-
         // Fallback or Normal PDF Render
         val renderer = pdfRenderer ?: return@withContext null
         if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withContext null
@@ -247,95 +218,10 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
                 kotlinx.coroutines.yield() // Yield background thread control to prevent scroll micro-stutter
             }
 
-            // Asynchronously save to WebP cache for future lightning-fast loads!
-            if (qualitySelectionEnabled && bitmap != null) {
-                CoroutineScope(cacheDispatcher).launch {
-                    preCacheSliceAsWebP(
-                        pageIndex = pageIndex,
-                        sliceIndex = sliceIndex,
-                        sliceBitmap = bitmap,
-                        webpDir = webpDir,
-                        qualityLevel = qualityLevel,
-                        qualityCompression = qualityCompression,
-                        maxStorageAllocationMb = maxStorageAllocationMb
-                    )
-                }
-            }
-
             bitmap
         } catch (e: Throwable) {
             e.printStackTrace()
             null
-        }
-    }
-
-    private suspend fun preCacheSliceAsWebP(
-        pageIndex: Int,
-        sliceIndex: Int,
-        sliceBitmap: Bitmap,
-        webpDir: File,
-        qualityLevel: String,
-        qualityCompression: Int,
-        maxStorageAllocationMb: Int
-    ) = withContext(cacheDispatcher) {
-        val taskKey = "${pageIndex}_s${sliceIndex}_${qualityLevel}"
-        if (activeCacheTasks.putIfAbsent(taskKey, true) != null) {
-            return@withContext
-        }
-        try {
-            if (!webpDir.exists()) webpDir.mkdirs()
-            val webpFile = File(webpDir, "$taskKey.webp")
-            if (webpFile.exists() && webpFile.length() > 0) return@withContext
-
-            val bitmapCopy = try {
-                sliceBitmap.copy(sliceBitmap.config ?: Bitmap.Config.ARGB_8888, false)
-            } catch (e: Throwable) {
-                null
-            }
-            if (bitmapCopy == null || bitmapCopy.isRecycled) return@withContext
-
-            try {
-                val tempFile = File(webpDir, "$taskKey.webp.tmp")
-                FileOutputStream(tempFile).use { out ->
-                    val compressFormat = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                        Bitmap.CompressFormat.WEBP_LOSSY
-                    } else {
-                        @Suppress("DEPRECATION")
-                        Bitmap.CompressFormat.WEBP
-                    }
-                    bitmapCopy.compress(compressFormat, qualityCompression, out)
-                }
-                tempFile.renameTo(webpFile)
-                checkAndManageCacheSize(maxStorageAllocationMb)
-            } finally {
-                bitmapCopy.recycle()
-            }
-        } catch (e: Throwable) {
-            e.printStackTrace()
-        } finally {
-            activeCacheTasks.remove(taskKey)
-        }
-    }
-
-    private fun checkAndManageCacheSize(maxSizeMb: Int) {
-        val webpParentDir = File(context.cacheDir, "webp_cache")
-        if (!webpParentDir.exists()) return
-
-        val maxSizeBytes = maxSizeMb.toLong() * 1024 * 1024
-        val allFiles = webpParentDir.walkTopDown().filter { it.isFile && it.extension == "webp" }.toList()
-        
-        var totalSize = allFiles.sumOf { it.length() }
-        if (totalSize > maxSizeBytes) {
-            val sortedFiles = allFiles.sortedBy { f -> f.lastModified() }
-            for (f in sortedFiles) {
-                val size = f.length()
-                if (f.delete()) {
-                    totalSize -= size
-                    if (totalSize <= maxSizeBytes * 0.8) {
-                        break
-                    }
-                }
-            }
         }
     }
 
@@ -365,11 +251,6 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
     fun close() {
         clearCache()
-        try {
-            cacheExecutor.shutdown()
-        } catch (e: Throwable) {
-            e.printStackTrace()
-        }
         try {
             synchronized(this) {
                 pdfRenderer?.close()

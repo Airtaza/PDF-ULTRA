@@ -195,13 +195,12 @@ class ManhwaViewModel(private val application: Application, private val reposito
         _activeZoomScale,
         _hdModeEnabled
     ) { qualityEnabled, qLevel, zoomScaleVal, hdEnabled ->
-        val zoomFactor = if (zoomScaleVal > 1.0f) zoomScaleVal * 2.0f else 1.0f
         val baseScale = if (qualityEnabled) {
             getQualityScaleFactor(qLevel)
         } else {
             if (hdEnabled) 2.0f else 1.2f
         }
-        (baseScale * zoomFactor).coerceAtMost(4.5f)
+        baseScale
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
@@ -867,41 +866,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     // --- Reading Velocity Cache Warming ---
     fun warmCacheForVelocity(currentPage: Int, targetWidth: Int, velocity: Float) {
-        warmCacheJob?.cancel()
-        warmCacheJob = viewModelScope.launch(Dispatchers.IO) {
-            val manhwa = activeManhwa.value ?: return@launch
-            val renderer = synchronized(renderers) {
-                renderers[manhwa.id]
-            } ?: return@launch
-            val totalPages = renderer.pageCount
-
-            // Normal velocity: warm 1-2 pages ahead
-            // High velocity: warm up to 4-5 pages ahead to ensure seamless zero-lag reading strip
-            val pagesToWarm = if (velocity > 1.5f) {
-                listOf(currentPage + 1, currentPage + 2, currentPage + 3, currentPage + 4, currentPage + 5)
-            } else if (velocity > 0.5f) {
-                listOf(currentPage + 1, currentPage + 2, currentPage + 3)
-            } else {
-                listOf(currentPage + 1, currentPage + 2)
-            }
-
-            for (pageIdx in pagesToWarm) {
-                ensureActive()
-                if (pageIdx in 0 until totalPages) {
-                    val isCacheEnabled = _qualitySelectionEnabled.value
-                    val scale = activeScaleFactor.value
-                    val qualityCompression = getQualityCompression(_qualityLevel.value)
-                    val maxStorage = _maxStorageAllocation.value
-                    
-                    renderer.renderPage(
-                        pageIdx, targetWidth, scale,
-                        isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
-                    )
-                    // Cooperatively sleep between pages to allow high-priority rendering to immediately acquire the lock
-                    kotlinx.coroutines.delay(50)
-                }
-            }
-        }
+        // Disabling pre-warming to avoid lock contention and CPU load during continuous scroll.
     }
 
     override fun onCleared() {
