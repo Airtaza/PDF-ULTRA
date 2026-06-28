@@ -21,6 +21,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -298,12 +299,36 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
 @Composable
 fun LibraryScreen(viewModel: ManhwaViewModel) {
     val manhwas by viewModel.allManhwas.collectAsStateWithLifecycle()
+    val sortMode by viewModel.sortMode.collectAsStateWithLifecycle()
+
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
     ) { uri ->
         uri?.let { viewModel.importPdfFile(it) }
     }
     var showDeleteConfirmDialog by remember { mutableStateOf<Manhwa?>(null) }
+
+    val continueReadingList = remember(manhwas) {
+        manhwas.filter { (it.lastReadPage > 0 || it.scrollOffset > 0) && it.lastReadPage < it.totalPages - 1 }
+    }
+
+    val seriesMap = remember(manhwas) {
+        manhwas.groupBy { viewModel.getSeriesName(it) }
+    }
+
+    val sortedManhwas = remember(manhwas, sortMode) {
+        when (sortMode) {
+            ManhwaViewModel.SortMode.RECENT -> {
+                manhwas.sortedByDescending { it.id }
+            }
+            ManhwaViewModel.SortMode.NATURAL -> {
+                manhwas.sortedWith(
+                    compareBy<Manhwa> { viewModel.getSeriesName(it).lowercase() }
+                        .thenBy { viewModel.getChapterNumber(it) }
+                )
+            }
+        }
+    }
 
     Column(
         modifier = Modifier
@@ -410,6 +435,201 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                // Smart sort Mode Selector
+                item {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text(
+                            text = "Sort Mode:",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                        )
+
+                        listOf(
+                            ManhwaViewModel.SortMode.RECENT to "Recent Added",
+                            ManhwaViewModel.SortMode.NATURAL to "Smart Sort"
+                        ).forEach { (mode, name) ->
+                            val isSelected = sortMode == mode
+                            Box(
+                                modifier = Modifier
+                                    .background(
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .clickable { viewModel.setSortMode(mode) }
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = name,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // Continue Reading shelf
+                if (continueReadingList.isNotEmpty()) {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = "CONTINUE READING",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 1.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(continueReadingList) { item ->
+                                    Card(
+                                        modifier = Modifier
+                                            .width(220.dp)
+                                            .clickable { viewModel.openManhwa(item) },
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f)),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(12.dp)
+                                        ) {
+                                            Text(
+                                                text = item.title,
+                                                fontWeight = FontWeight.Bold,
+                                                fontSize = 13.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                                            )
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            
+                                            val progress = if (item.totalPages > 0) {
+                                                ((item.lastReadPage + 1).toFloat() / item.totalPages.toFloat())
+                                            } else 0f
+                                            
+                                            Text(
+                                                text = "Page ${item.lastReadPage + 1} of ${item.totalPages} (${(progress * 100).toInt()}%)",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                            )
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            LinearProgressIndicator(
+                                                progress = { progress },
+                                                modifier = Modifier.fillMaxWidth().height(4.dp),
+                                                color = MaterialTheme.colorScheme.primary,
+                                                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                                                strokeCap = StrokeCap.Round
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Series Tracker shelf
+                val validSeriesList = seriesMap.toList().filter { it.first.isNotBlank() }
+                if (validSeriesList.isNotEmpty()) {
+                    item {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(vertical = 8.dp)
+                        ) {
+                            Text(
+                                text = "SERIES PROGRESS TRACKER",
+                                fontSize = 12.sp,
+                                fontWeight = FontWeight.Black,
+                                letterSpacing = 1.sp,
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+
+                            LazyRow(
+                                horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                items(validSeriesList) { (seriesName, chapters) ->
+                                    val totalChaps = chapters.size
+                                    val totalProgressSum = chapters.sumOf {
+                                        if (it.totalPages > 0) {
+                                            ((it.lastReadPage + 1).toDouble() / it.totalPages.toDouble())
+                                        } else 0.0
+                                    }
+                                    val averageProgress = (totalProgressSum / totalChaps.toDouble()).toFloat()
+
+                                    Card(
+                                        modifier = Modifier.width(180.dp),
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.25f)),
+                                        shape = RoundedCornerShape(12.dp)
+                                    ) {
+                                        Column(
+                                            modifier = Modifier.padding(12.dp)
+                                        ) {
+                                            Text(
+                                                text = seriesName,
+                                                fontWeight = FontWeight.ExtraBold,
+                                                fontSize = 13.sp,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer
+                                            )
+                                            Spacer(modifier = Modifier.height(2.dp))
+                                            Text(
+                                                text = "$totalChaps Chapter${if (totalChaps > 1) "s" else ""}",
+                                                fontSize = 11.sp,
+                                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                            )
+                                            Spacer(modifier = Modifier.height(8.dp))
+                                            Row(
+                                                modifier = Modifier.fillMaxWidth(),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Text(
+                                                    text = "Series Read",
+                                                    fontSize = 10.sp,
+                                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.6f)
+                                                )
+                                                Text(
+                                                    text = "${(averageProgress * 100).toInt()}%",
+                                                    fontSize = 11.sp,
+                                                    fontWeight = FontWeight.Bold,
+                                                    color = MaterialTheme.colorScheme.primary
+                                                )
+                                            }
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            LinearProgressIndicator(
+                                                progress = { averageProgress },
+                                                modifier = Modifier.fillMaxWidth().height(5.dp),
+                                                color = MaterialTheme.colorScheme.primary,
+                                                trackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f),
+                                                strokeCap = StrokeCap.Round
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 item {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -417,7 +637,7 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Offline Comics (${manhwas.size})",
+                            text = "Offline Chapters (${sortedManhwas.size})",
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp,
                             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
@@ -432,7 +652,7 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
                     }
                 }
 
-                items(manhwas, key = { it.id }) { manhwa ->
+                items(sortedManhwas, key = { it.id }) { manhwa ->
                     ManhwaCardItem(
                         manhwa = manhwa,
                         onOpen = { viewModel.openManhwa(manhwa) },
@@ -787,7 +1007,10 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     var showAddBookmarkDialog by remember { mutableStateOf(false) }
     var bookmarkTitleInput by remember { mutableStateOf("") }
 
-    val lazyListState = rememberLazyListState(initialFirstVisibleItemIndex = activeManhwa?.lastReadPage ?: 0)
+    val lazyListState = rememberLazyListState(
+        initialFirstVisibleItemIndex = activeManhwa?.lastReadPage ?: 0,
+        initialFirstVisibleItemScrollOffset = activeManhwa?.scrollOffset ?: 0
+    )
     val coroutineScope = rememberCoroutineScope()
     var componentWidth by remember { mutableStateOf(1080) }
     var areControlsVisible by remember { mutableStateOf(true) }
@@ -837,9 +1060,71 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
         }
     } else Modifier
 
-    // Dynamic scroll tracking to update reading progress
-    LaunchedEffect(lazyListState.firstVisibleItemIndex) {
-        viewModel.setCurrentPage(lazyListState.firstVisibleItemIndex)
+    // Chapter navigation position memory restorer (Index + Offset)
+    val activeManhwaId = activeManhwa?.id ?: 0L
+    LaunchedEffect(activeManhwaId) {
+        val lastPage = activeManhwa?.lastReadPage ?: 0
+        val lastOffset = activeManhwa?.scrollOffset ?: 0
+        if (activeManhwaId > 0 && (lazyListState.firstVisibleItemIndex != lastPage || lazyListState.firstVisibleItemScrollOffset != lastOffset)) {
+            try {
+                lazyListState.scrollToItem(lastPage, lastOffset)
+            } catch (e: Exception) {
+                // Ignore any instant scroll conflicts
+            }
+        }
+    }
+
+    // Hands-Free Auto-Scroll system
+    val autoScrollSpeed by viewModel.autoScrollSpeed.collectAsStateWithLifecycle()
+    LaunchedEffect(autoScrollSpeed) {
+        if (autoScrollSpeed > 0f) {
+            val pixelsPerFrame = autoScrollSpeed * 1.5f
+            while (true) {
+                if (!lazyListState.isScrollInProgress) {
+                    try {
+                        lazyListState.scrollBy(pixelsPerFrame)
+                    } catch (e: Exception) {
+                        // Ignore scroll fighting
+                    }
+                }
+                androidx.compose.runtime.withFrameMillis { }
+            }
+        }
+    }
+
+    // Dynamic scroll tracking to update reading progress & velocity-based cache warming
+    var lastScrollTime by remember { mutableLongStateOf(0L) }
+    var lastScrollIndex by remember { mutableIntStateOf(0) }
+    var lastScrollOffset by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(lazyListState.firstVisibleItemIndex, lazyListState.firstVisibleItemScrollOffset) {
+        val now = System.currentTimeMillis()
+        val timeDelta = (now - lastScrollTime).coerceAtLeast(1L)
+        
+        // Calculate velocity (approximate 1 page as 3000px height)
+        val indexDiff = lazyListState.firstVisibleItemIndex - lastScrollIndex
+        val offsetDiff = lazyListState.firstVisibleItemScrollOffset - lastScrollOffset
+        val pixelsScrolled = Math.abs(indexDiff * 3000 + offsetDiff)
+        val velocity = pixelsScrolled.toFloat() / timeDelta.toFloat() // pixels per millisecond
+
+        // Update database with index and offset
+        viewModel.setCurrentPageAndOffset(
+            lazyListState.firstVisibleItemIndex,
+            lazyListState.firstVisibleItemScrollOffset
+        )
+
+        // Pre-render pages if scrolling fast (Reading Velocity Cache Warming)
+        if (componentWidth > 0) {
+            viewModel.warmCacheForVelocity(
+                currentPage = lazyListState.firstVisibleItemIndex,
+                targetWidth = componentWidth,
+                velocity = velocity
+            )
+        }
+
+        lastScrollTime = now
+        lastScrollIndex = lazyListState.firstVisibleItemIndex
+        lastScrollOffset = lazyListState.firstVisibleItemScrollOffset
     }
 
     Box(
@@ -865,32 +1150,95 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                 .fillMaxSize()
                 .horizontalScroll(horizScrollState, enabled = animatedZoomScale > 1.0f)
         ) {
-            LazyColumn(
-                state = lazyListState,
-                userScrollEnabled = !isDrawModeOn, // LOCK scrolling during drawing sessions!
-                modifier = Modifier
-                    .width(with(LocalDensity.current) { (componentWidth * animatedZoomScale).toDp() })
-                    .fillMaxHeight(),
-                verticalArrangement = Arrangement.spacedBy(0.dp) // GAPLESS reading (Mandatory for Manhwa!)
-            ) {
+        val prevChapter = activeManhwa?.let { viewModel.getPreviousChapter(it) }
+        val nextChapter = activeManhwa?.let { viewModel.getNextChapter(it) }
+
+        // Chapter reach auto-load checking
+        LaunchedEffect(lazyListState.firstVisibleItemIndex, lazyListState.isScrollInProgress) {
+            if (!lazyListState.isScrollInProgress) {
+                val hasNext = nextChapter != null
                 val totalPages = activeManhwa?.totalPages ?: 0
-                items(totalPages) { pageIdx ->
-                    Box(
+                val totalListItems = totalPages + (if (prevChapter != null) 1 else 0) + (if (hasNext) 1 else 0)
+                val lastVisibleIdx = lazyListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
+                if (hasNext && lastVisibleIdx >= totalListItems - 1) {
+                    viewModel.navigateToChapter(nextChapter!!)
+                }
+
+                val hasPrev = prevChapter != null
+                val firstVisibleIdx = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: 0
+                if (hasPrev && firstVisibleIdx == 0) {
+                    viewModel.navigateToChapter(prevChapter!!)
+                }
+            }
+        }
+
+        LazyColumn(
+            state = lazyListState,
+            userScrollEnabled = !isDrawModeOn, // LOCK scrolling during drawing sessions!
+            modifier = Modifier
+                .width(with(LocalDensity.current) { (componentWidth * animatedZoomScale).toDp() })
+                .fillMaxHeight(),
+            verticalArrangement = Arrangement.spacedBy(0.dp) // GAPLESS reading (Mandatory for Manhwa!)
+        ) {
+            if (prevChapter != null) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = Color.DarkGray.copy(alpha = 0.4f)),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .wrapContentHeight()
+                            .padding(16.dp)
+                            .clickable { viewModel.navigateToChapter(prevChapter) }
                     ) {
-                        PdfPageItem(
-                            pageIndex = pageIdx,
-                            targetWidth = componentWidth,
-                            zoomScale = animatedZoomScale,
-                            viewModel = viewModel,
-                            brightness = brightness,
-                            contrast = contrast,
-                            colorMode = colorMode,
-                            onPdfClick = {
-                                val currentTime = System.currentTimeMillis()
-                                if (currentTime - lastClickTime > 100) {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.KeyboardArrowUp,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Scroll past top or Tap to load Previous Chapter",
+                                fontSize = 12.sp,
+                                color = Color.LightGray,
+                                fontWeight = FontWeight.Bold
+                            )
+                            Text(
+                                text = prevChapter.title,
+                                fontSize = 11.sp,
+                                color = Color.Gray,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                    }
+                }
+            }
+
+            val totalPages = activeManhwa?.totalPages ?: 0
+            items(totalPages) { pageIdx ->
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .wrapContentHeight()
+                ) {
+                    PdfPageItem(
+                        pageIndex = pageIdx,
+                        targetWidth = componentWidth,
+                        zoomScale = animatedZoomScale,
+                        viewModel = viewModel,
+                        brightness = brightness,
+                        contrast = contrast,
+                        colorMode = colorMode,
+                        onPdfClick = {
+                            val currentTime = System.currentTimeMillis()
+                            if (currentTime - lastClickTime > 100) {
                                     lastClickTime = currentTime
                                     areControlsVisible = !areControlsVisible
                                 }
@@ -909,6 +1257,47 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                                     viewModel.addDrawPath(pageIdx, path)
                                 }
                             )
+                        }
+                    }
+                }
+
+                if (nextChapter != null) {
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = Color.DarkGray.copy(alpha = 0.4f)),
+                            shape = RoundedCornerShape(12.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(16.dp)
+                                .clickable { viewModel.navigateToChapter(nextChapter) }
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(16.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.KeyboardArrowDown,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    text = "End of chapter. Scroll or Tap to load Next Chapter",
+                                    fontSize = 12.sp,
+                                    color = Color.LightGray,
+                                    fontWeight = FontWeight.Bold
+                                )
+                                Text(
+                                    text = nextChapter.title,
+                                    fontSize = 11.sp,
+                                    color = Color.Gray,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
                     }
                 }
@@ -1049,7 +1438,13 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                 onBrightnessChange = { viewModel.setBrightness(it) },
                 onContrastChange = { viewModel.setContrast(it) },
                 onColorModeChange = { viewModel.setColorMode(it) },
-                onToggleHdMode = { viewModel.toggleHdMode() }
+                onToggleHdMode = { viewModel.toggleHdMode() },
+                autoScrollSpeed = autoScrollSpeed,
+                onAutoScrollSpeedChange = { viewModel.setAutoScrollSpeed(it) },
+                canNavigateBack = viewModel.canNavigateBack(),
+                canNavigateForward = viewModel.canNavigateForward(),
+                onNavigateBack = { viewModel.navigateBack() },
+                onNavigateForward = { viewModel.navigateForward() }
             )
         }
 
@@ -1580,10 +1975,17 @@ fun HUDBottomBar(
     onBrightnessChange: (Float) -> Unit,
     onContrastChange: (Float) -> Unit,
     onColorModeChange: (ManhwaViewModel.ColorMode) -> Unit,
-    onToggleHdMode: () -> Unit
+    onToggleHdMode: () -> Unit,
+    autoScrollSpeed: Float,
+    onAutoScrollSpeedChange: (Float) -> Unit,
+    canNavigateBack: Boolean,
+    canNavigateForward: Boolean,
+    onNavigateBack: () -> Unit,
+    onNavigateForward: () -> Unit
 ) {
     var showEnhancerControls by remember { mutableStateOf(false) }
     var showZoomControls by remember { mutableStateOf(false) }
+    var showScrollControls by remember { mutableStateOf(false) }
 
     Surface(
         color = Color.Black.copy(alpha = 0.85f),
@@ -1643,16 +2045,24 @@ fun HUDBottomBar(
                     // Color modes row
                     Row(
                         modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
+                        verticalAlignment = Alignment.CenterVertically
                     ) {
-                        Text("Color Filter:", fontSize = 12.sp, color = Color.LightGray)
-                        Row {
+                        Text("Filter: ", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.padding(end = 6.dp))
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
                             val modes = listOf(
                                 ManhwaViewModel.ColorMode.NORMAL to "Normal",
                                 ManhwaViewModel.ColorMode.GRAYSCALE to "Gray",
                                 ManhwaViewModel.ColorMode.SEPIA to "Sepia",
-                                ManhwaViewModel.ColorMode.INVERTED to "Night"
+                                ManhwaViewModel.ColorMode.INVERTED to "Night",
+                                ManhwaViewModel.ColorMode.PROTANOPIA to "Protan (Red-Blind)",
+                                ManhwaViewModel.ColorMode.DEUTERANOPIA to "Deuteran (Green-Blind)",
+                                ManhwaViewModel.ColorMode.TRITANOPIA to "Tritan (Blue-Blind)",
+                                ManhwaViewModel.ColorMode.HIGH_CONTRAST to "Contrast+"
                             )
                             modes.forEach { (mode, name) ->
                                 val selected = colorMode == mode
@@ -1663,10 +2073,10 @@ fun HUDBottomBar(
                                     color = if (selected) MaterialTheme.colorScheme.primary else Color.Gray,
                                     modifier = Modifier
                                         .clickable { onColorModeChange(mode) }
-                                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                                        .padding(horizontal = 8.dp, vertical = 6.dp)
                                         .background(
-                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.1f) else Color.Transparent,
-                                            RoundedCornerShape(4.dp)
+                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
+                                            RoundedCornerShape(6.dp)
                                         )
                                 )
                             }
@@ -1842,6 +2252,60 @@ fun HUDBottomBar(
                 }
             }
 
+            // Hands-Free Auto-Scroll control panel
+            if (showScrollControls) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.95f))
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Text(
+                        "HANDS-FREE AUTO-SCROLL MODE",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Scroll Speed",
+                            fontSize = 12.sp,
+                            color = Color.LightGray,
+                            modifier = Modifier.width(90.dp)
+                        )
+                        Slider(
+                            value = autoScrollSpeed,
+                            onValueChange = onAutoScrollSpeedChange,
+                            valueRange = 0f..10f,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
+                        )
+                        Text(
+                            text = if (autoScrollSpeed == 0f) "OFF" else String.format("%.1fx", autoScrollSpeed),
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = if (autoScrollSpeed > 0f) MaterialTheme.colorScheme.primary else Color.Gray,
+                            modifier = Modifier.width(40.dp),
+                            textAlign = TextAlign.End
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Sit back and read hands-free. Adjust speed to match your reading pace.",
+                        fontSize = 11.sp,
+                        color = Color.Gray
+                    )
+                }
+            }
+
             // Main HUD action buttons
             Row(
                 modifier = Modifier
@@ -1850,12 +2314,15 @@ fun HUDBottomBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // View enhancer toggle button
+                // View enhancer, zoom, and scroll toggles
                 Row {
                     if (isViewEnhancerEnabled) {
                         IconButton(onClick = { 
                             showEnhancerControls = !showEnhancerControls 
-                            if (showEnhancerControls) showZoomControls = false
+                            if (showEnhancerControls) {
+                                showZoomControls = false
+                                showScrollControls = false
+                            }
                         }) {
                             Icon(
                                 Icons.Default.Settings,
@@ -1867,7 +2334,10 @@ fun HUDBottomBar(
                     
                     IconButton(onClick = { 
                         showZoomControls = !showZoomControls 
-                        if (showZoomControls) showEnhancerControls = false
+                        if (showZoomControls) {
+                            showEnhancerControls = false
+                            showScrollControls = false
+                        }
                     }) {
                         Icon(
                             Icons.Default.Search,
@@ -1875,14 +2345,53 @@ fun HUDBottomBar(
                             tint = if (showZoomControls) MaterialTheme.colorScheme.primary else Color.White
                         )
                     }
+
+                    IconButton(onClick = { 
+                        showScrollControls = !showScrollControls 
+                        if (showScrollControls) {
+                            showEnhancerControls = false
+                            showZoomControls = false
+                        }
+                    }) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = "Auto-Scroll",
+                            tint = if (showScrollControls) MaterialTheme.colorScheme.primary else if (autoScrollSpeed > 0f) MaterialTheme.colorScheme.secondary else Color.White
+                        )
+                    }
                 }
 
-                // Page slider navigation
-                Text(
-                    text = "${currentPage + 1} / $totalPages",
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 14.sp
-                )
+                // Page slider and Browser-like Chapter History controls
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    IconButton(
+                        onClick = onNavigateBack,
+                        enabled = canNavigateBack
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowBack,
+                            contentDescription = "Prev Chapter History",
+                            tint = if (canNavigateBack) Color.White else Color.DarkGray
+                        )
+                    }
+
+                    Text(
+                        text = "${currentPage + 1} / $totalPages",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 13.sp,
+                        color = Color.White
+                    )
+
+                    IconButton(
+                        onClick = onNavigateForward,
+                        enabled = canNavigateForward
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowForward,
+                            contentDescription = "Next Chapter History",
+                            tint = if (canNavigateForward) Color.White else Color.DarkGray
+                        )
+                    }
+                }
 
                 // Chapter Bookmarker button
                 if (isOutlineEnabled) {
@@ -2076,6 +2585,44 @@ fun getAdjustedColorMatrix(brightness: Float, contrast: Float, mode: ManhwaViewM
                 0f, 0f, 0f, 1f, 0f
             )
             ColorMatrix(invertMatrix)
+        }
+        ManhwaViewModel.ColorMode.PROTANOPIA -> {
+            val protanopiaMatrix = floatArrayOf(
+                0.567f * scale, 0.433f * scale, 0f, 0f, translate,
+                0.558f * scale, 0.442f * scale, 0f, 0f, translate,
+                0f, 0.242f * scale, 0.758f * scale, 0f, translate,
+                0f, 0f, 0f, 1f, 0f
+            )
+            ColorMatrix(protanopiaMatrix)
+        }
+        ManhwaViewModel.ColorMode.DEUTERANOPIA -> {
+            val deuteranopiaMatrix = floatArrayOf(
+                0.625f * scale, 0.375f * scale, 0f, 0f, translate,
+                0.7f * scale, 0.3f * scale, 0f, 0f, translate,
+                0f, 0.3f * scale, 0.7f * scale, 0f, translate,
+                0f, 0f, 0f, 1f, 0f
+            )
+            ColorMatrix(deuteranopiaMatrix)
+        }
+        ManhwaViewModel.ColorMode.TRITANOPIA -> {
+            val tritanopiaMatrix = floatArrayOf(
+                0.95f * scale, 0.05f * scale, 0f, 0f, translate,
+                0f, 0.433f * scale, 0.567f * scale, 0f, translate,
+                0f, 0.475f * scale, 0.525f * scale, 0f, translate,
+                0f, 0f, 0f, 1f, 0f
+            )
+            ColorMatrix(tritanopiaMatrix)
+        }
+        ManhwaViewModel.ColorMode.HIGH_CONTRAST -> {
+            val hcScale = scale * 1.5f
+            val hcTranslate = translate - 30f
+            val highContrastMatrix = floatArrayOf(
+                hcScale, 0f, 0f, 0f, hcTranslate,
+                0f, hcScale, 0f, 0f, hcTranslate,
+                0f, 0f, hcScale, 0f, hcTranslate,
+                0f, 0f, 0f, 1f, 0f
+            )
+            ColorMatrix(highContrastMatrix)
         }
         else -> {
             val array = floatArrayOf(

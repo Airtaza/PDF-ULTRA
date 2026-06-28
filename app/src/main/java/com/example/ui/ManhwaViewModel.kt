@@ -13,6 +13,7 @@ import com.example.data.Bookmark
 import com.example.data.Manhwa
 import com.example.data.ManhwaRepository
 import com.example.data.PluginConfig
+import com.example.data.SeriesParser
 import com.example.pdf.ManhwaPdfRenderer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -129,6 +130,23 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _selectedTab = MutableStateFlow(ReaderTab.Library)
     val selectedTab: StateFlow<ReaderTab> = _selectedTab.asStateFlow()
 
+    // --- State: Chapter Sorting & History ---
+    enum class SortMode {
+        RECENT, NATURAL
+    }
+    
+    private val _sortMode = MutableStateFlow(SortMode.RECENT)
+    val sortMode: StateFlow<SortMode> = _sortMode.asStateFlow()
+
+    private val _autoScrollSpeed = MutableStateFlow(0f) // 0 means stopped, 1-10 means scroll speed
+    val autoScrollSpeed: StateFlow<Float> = _autoScrollSpeed.asStateFlow()
+
+    private val _chapterHistory = MutableStateFlow<List<Long>>(emptyList())
+    val chapterHistory: StateFlow<List<Long>> = _chapterHistory.asStateFlow()
+
+    private val _historyIndex = MutableStateFlow(-1)
+    val historyIndex: StateFlow<Int> = _historyIndex.asStateFlow()
+
     // --- State: View Enhancer Plugin Properties ---
     private val _brightness = MutableStateFlow(1.0f)
     val brightness: StateFlow<Float> = _brightness.asStateFlow()
@@ -191,7 +209,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     enum class ColorMode {
-        NORMAL, GRAYSCALE, SEPIA, INVERTED
+        NORMAL, GRAYSCALE, SEPIA, INVERTED, PROTANOPIA, DEUTERANOPIA, TRITANOPIA, HIGH_CONTRAST
     }
 
     // --- Tab management operations ---
@@ -362,13 +380,17 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     fun updateActiveTabCurrentPage(pageIndex: Int) {
+        updateActiveTabCurrentPageAndOffset(pageIndex, 0)
+    }
+
+    fun updateActiveTabCurrentPageAndOffset(pageIndex: Int, offset: Int) {
         val currentId = _activeTabId.value
         val existingList = _tabs.value.map { tab ->
             if (tab.id == currentId) {
                 val updatedTab = tab.copy(currentPage = pageIndex)
                 tab.manhwa?.let { manhwa ->
                     viewModelScope.launch {
-                        repository.updateManhwa(manhwa.copy(lastReadPage = pageIndex))
+                        repository.updateManhwa(manhwa.copy(lastReadPage = pageIndex, scrollOffset = offset))
                     }
                 }
                 updatedTab
@@ -461,9 +483,13 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     fun setCurrentPage(pageIndex: Int) {
+        setCurrentPageAndOffset(pageIndex, 0)
+    }
+
+    fun setCurrentPageAndOffset(pageIndex: Int, offset: Int) {
         val pageCount = getPageCountForActiveManhwa()
         if (pageIndex >= 0 && pageIndex < pageCount) {
-            updateActiveTabCurrentPage(pageIndex)
+            updateActiveTabCurrentPageAndOffset(pageIndex, offset)
         }
     }
 
@@ -780,6 +806,127 @@ class ManhwaViewModel(private val application: Application, private val reposito
             // Clear any active in-memory cache slices as well
             synchronized(renderers) {
                 renderers.values.forEach { it.clearCache() }
+            }
+        }
+    }
+
+    // --- Auto-Scroll Control ---
+    fun setAutoScrollSpeed(speed: Float) {
+        _autoScrollSpeed.value = speed
+    }
+
+    // --- Sort Mode Control ---
+    fun setSortMode(mode: SortMode) {
+        _sortMode.value = mode
+    }
+
+    // --- Series Parsing & Helpers ---
+    fun getSeriesName(manhwa: Manhwa): String = SeriesParser.parse(manhwa.title).seriesName
+    fun getChapterNumber(manhwa: Manhwa): Float = SeriesParser.parse(manhwa.title).chapterNumber
+
+    fun getNextChapter(manhwa: Manhwa): Manhwa? {
+        val all = allManhwas.value
+        val currentInfo = SeriesParser.parse(manhwa.title)
+        return all.filter { getSeriesName(it).equals(currentInfo.seriesName, ignoreCase = true) }
+            .filter { SeriesParser.parse(it.title).chapterNumber > currentInfo.chapterNumber }
+            .minByOrNull { SeriesParser.parse(it.title).chapterNumber }
+    }
+
+    fun getPreviousChapter(manhwa: Manhwa): Manhwa? {
+        val all = allManhwas.value
+        val currentInfo = SeriesParser.parse(manhwa.title)
+        return all.filter { getSeriesName(it).equals(currentInfo.seriesName, ignoreCase = true) }
+            .filter { SeriesParser.parse(it.title).chapterNumber < currentInfo.chapterNumber }
+            .maxByOrNull { SeriesParser.parse(it.title).chapterNumber }
+    }
+
+    // --- Browser-Like Chapter History & Navigation ---
+    fun navigateToChapter(manhwa: Manhwa) {
+        val currentHist = _chapterHistory.value.toMutableList()
+        val currIdx = _historyIndex.value
+
+        val newHistory = if (currIdx >= 0 && currIdx < currentHist.size) {
+            currentHist.subList(0, currIdx + 1).toMutableList()
+        } else {
+            currentHist
+        }
+        
+        newHistory.add(manhwa.id)
+        _chapterHistory.value = newHistory
+        _historyIndex.value = newHistory.size - 1
+
+        openManhwaInTab(manhwa)
+    }
+
+    fun canNavigateBack(): Boolean {
+        return _historyIndex.value > 0
+    }
+
+    fun canNavigateForward(): Boolean {
+        return _historyIndex.value < _chapterHistory.value.size - 1
+    }
+
+    fun navigateBack() {
+        if (canNavigateBack()) {
+            val nextIdx = _historyIndex.value - 1
+            _historyIndex.value = nextIdx
+            val targetId = _chapterHistory.value[nextIdx]
+            viewModelScope.launch {
+                repository.getManhwaById(targetId)?.let { manhwa ->
+                    openManhwaInTab(manhwa)
+                }
+            }
+        }
+    }
+
+    fun navigateForward() {
+        if (canNavigateForward()) {
+            val nextIdx = _historyIndex.value + 1
+            _historyIndex.value = nextIdx
+            val targetId = _chapterHistory.value[nextIdx]
+            viewModelScope.launch {
+                repository.getManhwaById(targetId)?.let { manhwa ->
+                    openManhwaInTab(manhwa)
+                }
+            }
+        }
+    }
+
+    // --- Reading Velocity Cache Warming ---
+    fun warmCacheForVelocity(currentPage: Int, targetWidth: Int, velocity: Float) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val manhwa = activeManhwa.value ?: return@launch
+            val renderer = synchronized(renderers) {
+                renderers[manhwa.id]
+            } ?: return@launch
+            val totalPages = renderer.pageCount
+
+            // Normal velocity: warm 1-2 pages ahead
+            // High velocity: warm up to 4-5 pages ahead to ensure seamless zero-lag reading strip
+            val pagesToWarm = if (velocity > 1.5f) {
+                listOf(currentPage + 1, currentPage + 2, currentPage + 3, currentPage + 4, currentPage + 5)
+            } else if (velocity > 0.5f) {
+                listOf(currentPage + 1, currentPage + 2, currentPage + 3)
+            } else {
+                listOf(currentPage + 1, currentPage + 2)
+            }
+
+            for (pageIdx in pagesToWarm) {
+                if (pageIdx in 0 until totalPages) {
+                    val isCacheEnabled = _qualitySelectionEnabled.value
+                    val scale = if (isCacheEnabled) {
+                        getQualityScaleFactor(_qualityLevel.value)
+                    } else {
+                        if (_hdModeEnabled.value) 2.0f else 1.2f
+                    }
+                    val qualityCompression = getQualityCompression(_qualityLevel.value)
+                    val maxStorage = _maxStorageAllocation.value
+                    
+                    renderer.renderPage(
+                        pageIdx, targetWidth, scale,
+                        isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
+                    )
+                }
             }
         }
     }
