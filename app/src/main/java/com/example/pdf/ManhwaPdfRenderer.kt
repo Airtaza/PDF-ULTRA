@@ -50,7 +50,7 @@ object BitmapPool {
     fun release(bitmap: Bitmap?) {
         if (bitmap == null || !bitmap.isMutable || bitmap.isRecycled) return
         synchronized(pool) {
-            if (pool.size < 16) {
+            if (pool.size < 4) {
                 pool.add(bitmap)
             } else {
                 bitmap.recycle()
@@ -83,11 +83,19 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
     }
     private val cacheDispatcher = cacheExecutor.asCoroutineDispatcher()
 
-    // Cache to hold rendered page bitmaps (increased to 60 slices to keep more pages in memory and prevent scroll reload lag)
-    private val memoryCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(60) {
-        override fun entryRemoved(evicted: Boolean, key: String?, oldValue: Bitmap?, newValue: Bitmap?) {
-            if (evicted) {
-                BitmapPool.release(oldValue)
+    // Cache to hold rendered page bitmaps. Limit size in bytes to 15% of available JVM heap to prevent OOM/GC freezes.
+    private val memoryCache: LruCache<String, Bitmap> = run {
+        val maxMemory = Runtime.getRuntime().maxMemory()
+        // Use 15% of available memory for memory cache (guarantees safe footprint e.g. 30-80MB depending on heap size)
+        val cacheSize = (maxMemory * 0.15f).toInt().coerceAtLeast(16 * 1024 * 1024)
+        object : LruCache<String, Bitmap>(cacheSize) {
+            override fun sizeOf(key: String, value: Bitmap): Int {
+                return value.byteCount
+            }
+            override fun entryRemoved(evicted: Boolean, key: String?, oldValue: Bitmap?, newValue: Bitmap?) {
+                if (oldValue != null) {
+                    BitmapPool.release(oldValue)
+                }
             }
         }
     }
@@ -241,23 +249,16 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
             // Asynchronously save to WebP cache for future lightning-fast loads!
             if (qualitySelectionEnabled && bitmap != null) {
-                val sliceBitmapCopy = try {
-                    bitmap.copy(bitmap.config ?: Bitmap.Config.ARGB_8888, false)
-                } catch (e: Throwable) {
-                    null
-                }
-                if (sliceBitmapCopy != null) {
-                    CoroutineScope(cacheDispatcher).launch {
-                        preCacheSliceAsWebP(
-                            pageIndex = pageIndex,
-                            sliceIndex = sliceIndex,
-                            sliceBitmap = sliceBitmapCopy,
-                            webpDir = webpDir,
-                            qualityLevel = qualityLevel,
-                            qualityCompression = qualityCompression,
-                            maxStorageAllocationMb = maxStorageAllocationMb
-                        )
-                    }
+                CoroutineScope(cacheDispatcher).launch {
+                    preCacheSliceAsWebP(
+                        pageIndex = pageIndex,
+                        sliceIndex = sliceIndex,
+                        sliceBitmap = bitmap,
+                        webpDir = webpDir,
+                        qualityLevel = qualityLevel,
+                        qualityCompression = qualityCompression,
+                        maxStorageAllocationMb = maxStorageAllocationMb
+                    )
                 }
             }
 
@@ -279,7 +280,6 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
     ) = withContext(cacheDispatcher) {
         val taskKey = "${pageIndex}_s${sliceIndex}_${qualityLevel}"
         if (activeCacheTasks.putIfAbsent(taskKey, true) != null) {
-            sliceBitmap.recycle()
             return@withContext
         }
         try {
@@ -287,22 +287,32 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
             val webpFile = File(webpDir, "$taskKey.webp")
             if (webpFile.exists() && webpFile.length() > 0) return@withContext
 
-            val tempFile = File(webpDir, "$taskKey.webp.tmp")
-            FileOutputStream(tempFile).use { out ->
-                val compressFormat = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
-                    Bitmap.CompressFormat.WEBP_LOSSY
-                } else {
-                    @Suppress("DEPRECATION")
-                    Bitmap.CompressFormat.WEBP
-                }
-                sliceBitmap.compress(compressFormat, qualityCompression, out)
+            val bitmapCopy = try {
+                sliceBitmap.copy(sliceBitmap.config ?: Bitmap.Config.ARGB_8888, false)
+            } catch (e: Throwable) {
+                null
             }
-            tempFile.renameTo(webpFile)
-            checkAndManageCacheSize(maxStorageAllocationMb)
+            if (bitmapCopy == null || bitmapCopy.isRecycled) return@withContext
+
+            try {
+                val tempFile = File(webpDir, "$taskKey.webp.tmp")
+                FileOutputStream(tempFile).use { out ->
+                    val compressFormat = if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                        Bitmap.CompressFormat.WEBP_LOSSY
+                    } else {
+                        @Suppress("DEPRECATION")
+                        Bitmap.CompressFormat.WEBP
+                    }
+                    bitmapCopy.compress(compressFormat, qualityCompression, out)
+                }
+                tempFile.renameTo(webpFile)
+                checkAndManageCacheSize(maxStorageAllocationMb)
+            } finally {
+                bitmapCopy.recycle()
+            }
         } catch (e: Throwable) {
             e.printStackTrace()
         } finally {
-            sliceBitmap.recycle()
             activeCacheTasks.remove(taskKey)
         }
     }

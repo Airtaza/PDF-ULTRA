@@ -1602,7 +1602,7 @@ fun PdfPageItem(
     colorMode: ManhwaViewModel.ColorMode,
     onPdfClick: () -> Unit
 ) {
-    val hdMode by viewModel.hdModeEnabled.collectAsStateWithLifecycle()
+    val scaleFactor by viewModel.activeScaleFactor.collectAsStateWithLifecycle()
     var aspectRatio by remember { mutableStateOf<Float?>(null) }
     var isLoadingAspect by remember { mutableStateOf(true) }
 
@@ -1643,10 +1643,7 @@ fun PdfPageItem(
                 }
             }
         } else {
-            val zoomFactor = if (zoomScale > 1.0f) zoomScale * 2.0f else 1.0f
-            val scale = (if (hdMode) 2.0f else 1.2f) * zoomFactor
-            val cappedScale = scale.coerceAtMost(4.5f)
-            val totalWidth = (targetWidth * cappedScale).toInt().coerceAtLeast(400)
+            val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
             val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
             val sliceHeight = 3072
             val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)

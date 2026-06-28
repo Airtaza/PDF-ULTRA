@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -187,6 +188,25 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     private val _isMagnifierEnabled = MutableStateFlow(false)
     val isMagnifierEnabled: StateFlow<Boolean> = _isMagnifierEnabled.asStateFlow()
+
+    val activeScaleFactor: StateFlow<Float> = combine(
+        _qualitySelectionEnabled,
+        _qualityLevel,
+        _activeZoomScale,
+        _hdModeEnabled
+    ) { qualityEnabled, qLevel, zoomScaleVal, hdEnabled ->
+        val zoomFactor = if (zoomScaleVal > 1.0f) zoomScaleVal * 2.0f else 1.0f
+        val baseScale = if (qualityEnabled) {
+            getQualityScaleFactor(qLevel)
+        } else {
+            if (hdEnabled) 2.0f else 1.2f
+        }
+        (baseScale * zoomFactor).coerceAtMost(4.5f)
+    }.stateIn(
+        scope = viewModelScope,
+        started = SharingStarted.WhileSubscribed(5000),
+        initialValue = 1.6f
+    )
 
     // --- State: Manhwa Sketch Editor Plugin Properties ---
     private val _activeDrawColor = MutableStateFlow(Color.Red)
@@ -537,14 +557,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         } ?: return@withContext null
 
         val isCacheEnabled = _qualitySelectionEnabled.value
-        val zoomScaleVal = _activeZoomScale.value
-        val zoomFactor = if (zoomScaleVal > 1.0f) zoomScaleVal * 2.0f else 1.0f
-        val baseScale = if (isCacheEnabled) {
-            getQualityScaleFactor(_qualityLevel.value)
-        } else {
-            if (_hdModeEnabled.value) 2.0f else 1.2f
-        }
-        val scale = (baseScale * zoomFactor).coerceAtMost(4.5f)
+        val scale = activeScaleFactor.value
         val qualityCompression = getQualityCompression(_qualityLevel.value)
         val maxStorage = _maxStorageAllocation.value
 
@@ -572,11 +585,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         } ?: return@withContext null
 
         val isCacheEnabled = _qualitySelectionEnabled.value
-        val scale = if (isCacheEnabled) {
-            getQualityScaleFactor(_qualityLevel.value)
-        } else {
-            if (_hdModeEnabled.value) 2.0f else 1.2f
-        }
+        val scale = activeScaleFactor.value
         val qualityCompression = getQualityCompression(_qualityLevel.value)
         val maxStorage = _maxStorageAllocation.value
 
@@ -880,11 +889,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 ensureActive()
                 if (pageIdx in 0 until totalPages) {
                     val isCacheEnabled = _qualitySelectionEnabled.value
-                    val scale = if (isCacheEnabled) {
-                        getQualityScaleFactor(_qualityLevel.value)
-                    } else {
-                        if (_hdModeEnabled.value) 2.0f else 1.2f
-                    }
+                    val scale = activeScaleFactor.value
                     val qualityCompression = getQualityCompression(_qualityLevel.value)
                     val maxStorage = _maxStorageAllocation.value
                     
