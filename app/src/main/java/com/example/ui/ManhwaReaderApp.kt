@@ -18,6 +18,8 @@ import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
@@ -218,12 +220,20 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
                             horizontalArrangement = Arrangement.spacedBy(8.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {
+                            @OptIn(ExperimentalFoundationApi::class)
                             items(tabs) { tab ->
                                 val isActive = tab.id == activeTabId
                                 Surface(
                                     modifier = Modifier
                                         .height(36.dp)
-                                        .clickable { viewModel.selectTabId(tab.id) }
+                                        .combinedClickable(
+                                            onClick = { viewModel.selectTabId(tab.id) },
+                                            onDoubleClick = {
+                                                if (tab.id != "library") {
+                                                    viewModel.closeTab(tab.id)
+                                                }
+                                            }
+                                        )
                                         .testTag("tab_${tab.id}"),
                                     shape = RoundedCornerShape(18.dp),
                                     color = if (isActive) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
@@ -241,17 +251,6 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
                                             fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
                                             color = if (isActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
                                         )
-                                        if (tab.id != "library") {
-                                            Spacer(modifier = Modifier.width(4.dp))
-                                            Icon(
-                                                imageVector = Icons.Default.Close,
-                                                contentDescription = "Close tab",
-                                                tint = if (isActive) MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f) else MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f),
-                                                modifier = Modifier
-                                                    .size(16.dp)
-                                                    .clickable { viewModel.closeTab(tab.id) }
-                                            )
-                                        }
                                     }
                                 }
                             }
@@ -787,6 +786,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     val lazyListState = rememberLazyListState(initialFirstVisibleItemIndex = activeManhwa?.lastReadPage ?: 0)
     val coroutineScope = rememberCoroutineScope()
     var componentWidth by remember { mutableStateOf(1080) }
+    var areControlsVisible by remember { mutableStateOf(true) }
 
     // Dynamic scroll tracking to update reading progress
     LaunchedEffect(lazyListState.firstVisibleItemIndex) {
@@ -800,6 +800,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
             .onGloballyPositioned { componentWidth = it.size.width }
     ) {
         // --- 1. CONTINUOUS VERTICAL STRIP OF MANHWA PAGES ---
+        var lastClickTime by remember { mutableLongStateOf(0L) }
         LazyColumn(
             state = lazyListState,
             userScrollEnabled = !isDrawModeOn, // LOCK scrolling during drawing sessions!
@@ -819,7 +820,14 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                         viewModel = viewModel,
                         brightness = brightness,
                         contrast = contrast,
-                        colorMode = colorMode
+                        colorMode = colorMode,
+                        onPdfClick = {
+                            val currentTime = System.currentTimeMillis()
+                            if (currentTime - lastClickTime > 100) {
+                                lastClickTime = currentTime
+                                areControlsVisible = !areControlsVisible
+                            }
+                        }
                     )
 
                     // Draw drawing sketch overlay on page
@@ -842,7 +850,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
         // --- 2. CONTROL OVERLAYS & HUD (Heads-Up Display) ---
         // Top HUD Bar
         AnimatedVisibility(
-            visible = !isDrawModeOn,
+            visible = !isDrawModeOn && areControlsVisible,
             enter = slideInVertically(initialOffsetY = { -it }),
             exit = slideOutVertically(targetOffsetY = { -it }),
             modifier = Modifier
@@ -883,7 +891,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
 
         // Bottom HUD Bar (Chapter bookmark creator, status)
         AnimatedVisibility(
-            visible = !isDrawModeOn,
+            visible = !isDrawModeOn && areControlsVisible,
             enter = slideInVertically(initialOffsetY = { it }),
             exit = slideOutVertically(targetOffsetY = { it }),
             modifier = Modifier
@@ -1078,7 +1086,8 @@ fun PdfPageItem(
     viewModel: ManhwaViewModel,
     brightness: Float,
     contrast: Float,
-    colorMode: ManhwaViewModel.ColorMode
+    colorMode: ManhwaViewModel.ColorMode,
+    onPdfClick: () -> Unit
 ) {
     val hdMode by viewModel.hdModeEnabled.collectAsStateWithLifecycle()
     var aspectRatio by remember { mutableStateOf<Float?>(null) }
@@ -1094,6 +1103,7 @@ fun PdfPageItem(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.White)
+            .clickable(onClick = onPdfClick)
             .onGloballyPositioned { }
     ) {
         val aspect = aspectRatio
