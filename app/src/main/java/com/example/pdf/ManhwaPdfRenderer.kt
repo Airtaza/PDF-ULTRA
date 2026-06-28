@@ -9,6 +9,7 @@ import android.os.ParcelFileDescriptor
 import android.util.LruCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -73,6 +74,14 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
     private var pdfRenderer: PdfRenderer? = null
     private val aspectRatios = java.util.concurrent.ConcurrentHashMap<Int, Float>()
     private val activeCacheTasks = java.util.concurrent.ConcurrentHashMap<String, Boolean>()
+
+    // Single-threaded background worker for WebP compression to prevent CPU starvation and scrolling lag
+    private val cacheExecutor = java.util.concurrent.Executors.newSingleThreadExecutor { runnable ->
+        Thread(runnable, "PdfWebpCacheWorker").apply {
+            priority = Thread.MIN_PRIORITY // Run at lowest priority so rendering is never blocked
+        }
+    }
+    private val cacheDispatcher = cacheExecutor.asCoroutineDispatcher()
 
     // Cache to hold rendered page bitmaps (increased to 60 slices to keep more pages in memory and prevent scroll reload lag)
     private val memoryCache: LruCache<String, Bitmap> = object : LruCache<String, Bitmap>(60) {
@@ -228,7 +237,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
                     null
                 }
                 if (sliceBitmapCopy != null) {
-                    CoroutineScope(Dispatchers.IO).launch {
+                    CoroutineScope(cacheDispatcher).launch {
                         preCacheSliceAsWebP(
                             pageIndex = pageIndex,
                             sliceIndex = sliceIndex,
@@ -257,7 +266,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         qualityLevel: String,
         qualityCompression: Int,
         maxStorageAllocationMb: Int
-    ) = withContext(Dispatchers.IO) {
+    ) = withContext(cacheDispatcher) {
         val taskKey = "${pageIndex}_s${sliceIndex}_${qualityLevel}"
         if (activeCacheTasks.putIfAbsent(taskKey, true) != null) {
             sliceBitmap.recycle()
@@ -336,6 +345,11 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
     fun close() {
         clearCache()
+        try {
+            cacheExecutor.shutdown()
+        } catch (e: Throwable) {
+            e.printStackTrace()
+        }
         try {
             synchronized(this) {
                 pdfRenderer?.close()
