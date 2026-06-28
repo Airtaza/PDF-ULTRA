@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -83,6 +84,8 @@ class ManhwaViewModel(private val application: Application, private val reposito
         )
 
     private val renderers = mutableMapOf<Long, ManhwaPdfRenderer>()
+    private var dbUpdateJob: kotlinx.coroutines.Job? = null
+    private var warmCacheJob: kotlinx.coroutines.Job? = null
 
     // --- State: Reader UI Compatibility Flows ---
     val activeManhwa: StateFlow<Manhwa?> = activeTab
@@ -389,8 +392,12 @@ class ManhwaViewModel(private val application: Application, private val reposito
             if (tab.id == currentId) {
                 val updatedTab = tab.copy(currentPage = pageIndex)
                 tab.manhwa?.let { manhwa ->
-                    viewModelScope.launch {
-                        repository.updateManhwa(manhwa.copy(lastReadPage = pageIndex, scrollOffset = offset))
+                    dbUpdateJob?.cancel()
+                    dbUpdateJob = viewModelScope.launch {
+                        kotlinx.coroutines.delay(1000)
+                        withContext(Dispatchers.IO) {
+                            repository.updateManhwa(manhwa.copy(lastReadPage = pageIndex, scrollOffset = offset))
+                        }
                     }
                 }
                 updatedTab
@@ -541,31 +548,6 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val qualityCompression = getQualityCompression(_qualityLevel.value)
         val maxStorage = _maxStorageAllocation.value
 
-        // Prefetch adjacent slices / pages asynchronously with a small delay to avoid lock contention with current render
-        viewModelScope.launch(Dispatchers.IO) {
-            kotlinx.coroutines.delay(100)
-            val totalWidth = (targetWidth * scale).toInt().coerceAtLeast(400)
-            val aspect = renderer.getPageAspectRatio(pageIndex)
-            val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
-            val maxSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt()
-
-            // Prefetch next slice
-            if (sliceIndex + 1 < maxSlices) {
-                renderer.renderPageSlice(
-                    pageIndex, targetWidth, sliceIndex + 1, sliceHeight, scale,
-                    isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
-                )
-            }
-            // Prefetch first slice of the next page
-            val totalPages = renderer.pageCount
-            if (pageIndex + 1 < totalPages) {
-                renderer.renderPageSlice(
-                    pageIndex + 1, targetWidth, 0, sliceHeight, scale,
-                    isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
-                )
-            }
-        }
-
         renderer.renderPageSlice(
             pageIndex, targetWidth, sliceIndex, sliceHeight, scale,
             isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
@@ -597,24 +579,6 @@ class ManhwaViewModel(private val application: Application, private val reposito
         }
         val qualityCompression = getQualityCompression(_qualityLevel.value)
         val maxStorage = _maxStorageAllocation.value
-
-        // Prefetch adjacent pages asynchronously to enable high-performance seamless vertical scrolling
-        viewModelScope.launch(Dispatchers.IO) {
-            kotlinx.coroutines.delay(100)
-            val totalPages = renderer.pageCount
-            if (pageIndex + 1 < totalPages) {
-                renderer.renderPage(
-                    pageIndex + 1, targetWidth, scale,
-                    isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
-                )
-            }
-            if (pageIndex - 1 >= 0) {
-                renderer.renderPage(
-                    pageIndex - 1, targetWidth, scale,
-                    isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
-                )
-            }
-        }
 
         renderer.renderPage(
             pageIndex, targetWidth, scale,
@@ -894,7 +858,8 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     // --- Reading Velocity Cache Warming ---
     fun warmCacheForVelocity(currentPage: Int, targetWidth: Int, velocity: Float) {
-        viewModelScope.launch(Dispatchers.IO) {
+        warmCacheJob?.cancel()
+        warmCacheJob = viewModelScope.launch(Dispatchers.IO) {
             val manhwa = activeManhwa.value ?: return@launch
             val renderer = synchronized(renderers) {
                 renderers[manhwa.id]
@@ -912,6 +877,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
             }
 
             for (pageIdx in pagesToWarm) {
+                ensureActive()
                 if (pageIdx in 0 until totalPages) {
                     val isCacheEnabled = _qualitySelectionEnabled.value
                     val scale = if (isCacheEnabled) {
@@ -926,6 +892,8 @@ class ManhwaViewModel(private val application: Application, private val reposito
                         pageIdx, targetWidth, scale,
                         isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
                     )
+                    // Cooperatively sleep between pages to allow high-priority rendering to immediately acquire the lock
+                    kotlinx.coroutines.delay(50)
                 }
             }
         }

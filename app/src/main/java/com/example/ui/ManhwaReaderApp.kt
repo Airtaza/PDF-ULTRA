@@ -1114,7 +1114,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
         )
 
         // Pre-render pages if scrolling fast (Reading Velocity Cache Warming)
-        if (componentWidth > 0) {
+        if (componentWidth > 0 && lazyListState.firstVisibleItemIndex != lastScrollIndex) {
             viewModel.warmCacheForVelocity(
                 currentPage = lazyListState.firstVisibleItemIndex,
                 targetWidth = componentWidth,
@@ -1545,18 +1545,12 @@ fun PdfPageSliceItem(
 ) {
     var sliceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isRendering by remember { mutableStateOf(true) }
-    var isVisible by remember { mutableStateOf(sliceIndex == 0) }
 
-    val context = LocalContext.current
-    val screenHeightPx = remember { context.resources.displayMetrics.heightPixels }
-
-    LaunchedEffect(isVisible, pageIndex, targetWidth, sliceIndex, sliceHeight, viewModel) {
-        if (isVisible) {
-            isRendering = true
-            val bitmap = viewModel.renderPageSlice(pageIndex, targetWidth, sliceIndex, sliceHeight)
-            sliceBitmap = bitmap
-            isRendering = false
-        }
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, viewModel) {
+        isRendering = true
+        val bitmap = viewModel.renderPageSlice(pageIndex, targetWidth, sliceIndex, sliceHeight)
+        sliceBitmap = bitmap
+        isRendering = false
     }
 
     val sliceY = sliceIndex * sliceHeight
@@ -1568,18 +1562,6 @@ fun PdfPageSliceItem(
             .fillMaxWidth()
             .aspectRatio(sliceWidthToHeightRatio)
             .background(Color.White)
-            .onGloballyPositioned { coordinates ->
-                if (!isVisible) {
-                    val position = coordinates.positionInWindow()
-                    val top = position.y
-                    val bottom = position.y + coordinates.size.height
-                    // Trigger load when the slice is within 1 screen height buffer of the visible area
-                    val buffer = screenHeightPx
-                    if (top < screenHeightPx + buffer && bottom > -buffer) {
-                        isVisible = true
-                    }
-                }
-            }
     ) {
         val bitmap = sliceBitmap
         if (isRendering || bitmap == null) {

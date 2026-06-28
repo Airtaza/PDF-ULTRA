@@ -115,6 +115,8 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
                                 page.close()
                                 aspectRatios[i] = ratio
                             }
+                            // Yield CPU and allow render requests to acquire lock
+                            kotlinx.coroutines.delay(30)
                         }
                     } catch (e: Throwable) {
                         e.printStackTrace()
