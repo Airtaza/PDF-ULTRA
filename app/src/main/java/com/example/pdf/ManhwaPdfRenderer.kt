@@ -189,6 +189,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         val renderer = pdfRenderer ?: return@withContext null
         if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withContext null
 
+        var renderDurationMs = 0L
         try {
             val bitmap = synchronized(this@ManhwaPdfRenderer) {
                 // Double check cache after lock
@@ -221,12 +222,19 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
                     matrix.postScale(scaleX, scaleY)
                     matrix.postTranslate(0f, -sliceY.toFloat())
 
+                    val renderStartTime = System.nanoTime()
                     page.render(bmp, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    renderDurationMs = (System.nanoTime() - renderStartTime) / 1_000_000
+
                     memoryCache.put(cacheKey, bmp)
                     bmp
                 } finally {
                     page.close()
                 }
+            }
+
+            if (renderDurationMs > 6) {
+                kotlinx.coroutines.yield() // Yield background thread control to prevent scroll micro-stutter
             }
 
             // Asynchronously save to WebP cache for future lightning-fast loads!

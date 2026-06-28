@@ -154,6 +154,19 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _maxStorageAllocation = MutableStateFlow(sharedPrefs.getInt("max_storage_allocation", 500)) // in MB
     val maxStorageAllocation: StateFlow<Int> = _maxStorageAllocation.asStateFlow()
 
+    // --- State: Advanced Zoom & Magnifier settings ---
+    private val _zoomLockEnabled = MutableStateFlow(sharedPrefs.getBoolean("zoom_lock_enabled", false))
+    val zoomLockEnabled: StateFlow<Boolean> = _zoomLockEnabled.asStateFlow()
+
+    private val _lockedZoomLevel = MutableStateFlow(sharedPrefs.getFloat("locked_zoom_level", 1.0f))
+    val lockedZoomLevel: StateFlow<Float> = _lockedZoomLevel.asStateFlow()
+
+    private val _activeZoomScale = MutableStateFlow(1.0f)
+    val activeZoomScale: StateFlow<Float> = _activeZoomScale.asStateFlow()
+
+    private val _isMagnifierEnabled = MutableStateFlow(false)
+    val isMagnifierEnabled: StateFlow<Boolean> = _isMagnifierEnabled.asStateFlow()
+
     // --- State: Manhwa Sketch Editor Plugin Properties ---
     private val _activeDrawColor = MutableStateFlow(Color.Red)
     val activeDrawColor: StateFlow<Color> = _activeDrawColor.asStateFlow()
@@ -256,6 +269,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
             existingList.add(newTab)
             _tabs.value = existingList
             selectTabId(tabId)
+            _activeZoomScale.value = if (_zoomLockEnabled.value) _lockedZoomLevel.value else 1.0f
             _importingState.value = ImportState.Idle
 
             // Pre-warm the renderer on a background thread so there's absolutely 0ms lag when the reader opens
@@ -490,11 +504,14 @@ class ManhwaViewModel(private val application: Application, private val reposito
         } ?: return@withContext null
 
         val isCacheEnabled = _qualitySelectionEnabled.value
-        val scale = if (isCacheEnabled) {
+        val zoomScaleVal = _activeZoomScale.value
+        val zoomFactor = if (zoomScaleVal > 1.0f) zoomScaleVal * 2.0f else 1.0f
+        val baseScale = if (isCacheEnabled) {
             getQualityScaleFactor(_qualityLevel.value)
         } else {
             if (_hdModeEnabled.value) 2.0f else 1.2f
         }
+        val scale = (baseScale * zoomFactor).coerceAtMost(4.5f)
         val qualityCompression = getQualityCompression(_qualityLevel.value)
         val maxStorage = _maxStorageAllocation.value
 
@@ -638,6 +655,32 @@ class ManhwaViewModel(private val application: Application, private val reposito
     fun setMaxStorageAllocation(megabytes: Int) {
         _maxStorageAllocation.value = megabytes
         sharedPrefs.edit().putInt("max_storage_allocation", megabytes).apply()
+    }
+
+    // --- Advanced Zoom & Magnifier Setters ---
+    fun setZoomLockEnabled(enabled: Boolean) {
+        _zoomLockEnabled.value = enabled
+        sharedPrefs.edit().putBoolean("zoom_lock_enabled", enabled).apply()
+        if (enabled) {
+            sharedPrefs.edit().putFloat("locked_zoom_level", _activeZoomScale.value).apply()
+            _lockedZoomLevel.value = _activeZoomScale.value
+        }
+    }
+
+    fun setLockedZoomLevel(level: Float) {
+        _lockedZoomLevel.value = level
+        sharedPrefs.edit().putFloat("locked_zoom_level", level).apply()
+    }
+
+    fun setActiveZoomScale(scale: Float) {
+        _activeZoomScale.value = scale
+        if (_zoomLockEnabled.value) {
+            setLockedZoomLevel(scale)
+        }
+    }
+
+    fun setMagnifierEnabled(enabled: Boolean) {
+        _isMagnifierEnabled.value = enabled
     }
 
     fun getQualityScaleFactor(level: String): Float {

@@ -57,6 +57,9 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.magnifier
+import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.Bookmark
 import com.example.data.Manhwa
@@ -754,6 +757,7 @@ fun PluginConfigRow(
 }
 
 // --- SCREEN: Heavy-Duty Comic Reader ---
+@OptIn(androidx.compose.foundation.ExperimentalFoundationApi::class)
 @Composable
 fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     val activeManhwa by viewModel.activeManhwa.collectAsStateWithLifecycle()
@@ -788,6 +792,51 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     var componentWidth by remember { mutableStateOf(1080) }
     var areControlsVisible by remember { mutableStateOf(true) }
 
+    // Advanced zoom and magnifier lens state from ViewModel
+    val activeZoomScale by viewModel.activeZoomScale.collectAsStateWithLifecycle()
+    val isMagnifierEnabled by viewModel.isMagnifierEnabled.collectAsStateWithLifecycle()
+    val zoomLockEnabled by viewModel.zoomLockEnabled.collectAsStateWithLifecycle()
+    val lockedZoomLevel by viewModel.lockedZoomLevel.collectAsStateWithLifecycle()
+
+    var zoomScaleTarget by remember { mutableStateOf(1.0f) }
+    LaunchedEffect(activeZoomScale) {
+        zoomScaleTarget = activeZoomScale
+    }
+    val animatedZoomScale by androidx.compose.animation.core.animateFloatAsState(
+        targetValue = zoomScaleTarget,
+        animationSpec = androidx.compose.animation.core.tween(durationMillis = 350, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+        label = "SmoothZoom"
+    )
+
+    var magnifierPosition by remember { mutableStateOf<Offset?>(null) }
+    var isReadingRulerEnabled by remember { mutableStateOf(false) }
+    var rulerYRatio by remember { mutableStateOf(0.4f) }
+    val horizScrollState = rememberScrollState()
+
+    val magnifierGestureModifier = if (isMagnifierEnabled) {
+        Modifier.pointerInput(Unit) {
+            detectDragGestures(
+                onDragStart = { magnifierPosition = it },
+                onDrag = { change, _ ->
+                    change.consume()
+                    magnifierPosition = change.position
+                },
+                onDragEnd = { magnifierPosition = null },
+                onDragCancel = { magnifierPosition = null }
+            )
+        }
+    } else Modifier
+
+    val zoomGestureModifier = if (!isMagnifierEnabled && !isDrawModeOn) {
+        Modifier.pointerInput(Unit) {
+            detectTransformGestures { _, _, zoom, _ ->
+                val newZoom = (zoomScaleTarget * zoom).coerceIn(0.5f, 3.0f)
+                zoomScaleTarget = newZoom
+                viewModel.setActiveZoomScale(newZoom)
+            }
+        }
+    } else Modifier
+
     // Dynamic scroll tracking to update reading progress
     LaunchedEffect(lazyListState.firstVisibleItemIndex) {
         viewModel.setCurrentPage(lazyListState.firstVisibleItemIndex)
@@ -798,49 +847,124 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
             .fillMaxSize()
             .background(Color.Black) // Perfect backdrop for comics
             .onGloballyPositioned { componentWidth = it.size.width }
+            .then(magnifierGestureModifier)
+            .then(zoomGestureModifier)
+            .then(
+                if (isMagnifierEnabled && magnifierPosition != null) {
+                    Modifier.magnifier(
+                        sourceCenter = { magnifierPosition ?: Offset.Unspecified },
+                        zoom = 2.0f
+                    )
+                } else Modifier
+            )
     ) {
         // --- 1. CONTINUOUS VERTICAL STRIP OF MANHWA PAGES ---
         var lastClickTime by remember { mutableLongStateOf(0L) }
-        LazyColumn(
-            state = lazyListState,
-            userScrollEnabled = !isDrawModeOn, // LOCK scrolling during drawing sessions!
-            modifier = Modifier.fillMaxSize(),
-            verticalArrangement = Arrangement.spacedBy(0.dp) // GAPLESS reading (Mandatory for Manhwa!)
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .horizontalScroll(horizScrollState, enabled = animatedZoomScale > 1.0f)
         ) {
-            val totalPages = activeManhwa?.totalPages ?: 0
-            items(totalPages) { pageIdx ->
+            LazyColumn(
+                state = lazyListState,
+                userScrollEnabled = !isDrawModeOn, // LOCK scrolling during drawing sessions!
+                modifier = Modifier
+                    .width(with(LocalDensity.current) { (componentWidth * animatedZoomScale).toDp() })
+                    .fillMaxHeight(),
+                verticalArrangement = Arrangement.spacedBy(0.dp) // GAPLESS reading (Mandatory for Manhwa!)
+            ) {
+                val totalPages = activeManhwa?.totalPages ?: 0
+                items(totalPages) { pageIdx ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .wrapContentHeight()
+                    ) {
+                        PdfPageItem(
+                            pageIndex = pageIdx,
+                            targetWidth = componentWidth,
+                            zoomScale = animatedZoomScale,
+                            viewModel = viewModel,
+                            brightness = brightness,
+                            contrast = contrast,
+                            colorMode = colorMode,
+                            onPdfClick = {
+                                val currentTime = System.currentTimeMillis()
+                                if (currentTime - lastClickTime > 100) {
+                                    lastClickTime = currentTime
+                                    areControlsVisible = !areControlsVisible
+                                }
+                            }
+                        )
+
+                        // Draw drawing sketch overlay on page
+                        if (isSketchEditorEnabled) {
+                            DrawingSketchOverlay(
+                                pageIndex = pageIdx,
+                                sketches = sketches[pageIdx] ?: emptyList(),
+                                isDrawModeOn = isDrawModeOn,
+                                drawColor = drawColor,
+                                strokeWidth = strokeWidth,
+                                onDrawFinished = { path ->
+                                    viewModel.addDrawPath(pageIdx, path)
+                                }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+        // --- 1.5 READING RULER OVERLAY ---
+        if (isReadingRulerEnabled) {
+            BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                val height = maxHeight
+                val yOffset = height * rulerYRatio
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .wrapContentHeight()
+                        .offset(y = yOffset - 16.dp)
+                        .height(32.dp)
                 ) {
-                    PdfPageItem(
-                        pageIndex = pageIdx,
-                        targetWidth = componentWidth,
-                        viewModel = viewModel,
-                        brightness = brightness,
-                        contrast = contrast,
-                        colorMode = colorMode,
-                        onPdfClick = {
-                            val currentTime = System.currentTimeMillis()
-                            if (currentTime - lastClickTime > 100) {
-                                lastClickTime = currentTime
-                                areControlsVisible = !areControlsVisible
-                            }
-                        }
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .align(Alignment.Center)
+                            .height(2.5.dp)
+                            .background(
+                                brush = Brush.horizontalGradient(
+                                    colors = listOf(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.05f),
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                                        MaterialTheme.colorScheme.primary,
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
+                                    )
+                                )
+                            )
                     )
-
-                    // Draw drawing sketch overlay on page
-                    if (isSketchEditorEnabled) {
-                        DrawingSketchOverlay(
-                            pageIndex = pageIdx,
-                            sketches = sketches[pageIdx] ?: emptyList(),
-                            isDrawModeOn = isDrawModeOn,
-                            drawColor = drawColor,
-                            strokeWidth = strokeWidth,
-                            onDrawFinished = { path ->
-                                viewModel.addDrawPath(pageIdx, path)
-                            }
+                    
+                    Box(
+                        modifier = Modifier
+                            .align(Alignment.CenterEnd)
+                            .padding(end = 8.dp)
+                            .size(28.dp)
+                            .shadow(3.dp, CircleShape)
+                            .background(MaterialTheme.colorScheme.primary, CircleShape)
+                            .pointerInput(Unit) {
+                                detectDragGestures { change, dragAmount ->
+                                    change.consume()
+                                    val newY = (yOffset.toPx() + dragAmount.y).coerceIn(0f, height.toPx())
+                                    rulerYRatio = newY / height.toPx()
+                                }
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Menu,
+                            contentDescription = "Drag Ruler",
+                            tint = MaterialTheme.colorScheme.onPrimary,
+                            modifier = Modifier.size(14.dp)
                         )
                     }
                 }
@@ -907,6 +1031,17 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                 colorMode = colorMode,
                 hdMode = hdMode,
                 isOutlineEnabled = isOutlineEnabled,
+                isMagnifierEnabled = isMagnifierEnabled,
+                onMagnifierToggle = { viewModel.setMagnifierEnabled(it) },
+                zoomScaleTarget = zoomScaleTarget,
+                onZoomScaleChange = { 
+                    zoomScaleTarget = it
+                    viewModel.setActiveZoomScale(it)
+                },
+                zoomLockEnabled = zoomLockEnabled,
+                onZoomLockToggle = { viewModel.setZoomLockEnabled(it) },
+                isReadingRulerEnabled = isReadingRulerEnabled,
+                onReadingRulerToggle = { isReadingRulerEnabled = it },
                 onAddBookmarkClick = {
                     bookmarkTitleInput = "Chapter Mark"
                     showAddBookmarkDialog = true
@@ -1083,6 +1218,7 @@ fun PdfPageSliceItem(
 fun PdfPageItem(
     pageIndex: Int,
     targetWidth: Int,
+    zoomScale: Float,
     viewModel: ManhwaViewModel,
     brightness: Float,
     contrast: Float,
@@ -1130,8 +1266,10 @@ fun PdfPageItem(
                 }
             }
         } else {
-            val scale = if (hdMode) 2.0f else 1.2f
-            val totalWidth = (targetWidth * scale).toInt().coerceAtLeast(400)
+            val zoomFactor = if (zoomScale > 1.0f) zoomScale * 2.0f else 1.0f
+            val scale = (if (hdMode) 2.0f else 1.2f) * zoomFactor
+            val cappedScale = scale.coerceAtMost(4.5f)
+            val totalWidth = (targetWidth * cappedScale).toInt().coerceAtLeast(400)
             val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
             val sliceHeight = 3072
             val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
@@ -1142,7 +1280,7 @@ fun PdfPageItem(
                 for (sliceIndex in 0 until numSlices) {
                     PdfPageSliceItem(
                         pageIndex = pageIndex,
-                        targetWidth = targetWidth,
+                        targetWidth = (targetWidth * zoomScale).toInt(),
                         sliceIndex = sliceIndex,
                         sliceHeight = sliceHeight,
                         totalHeight = totalHeight,
@@ -1430,6 +1568,14 @@ fun HUDBottomBar(
     colorMode: ManhwaViewModel.ColorMode,
     hdMode: Boolean,
     isOutlineEnabled: Boolean,
+    isMagnifierEnabled: Boolean,
+    onMagnifierToggle: (Boolean) -> Unit,
+    zoomScaleTarget: Float,
+    onZoomScaleChange: (Float) -> Unit,
+    zoomLockEnabled: Boolean,
+    onZoomLockToggle: (Boolean) -> Unit,
+    isReadingRulerEnabled: Boolean,
+    onReadingRulerToggle: (Boolean) -> Unit,
     onAddBookmarkClick: () -> Unit,
     onBrightnessChange: (Float) -> Unit,
     onContrastChange: (Float) -> Unit,
@@ -1437,6 +1583,7 @@ fun HUDBottomBar(
     onToggleHdMode: () -> Unit
 ) {
     var showEnhancerControls by remember { mutableStateOf(false) }
+    var showZoomControls by remember { mutableStateOf(false) }
 
     Surface(
         color = Color.Black.copy(alpha = 0.85f),
@@ -1550,6 +1697,151 @@ fun HUDBottomBar(
                 }
             }
 
+            // Zoom & Focus engine control panel
+            if (showZoomControls) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = 0.95f))
+                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                ) {
+                    Text(
+                        "ZOOM & FOCUS ENGINE",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // PRESET ZOOM BUTTONS
+                    Text("ZOOM PRESETS", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = Color.Gray)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                    ) {
+                        val presets = listOf(0.5f, 0.75f, 1.0f, 1.25f, 1.5f, 2.0f)
+                        presets.forEach { preset ->
+                            val isSelected = Math.abs(zoomScaleTarget - preset) < 0.05f
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(30.dp)
+                                    .background(
+                                        if (isSelected) MaterialTheme.colorScheme.primaryContainer else Color.DarkGray.copy(alpha = 0.4f),
+                                        RoundedCornerShape(6.dp)
+                                    )
+                                    .clickable { onZoomScaleChange(preset) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = "${(preset * 100).toInt()}%",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else Color.White
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // CUSTOM % INPUT FIELD and LOCK ZOOM Switch
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        // Custom Zoom Input
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Exact Zoom:", fontSize = 11.sp, color = Color.LightGray)
+                            Spacer(modifier = Modifier.width(8.dp))
+                            var customText by remember(zoomScaleTarget) { mutableStateOf(String.format("%d", (zoomScaleTarget * 100).toInt())) }
+                            
+                            OutlinedTextField(
+                                value = customText,
+                                onValueChange = { input ->
+                                    val filtered = input.filter { it.isDigit() }
+                                    customText = filtered
+                                    val pct = filtered.toFloatOrNull()
+                                    if (pct != null && pct in 25f..400f) {
+                                        onZoomScaleChange(pct / 100f)
+                                    }
+                                },
+                                modifier = Modifier
+                                    .width(75.dp)
+                                    .height(38.dp),
+                                textStyle = androidx.compose.ui.text.TextStyle(fontSize = 12.sp, color = Color.White),
+                                suffix = { Text("%", fontSize = 11.sp, color = Color.Gray) },
+                                colors = OutlinedTextFieldDefaults.colors(
+                                    focusedBorderColor = MaterialTheme.colorScheme.primary,
+                                    unfocusedBorderColor = Color.DarkGray,
+                                    focusedContainerColor = Color.Black,
+                                    unfocusedContainerColor = Color.Black
+                                ),
+                                shape = RoundedCornerShape(6.dp),
+                                singleLine = true
+                            )
+                        }
+
+                        // Lock Zoom Toggle
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Lock Zoom", fontSize = 11.sp, color = Color.LightGray)
+                            Switch(
+                                checked = zoomLockEnabled,
+                                onCheckedChange = onZoomLockToggle,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = MaterialTheme.colorScheme.primary,
+                                    checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                                ),
+                                modifier = Modifier.scale(0.7f)
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(color = Color.DarkGray, thickness = 0.5.dp)
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // MAGNIFIER LENS SWITCH & READING RULER SWITCH
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Magnifier Lens Toggle
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Magnifier Lens", fontSize = 11.sp, color = Color.LightGray)
+                            Switch(
+                                checked = isMagnifierEnabled,
+                                onCheckedChange = onMagnifierToggle,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = MaterialTheme.colorScheme.primary,
+                                    checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                                ),
+                                modifier = Modifier.scale(0.7f)
+                            )
+                        }
+
+                        // Reading Ruler Toggle
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Text("Reading Ruler Guide", fontSize = 11.sp, color = Color.LightGray)
+                            Switch(
+                                checked = isReadingRulerEnabled,
+                                onCheckedChange = onReadingRulerToggle,
+                                colors = SwitchDefaults.colors(
+                                    checkedThumbColor = MaterialTheme.colorScheme.primary,
+                                    checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+                                ),
+                                modifier = Modifier.scale(0.7f)
+                            )
+                        }
+                    }
+                }
+            }
+
             // Main HUD action buttons
             Row(
                 modifier = Modifier
@@ -1559,16 +1851,30 @@ fun HUDBottomBar(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 // View enhancer toggle button
-                if (isViewEnhancerEnabled) {
-                    IconButton(onClick = { showEnhancerControls = !showEnhancerControls }) {
+                Row {
+                    if (isViewEnhancerEnabled) {
+                        IconButton(onClick = { 
+                            showEnhancerControls = !showEnhancerControls 
+                            if (showEnhancerControls) showZoomControls = false
+                        }) {
+                            Icon(
+                                Icons.Default.Settings,
+                                contentDescription = "Enhance",
+                                tint = if (showEnhancerControls) MaterialTheme.colorScheme.primary else Color.White
+                            )
+                        }
+                    }
+                    
+                    IconButton(onClick = { 
+                        showZoomControls = !showZoomControls 
+                        if (showZoomControls) showEnhancerControls = false
+                    }) {
                         Icon(
-                            Icons.Default.Settings,
-                            contentDescription = "Enhance",
-                            tint = if (showEnhancerControls) MaterialTheme.colorScheme.primary else Color.White
+                            Icons.Default.Search,
+                            contentDescription = "Zoom & Focus",
+                            tint = if (showZoomControls) MaterialTheme.colorScheme.primary else Color.White
                         )
                     }
-                } else {
-                    Spacer(modifier = Modifier.width(48.dp))
                 }
 
                 // Page slider navigation
@@ -2096,6 +2402,84 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                             color = MaterialTheme.colorScheme.onErrorContainer
                         )
                     }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- SECTION 3: READER & ZOOM PREFERENCES ---
+        val zoomLockEnabled by viewModel.zoomLockEnabled.collectAsStateWithLifecycle()
+        val lockedZoomLevel by viewModel.lockedZoomLevel.collectAsStateWithLifecycle()
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Search,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Persistent Zoom Lock",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Keep custom scale across pages",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                    }
+                    Switch(
+                        checked = zoomLockEnabled,
+                        onCheckedChange = { viewModel.setZoomLockEnabled(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "When Zoom Lock is enabled, the reader will persist your current pinch-to-zoom level across different pages and sessions. New documents will open automatically at this exact zoom level instead of resetting back to fit width.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    lineHeight = 16.sp
+                )
+
+                if (zoomLockEnabled) {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    Text(
+                        text = String.format("CURRENT LOCKED SCALE: %.2fX", lockedZoomLevel),
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.primary,
+                        letterSpacing = 1.sp
+                    )
                 }
             }
         }
