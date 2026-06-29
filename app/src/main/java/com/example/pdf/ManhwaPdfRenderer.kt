@@ -12,59 +12,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-object BitmapPool {
-    private val pool = ArrayList<Bitmap>()
-
-    fun acquire(width: Int, height: Int, config: Bitmap.Config): Bitmap {
-        synchronized(pool) {
-            val requiredBytes = width * height * when (config) {
-                Bitmap.Config.ARGB_8888 -> 4
-                Bitmap.Config.RGB_565 -> 2
-                else -> 4
-            }
-            val iterator = pool.iterator()
-            while (iterator.hasNext()) {
-                val bitmap = iterator.next()
-                if (!bitmap.isRecycled && bitmap.isMutable) {
-                    if (bitmap.allocationByteCount >= requiredBytes) {
-                        iterator.remove()
-                        return try {
-                            bitmap.reconfigure(width, height, config)
-                            bitmap.eraseColor(android.graphics.Color.WHITE)
-                            bitmap
-                        } catch (e: Throwable) {
-                            Bitmap.createBitmap(width, height, config)
-                        }
-                    }
-                } else {
-                    iterator.remove()
-                }
-            }
-        }
-        return Bitmap.createBitmap(width, height, config)
-    }
-
-    fun release(bitmap: Bitmap?) {
-        if (bitmap == null || !bitmap.isMutable || bitmap.isRecycled) return
-        synchronized(pool) {
-            if (pool.size < 4) {
-                pool.add(bitmap)
-            } else {
-                bitmap.recycle()
-            }
-        }
-    }
-
-    fun clear() {
-        synchronized(pool) {
-            for (bitmap in pool) {
-                bitmap.recycle()
-            }
-            pool.clear()
-        }
-    }
-}
-
 class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
     private var parcelFileDescriptor: ParcelFileDescriptor? = null
@@ -79,11 +26,6 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         object : LruCache<String, Bitmap>(cacheSize) {
             override fun sizeOf(key: String, value: Bitmap): Int {
                 return value.byteCount
-            }
-            override fun entryRemoved(evicted: Boolean, key: String?, oldValue: Bitmap?, newValue: Bitmap?) {
-                if (oldValue != null) {
-                    BitmapPool.release(oldValue)
-                }
             }
         }
     }
@@ -158,9 +100,11 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         qualitySelectionEnabled: Boolean = true,
         qualityLevel: String = "HIGH",
         qualityCompression: Int = 90,
-        maxStorageAllocationMb: Int = 500
+        maxStorageAllocationMb: Int = 500,
+        isLowResPlaceholder: Boolean = false
     ): Bitmap? = withContext(Dispatchers.IO) {
-        val cacheKey = "${pageIndex}_$sliceIndex"
+        val scaleStr = String.format(java.util.Locale.US, "%.2f", scaleFactor)
+        val cacheKey = if (isLowResPlaceholder) "${pageIndex}_low" else "${pageIndex}_${sliceIndex}_$scaleStr"
         val cached = memoryCache.get(cacheKey)
         if (cached != null && !cached.isRecycled) {
             return@withContext cached
@@ -193,8 +137,8 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
 
                     if (actualSliceHeight <= 0) return@synchronized null
 
-                    // Acquire high-performance reusable bitmap from BitmapPool
-                    val bmp = BitmapPool.acquire(totalWidth, actualSliceHeight, Bitmap.Config.ARGB_8888)
+                    // Directly create high-performance native-allocated bitmap
+                    val bmp = Bitmap.createBitmap(totalWidth, actualSliceHeight, Bitmap.Config.ARGB_8888)
 
                     val scaleX = totalWidth.toFloat() / widthPt
                     val scaleY = totalHeight.toFloat() / heightPt
@@ -243,10 +187,35 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         )
     }
 
+    suspend fun renderPageLowRes(
+        pageIndex: Int,
+        targetWidth: Int
+    ): Bitmap? {
+        val aspect = getPageAspectRatio(pageIndex)
+        val lowResScale = 0.4f
+        val totalWidth = (targetWidth * lowResScale).toInt().coerceAtLeast(200)
+        val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(200)
+        return renderPageSlice(
+            pageIndex = pageIndex,
+            targetWidth = targetWidth,
+            sliceIndex = 0,
+            sliceHeight = totalHeight,
+            scaleFactor = lowResScale,
+            qualitySelectionEnabled = true,
+            qualityLevel = "LOW",
+            qualityCompression = 60,
+            maxStorageAllocationMb = 100,
+            isLowResPlaceholder = true
+        )
+    }
+
     fun clearCache() {
         memoryCache.evictAll()
         aspectRatios.clear()
-        BitmapPool.clear()
+    }
+
+    fun getMemoryCacheSize(): Int {
+        return memoryCache.size()
     }
 
     fun close() {

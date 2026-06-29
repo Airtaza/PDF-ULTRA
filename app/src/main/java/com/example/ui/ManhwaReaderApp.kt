@@ -1538,6 +1538,7 @@ fun PdfPageSliceItem(
     sliceHeight: Int,
     totalHeight: Int,
     totalWidth: Int,
+    scaleFactor: Float,
     viewModel: ManhwaViewModel,
     brightness: Float,
     contrast: Float,
@@ -1546,7 +1547,7 @@ fun PdfPageSliceItem(
     var sliceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isRendering by remember { mutableStateOf(true) }
 
-    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, viewModel) {
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, viewModel) {
         isRendering = true
         val bitmap = viewModel.renderPageSlice(pageIndex, targetWidth, sliceIndex, sliceHeight)
         sliceBitmap = bitmap
@@ -1561,20 +1562,9 @@ fun PdfPageSliceItem(
         modifier = Modifier
             .fillMaxWidth()
             .aspectRatio(sliceWidthToHeightRatio)
-            .background(Color.White)
     ) {
         val bitmap = sliceBitmap
-        if (isRendering || bitmap == null) {
-            Box(
-                modifier = Modifier.fillMaxSize(),
-                contentAlignment = Alignment.Center
-            ) {
-                CircularProgressIndicator(
-                    color = MaterialTheme.colorScheme.primary.copy(alpha = 0.5f),
-                    modifier = Modifier.size(24.dp)
-                )
-            }
-        } else {
+        if (bitmap != null) {
             val adjustedMatrix = remember(brightness, contrast, colorMode) {
                 getAdjustedColorMatrix(brightness, contrast, colorMode)
             }
@@ -1648,22 +1638,47 @@ fun PdfPageItem(
             val sliceHeight = 3072
             val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
 
-            Column(
-                modifier = Modifier.fillMaxWidth()
+            var lowResBitmap by remember { mutableStateOf<Bitmap?>(null) }
+            LaunchedEffect(pageIndex, targetWidth, viewModel) {
+                lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth)
+            }
+
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(aspect)
             ) {
-                for (sliceIndex in 0 until numSlices) {
-                    PdfPageSliceItem(
-                        pageIndex = pageIndex,
-                        targetWidth = targetWidth,
-                        sliceIndex = sliceIndex,
-                        sliceHeight = sliceHeight,
-                        totalHeight = totalHeight,
-                        totalWidth = totalWidth,
-                        viewModel = viewModel,
-                        brightness = brightness,
-                        contrast = contrast,
-                        colorMode = colorMode
+                lowResBitmap?.let { bmp ->
+                    val adjustedMatrix = remember(brightness, contrast, colorMode) {
+                        getAdjustedColorMatrix(brightness, contrast, colorMode)
+                    }
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "Page ${pageIndex + 1} Low-res Preview",
+                        contentScale = ContentScale.FillBounds,
+                        colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
+                        modifier = Modifier.fillMaxSize()
                     )
+                }
+
+                Column(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    for (sliceIndex in 0 until numSlices) {
+                        PdfPageSliceItem(
+                            pageIndex = pageIndex,
+                            targetWidth = targetWidth,
+                            sliceIndex = sliceIndex,
+                            sliceHeight = sliceHeight,
+                            totalHeight = totalHeight,
+                            totalWidth = totalWidth,
+                            scaleFactor = scaleFactor,
+                            viewModel = viewModel,
+                            brightness = brightness,
+                            contrast = contrast,
+                            colorMode = colorMode
+                        )
+                    }
                 }
             }
         }
@@ -2626,7 +2641,7 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
     val context = LocalContext.current
     
     LaunchedEffect(Unit, qualityLevel, qualitySelectionEnabled) {
-        cacheSizeText = viewModel.getWebpCacheSize()
+        cacheSizeText = viewModel.getMemoryCacheSizeText()
     }
     
     Column(
@@ -2645,7 +2660,7 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
         )
         Spacer(modifier = Modifier.height(6.dp))
         Text(
-            text = "Configure high-performance cache engines, WebP rendering, and dynamic storage thresholds.",
+            text = "Configure high-performance rendering engines, PDF resolution scales, and in-memory cache thresholds.",
             fontSize = 12.sp,
             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.6f),
             lineHeight = 16.sp
@@ -2684,13 +2699,13 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                         Spacer(modifier = Modifier.width(12.dp))
                         Column {
                             Text(
-                                text = "Quality Selection Mode",
+                                text = "PDF Quality Scaling",
                                 fontWeight = FontWeight.Bold,
                                 fontSize = 16.sp,
                                 color = MaterialTheme.colorScheme.onSurface
                             )
                             Text(
-                                text = "High-speed WebP caching",
+                                text = "Dynamic PDF rendering resolution",
                                 fontSize = 11.sp,
                                 color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                             )
@@ -2707,7 +2722,7 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                 Spacer(modifier = Modifier.height(12.dp))
 
                 Text(
-                    text = "When enabled, loaded pages are pre-cached as optimized WebP files on local storage. Subsequent reader loads bypass the PDF renderer entirely, providing near 0ms loading speeds and butter-smooth continuous scrolling.",
+                    text = "When enabled, the reader dynamically scales the PDF page rendering resolution according to the selected quality level. Higher rendering scales provide incredibly sharp text and graphics but require more processing and memory. Disabling this uses standard optimized native resolution.",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     lineHeight = 16.sp
@@ -2716,7 +2731,7 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                 if (qualitySelectionEnabled) {
                     Spacer(modifier = Modifier.height(20.dp))
                     Text(
-                        text = "WEB-P QUALITY LEVEL",
+                        text = "PDF RESOLUTION SCALE LEVEL",
                         fontWeight = FontWeight.ExtraBold,
                         fontSize = 11.sp,
                         letterSpacing = 1.sp,
@@ -2755,11 +2770,11 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                     Spacer(modifier = Modifier.height(12.dp))
 
                     val qualityDesc = when (qualityLevel) {
-                        "MAX" -> "Uncompromised. 2.0x Ultra HD resolution rendering with 100% lossless WebP compression. Perfect for high-density tablets."
-                        "HIGH" -> "Recommended. 1.6x High Definition resolution rendering with 90% WebP quality. Optimal balance of image crispness and small file size."
-                        "MEDIUM" -> "Balanced. 1.3x Standard resolution with 80% WebP quality. High performance and moderate storage footprint."
-                        "AVERAGE" -> "Lightweight. 1.0x native resolution with 70% WebP quality. Gentle on storage, loads very quickly on older devices."
-                        "LOW" -> "Eco. 0.7x reduced resolution with 50% WebP quality. Ultra lightweight, highly compressed, uses absolute minimal storage."
+                        "MAX" -> "Extreme Sharpness. 2.4x rendering scale factor. Perfect for high-density tablets, zooming in deeply, and reading extremely fine comic text."
+                        "HIGH" -> "High Definition. 1.8x rendering scale factor. Recommended default. Delivers very crisp text with extremely fast page rendering speed."
+                        "MEDIUM" -> "Balanced. 1.4x rendering scale factor. Great balance of image crispness and high performance on standard devices."
+                        "AVERAGE" -> "Standard. 1.0x native rendering scale factor. Optimized to save memory and CPU cycles while keeping pages clear."
+                        "LOW" -> "Eco Mode. 0.7x reduced scale factor. Gentle on older devices, utilizes minimal CPU and memory resources."
                         else -> ""
                     }
 
@@ -2812,13 +2827,13 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                     Spacer(modifier = Modifier.width(12.dp))
                     Column {
                         Text(
-                            text = "Storage Allocation Limit",
+                            text = "In-Memory Cache Allocation",
                             fontWeight = FontWeight.Bold,
                             fontSize = 16.sp,
                             color = MaterialTheme.colorScheme.onSurface
                         )
                         Text(
-                            text = "Auto-delete threshold for cached WebP files",
+                            text = "High-performance RAM cache for rendered slices",
                             fontSize = 11.sp,
                             color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
                         )
@@ -2838,7 +2853,7 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                 )
 
                 Text(
-                    text = "MAX CACHE LIMIT",
+                    text = "MAX ALLOCATION THRESHOLD",
                     fontWeight = FontWeight.ExtraBold,
                     fontSize = 11.sp,
                     letterSpacing = 1.sp,
@@ -2875,7 +2890,7 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
 
                 Spacer(modifier = Modifier.height(14.dp))
                 Text(
-                    text = "When total WebP disk storage usage exceeds this limit, the application automatically evicts the oldest (least recently accessed) pages to free up offline space. Your original imported PDF files are never modified or deleted.",
+                    text = "The app caches rendered page slices directly in high-performance JVM heap memory to enable instant, zero-lag scrolling when flicking between pages. Pages are automatically garbage-collected and evicted dynamically based on this threshold. Your original imported PDF files are never modified or deleted.",
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
                     lineHeight = 16.sp
@@ -2892,7 +2907,7 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                 ) {
                     Column {
                         Text(
-                            text = "Current WebP Cache:",
+                            text = "Active RAM Cache:",
                             fontSize = 12.sp,
                             fontWeight = FontWeight.Bold,
                             color = MaterialTheme.colorScheme.onSurface
@@ -2907,9 +2922,9 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
 
                     Button(
                         onClick = {
-                            viewModel.clearAllWebpCache()
+                            viewModel.clearMemoryCache()
                             cacheSizeText = "0.00 MB"
-                            Toast.makeText(context, "Successfully cleared all cached WebP pages!", Toast.LENGTH_SHORT).show()
+                            Toast.makeText(context, "Successfully cleared all in-memory page slices!", Toast.LENGTH_SHORT).show()
                         },
                         colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
                         shape = RoundedCornerShape(10.dp)

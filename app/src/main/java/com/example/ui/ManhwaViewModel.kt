@@ -23,6 +23,7 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
@@ -186,26 +187,39 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _activeZoomScale = MutableStateFlow(1.0f)
     val activeZoomScale: StateFlow<Float> = _activeZoomScale.asStateFlow()
 
+    private val _stableZoomScale = MutableStateFlow(1.0f)
+    val stableZoomScale: StateFlow<Float> = _stableZoomScale.asStateFlow()
+
     private val _isMagnifierEnabled = MutableStateFlow(false)
     val isMagnifierEnabled: StateFlow<Boolean> = _isMagnifierEnabled.asStateFlow()
 
     val activeScaleFactor: StateFlow<Float> = combine(
         _qualitySelectionEnabled,
         _qualityLevel,
-        _activeZoomScale,
+        _stableZoomScale,
         _hdModeEnabled
-    ) { qualityEnabled, qLevel, zoomScaleVal, hdEnabled ->
+    ) { qualityEnabled, qLevel, stableZoomVal, hdEnabled ->
         val baseScale = if (qualityEnabled) {
             getQualityScaleFactor(qLevel)
         } else {
             if (hdEnabled) 2.0f else 1.2f
         }
-        baseScale
+        val zoomFactor = if (stableZoomVal > 1.0f) stableZoomVal else 1.0f
+        (baseScale * zoomFactor).coerceAtMost(4.5f)
     }.stateIn(
         scope = viewModelScope,
         started = SharingStarted.WhileSubscribed(5000),
         initialValue = 1.6f
     )
+
+    init {
+        viewModelScope.launch {
+            _activeZoomScale.collectLatest { zoom ->
+                kotlinx.coroutines.delay(50)
+                _stableZoomScale.value = zoom
+            }
+        }
+    }
 
     // --- State: Manhwa Sketch Editor Plugin Properties ---
     private val _activeDrawColor = MutableStateFlow(Color.Red)
@@ -594,6 +608,26 @@ class ManhwaViewModel(private val application: Application, private val reposito
         )
     }
 
+    suspend fun renderPageLowRes(pageIndex: Int, targetWidth: Int): Bitmap? = withContext(Dispatchers.IO) {
+        val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext null
+        val manhwa = tab.manhwa ?: return@withContext null
+        val file = File(manhwa.filePath)
+        if (!file.exists()) return@withContext null
+
+        val renderer = try {
+            synchronized(renderers) {
+                renderers.getOrPut(manhwa.id) {
+                    ManhwaPdfRenderer(application, file)
+                }
+            }
+        } catch (e: Throwable) {
+            e.printStackTrace()
+            null
+        } ?: return@withContext null
+
+        renderer.renderPageLowRes(pageIndex, targetWidth)
+    }
+
     // --- Bookmarking & Outlining ---
     fun addBookmarkForCurrentPage(title: String) {
         val openBook = activeManhwa.value ?: return
@@ -760,25 +794,21 @@ class ManhwaViewModel(private val application: Application, private val reposito
         _sketches.value = currentSketches
     }
 
-    // --- WebP Disk Cache Monitoring & Clearing Utilities ---
-    fun getWebpCacheSize(): String {
-        val webpParentDir = File(application.cacheDir, "webp_cache")
-        if (!webpParentDir.exists()) return "0.00 MB"
-        val totalBytes = webpParentDir.walkTopDown().filter { it.isFile && it.extension == "webp" }.sumOf { it.length() }
+    // --- Memory Cache Monitoring & Clearing Utilities ---
+    fun getMemoryCacheSizeText(): String {
+        var totalBytes = 0
+        synchronized(renderers) {
+            renderers.values.forEach { renderer ->
+                totalBytes += renderer.getMemoryCacheSize()
+            }
+        }
         val mb = totalBytes.toDouble() / (1024 * 1024)
-        return String.format("%.2f MB", mb)
+        return String.format(java.util.Locale.US, "%.2f MB", mb)
     }
 
-    fun clearAllWebpCache() {
-        viewModelScope.launch(Dispatchers.IO) {
-            val webpParentDir = File(application.cacheDir, "webp_cache")
-            if (webpParentDir.exists()) {
-                webpParentDir.deleteRecursively()
-            }
-            // Clear any active in-memory cache slices as well
-            synchronized(renderers) {
-                renderers.values.forEach { it.clearCache() }
-            }
+    fun clearMemoryCache() {
+        synchronized(renderers) {
+            renderers.values.forEach { it.clearCache() }
         }
     }
 
