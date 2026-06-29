@@ -1222,7 +1222,10 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
             }
 
             val totalPages = activeManhwa?.totalPages ?: 0
-            items(totalPages) { pageIdx ->
+            items(
+                count = totalPages,
+                key = { pageIdx -> "page_${activeManhwa?.id ?: 0}_$pageIdx" }
+            ) { pageIdx ->
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()

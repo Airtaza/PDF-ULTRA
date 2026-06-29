@@ -687,6 +687,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
     fun setMaxStorageAllocation(megabytes: Int) {
         _maxStorageAllocation.value = megabytes
         sharedPrefs.edit().putInt("max_storage_allocation", megabytes).apply()
+        synchronized(renderers) {
+            renderers.values.forEach { it.resizeCache(megabytes) }
+        }
     }
 
     // --- Advanced Zoom & Magnifier Setters ---

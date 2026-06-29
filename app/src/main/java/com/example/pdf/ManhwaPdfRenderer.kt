@@ -149,8 +149,8 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                     val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
                     val totalHeight = (totalWidth * pageAspectRatio).toInt().coerceAtLeast(400)
 
-                    val sliceY = sliceIndex * sliceHeight
-                    val actualSliceHeight = (totalHeight - sliceY).coerceAtMost(sliceHeight)
+                    val sliceY = if (isLowResPlaceholder) 0 else sliceIndex * sliceHeight
+                    val actualSliceHeight = if (isLowResPlaceholder) totalHeight else (totalHeight - sliceY).coerceAtMost(sliceHeight)
 
                     if (actualSliceHeight <= 0) return@synchronized null
                     if (!this@withContext.isActive) return@synchronized null
