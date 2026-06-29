@@ -8,26 +8,39 @@ import android.os.ParcelFileDescriptor
 import android.util.LruCache
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-class ManhwaPdfRenderer(private val context: Context, private val file: File) {
+class ManhwaPdfRenderer(private val context: Context, private val file: File, private val maxCacheSizeMb: Int = 100) {
 
     private var parcelFileDescriptor: ParcelFileDescriptor? = null
     private var pdfRenderer: PdfRenderer? = null
     private val aspectRatios = java.util.concurrent.ConcurrentHashMap<Int, Float>()
 
-    // Cache to hold rendered page bitmaps. Limit size in bytes to 15% of available JVM heap to prevent OOM/GC freezes.
+    // Cache to hold rendered page bitmaps. Limit size in bytes to safe heap levels to prevent OOM/GC freezes.
     private val memoryCache: LruCache<String, Bitmap> = run {
         val maxMemory = Runtime.getRuntime().maxMemory()
-        // Use 15% of available memory for memory cache (guarantees safe footprint e.g. 30-80MB depending on heap size)
-        val cacheSize = (maxMemory * 0.15f).toInt().coerceAtLeast(16 * 1024 * 1024)
+        // Convert user setting in MB to bytes, capped safely at 25% of available JVM heap
+        val cacheSize = (maxCacheSizeMb * 1024L * 1024L)
+            .coerceAtMost(maxMemory / 4)
+            .toInt()
+            .coerceAtLeast(16 * 1024 * 1024)
         object : LruCache<String, Bitmap>(cacheSize) {
             override fun sizeOf(key: String, value: Bitmap): Int {
                 return value.byteCount
             }
         }
+    }
+
+    fun resizeCache(newMaxCacheSizeMb: Int) {
+        val maxMemory = Runtime.getRuntime().maxMemory()
+        val newCacheSize = (newMaxCacheSizeMb * 1024L * 1024L)
+            .coerceAtMost(maxMemory / 4)
+            .toInt()
+            .coerceAtLeast(16 * 1024 * 1024)
+        memoryCache.resize(newCacheSize)
     }
 
     val pageCount: Int
@@ -103,6 +116,8 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         maxStorageAllocationMb: Int = 500,
         isLowResPlaceholder: Boolean = false
     ): Bitmap? = withContext(Dispatchers.IO) {
+        if (!this@withContext.isActive) return@withContext null
+
         val scaleStr = String.format(java.util.Locale.US, "%.2f", scaleFactor)
         val cacheKey = if (isLowResPlaceholder) "${pageIndex}_low" else "${pageIndex}_${sliceIndex}_$scaleStr"
         val cached = memoryCache.get(cacheKey)
@@ -117,6 +132,8 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
         var renderDurationMs = 0L
         try {
             val bitmap = synchronized(this@ManhwaPdfRenderer) {
+                if (!this@withContext.isActive) return@synchronized null
+
                 // Double check cache after lock
                 val cached2 = memoryCache.get(cacheKey)
                 if (cached2 != null && !cached2.isRecycled) {
@@ -136,6 +153,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
                     val actualSliceHeight = (totalHeight - sliceY).coerceAtMost(sliceHeight)
 
                     if (actualSliceHeight <= 0) return@synchronized null
+                    if (!this@withContext.isActive) return@synchronized null
 
                     // Directly create high-performance native-allocated bitmap
                     val bmp = Bitmap.createBitmap(totalWidth, actualSliceHeight, Bitmap.Config.ARGB_8888)
@@ -146,6 +164,11 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File) {
                     val matrix = Matrix()
                     matrix.postScale(scaleX, scaleY)
                     matrix.postTranslate(0f, -sliceY.toFloat())
+
+                    if (!this@withContext.isActive) {
+                        bmp.recycle()
+                        return@synchronized null
+                    }
 
                     val renderStartTime = System.nanoTime()
                     page.render(bmp, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)

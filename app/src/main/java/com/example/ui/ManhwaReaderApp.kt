@@ -1232,6 +1232,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                         pageIndex = pageIdx,
                         targetWidth = componentWidth,
                         zoomScale = animatedZoomScale,
+                        isScrollInProgress = lazyListState.isScrollInProgress,
                         viewModel = viewModel,
                         brightness = brightness,
                         contrast = contrast,
@@ -1539,6 +1540,7 @@ fun PdfPageSliceItem(
     totalHeight: Int,
     totalWidth: Int,
     scaleFactor: Float,
+    isScrollInProgress: Boolean,
     viewModel: ManhwaViewModel,
     brightness: Float,
     contrast: Float,
@@ -1547,8 +1549,15 @@ fun PdfPageSliceItem(
     var sliceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isRendering by remember { mutableStateOf(true) }
 
-    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, viewModel) {
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, isScrollInProgress, viewModel) {
         isRendering = true
+        if (isScrollInProgress) {
+            // Under fast scroll, delay HD render to let low-res placeholder render first
+            kotlinx.coroutines.delay(if (sliceIndex == 0) 150L else 300L)
+        } else if (sliceIndex > 0) {
+            // Stagger slice renders slightly even when stationary to prevent lock contention
+            kotlinx.coroutines.delay(sliceIndex * 80L)
+        }
         val bitmap = viewModel.renderPageSlice(pageIndex, targetWidth, sliceIndex, sliceHeight)
         sliceBitmap = bitmap
         isRendering = false
@@ -1586,6 +1595,7 @@ fun PdfPageItem(
     pageIndex: Int,
     targetWidth: Int,
     zoomScale: Float,
+    isScrollInProgress: Boolean,
     viewModel: ManhwaViewModel,
     brightness: Float,
     contrast: Float,
@@ -1635,11 +1645,15 @@ fun PdfPageItem(
         } else {
             val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
             val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
-            val sliceHeight = 3072
+            val sliceHeight = 1536
             val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
 
             var lowResBitmap by remember { mutableStateOf<Bitmap?>(null) }
-            LaunchedEffect(pageIndex, targetWidth, viewModel) {
+            LaunchedEffect(pageIndex, targetWidth, isScrollInProgress, viewModel) {
+                if (isScrollInProgress) {
+                    // Under fast scroll, delay preview render slightly to skip pages swiped past
+                    kotlinx.coroutines.delay(60L)
+                }
                 lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth)
             }
 
@@ -1673,6 +1687,7 @@ fun PdfPageItem(
                             totalHeight = totalHeight,
                             totalWidth = totalWidth,
                             scaleFactor = scaleFactor,
+                            isScrollInProgress = isScrollInProgress,
                             viewModel = viewModel,
                             brightness = brightness,
                             contrast = contrast,

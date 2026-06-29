@@ -331,7 +331,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 try {
                     val r = synchronized(renderers) {
                         renderers.getOrPut(manhwa.id) {
-                            ManhwaPdfRenderer(application, file)
+                            ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
                         }
                     }
                     // Prefetch aspect ratios for the first few pages to make page layout calculation instant
@@ -511,7 +511,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
             renderers[manhwa.id] ?: try {
                 val file = File(manhwa.filePath)
                 if (file.exists()) {
-                    val r = ManhwaPdfRenderer(application, file)
+                    val r = ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
                     renderers[manhwa.id] = r
                     r
                 } else null
@@ -542,7 +542,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val renderer = try {
             synchronized(renderers) {
                 renderers.getOrPut(manhwa.id) {
-                    ManhwaPdfRenderer(application, file)
+                    ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
                 }
             }
         } catch (e: Throwable) {
@@ -561,7 +561,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val renderer = try {
             synchronized(renderers) {
                 renderers.getOrPut(manhwa.id) {
-                    ManhwaPdfRenderer(application, file)
+                    ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
                 }
             }
         } catch (e: Throwable) {
@@ -589,7 +589,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val renderer = try {
             synchronized(renderers) {
                 renderers.getOrPut(manhwa.id) {
-                    ManhwaPdfRenderer(application, file)
+                    ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
                 }
             }
         } catch (e: Throwable) {
@@ -617,7 +617,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val renderer = try {
             synchronized(renderers) {
                 renderers.getOrPut(manhwa.id) {
-                    ManhwaPdfRenderer(application, file)
+                    ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
                 }
             }
         } catch (e: Throwable) {
