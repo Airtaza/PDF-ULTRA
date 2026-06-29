@@ -1549,17 +1549,23 @@ fun PdfPageSliceItem(
     contrast: Float,
     colorMode: ManhwaViewModel.ColorMode
 ) {
+    val hdScrollDelay by viewModel.hdScrollDelay.collectAsStateWithLifecycle()
+    val staggerDelay by viewModel.staggerDelay.collectAsStateWithLifecycle()
+
     var sliceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isRendering by remember { mutableStateOf(true) }
 
-    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, isScrollInProgress, viewModel) {
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, isScrollInProgress, hdScrollDelay, staggerDelay, viewModel) {
         isRendering = true
         if (isScrollInProgress) {
             // Under fast scroll, delay HD render to let low-res placeholder render first
-            kotlinx.coroutines.delay(if (sliceIndex == 0) 150L else 300L)
-        } else if (sliceIndex > 0) {
+            val baseDelay = hdScrollDelay
+            if (baseDelay > 0) {
+                kotlinx.coroutines.delay(if (sliceIndex == 0) baseDelay else baseDelay * 2)
+            }
+        } else if (sliceIndex > 0 && staggerDelay > 0) {
             // Stagger slice renders slightly even when stationary to prevent lock contention
-            kotlinx.coroutines.delay(sliceIndex * 80L)
+            kotlinx.coroutines.delay(sliceIndex * staggerDelay)
         }
         val bitmap = viewModel.renderPageSlice(pageIndex, targetWidth, sliceIndex, sliceHeight)
         sliceBitmap = bitmap
@@ -1646,16 +1652,18 @@ fun PdfPageItem(
                 }
             }
         } else {
+            val sliceHeight by viewModel.sliceHeight.collectAsStateWithLifecycle()
+            val lowResScrollDelay by viewModel.lowResScrollDelay.collectAsStateWithLifecycle()
+
             val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
             val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
-            val sliceHeight = 1536
             val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
 
             var lowResBitmap by remember { mutableStateOf<Bitmap?>(null) }
-            LaunchedEffect(pageIndex, targetWidth, isScrollInProgress, viewModel) {
-                if (isScrollInProgress) {
+            LaunchedEffect(pageIndex, targetWidth, isScrollInProgress, lowResScrollDelay, viewModel) {
+                if (isScrollInProgress && lowResScrollDelay > 0) {
                     // Under fast scroll, delay preview render slightly to skip pages swiped past
-                    kotlinx.coroutines.delay(60L)
+                    kotlinx.coroutines.delay(lowResScrollDelay)
                 }
                 lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth)
             }
@@ -3039,6 +3047,355 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                         color = MaterialTheme.colorScheme.primary,
                         letterSpacing = 1.sp
                     )
+                }
+            }
+        }
+
+        // --- SECTION 4: DEVICE-SPECIFIC AUTO-TUNER ---
+        val specs = remember { viewModel.getDeviceSpecs() }
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Info,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "Device-Specific Auto-Tuner",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Optimize engine speeds based on hardware",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
+                        .padding(12.dp)
+                ) {
+                    Text(
+                        text = "DETECTED HARDWARE PROFILE",
+                        fontSize = 10.sp,
+                        fontWeight = FontWeight.ExtraBold,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                        letterSpacing = 0.8.sp
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "JVM Heap Limit:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                        Text(text = "${specs.maxJvmHeapMb} MB", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        Text(text = "CPU Core Count:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                        Text(text = "${specs.processorCores} Cores", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                    }
+                    if (specs.totalRamMb > 0) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Text(text = "Total System RAM:", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurface)
+                            Text(text = "Approx. ${specs.totalRamMb} MB", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(8.dp))
+                    HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.05f))
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(text = "RECOMMENDED TIER:", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+
+                        val badgeColor = when (specs.deviceCategory) {
+                            "HIGH" -> Color(0xFF2E7D32)
+                            "LOW" -> Color(0xFFC62828)
+                            else -> Color(0xFFEF6C00)
+                        }
+
+                        Surface(
+                            color = badgeColor.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(6.dp),
+                            border = BorderStroke(1.dp, badgeColor.copy(alpha = 0.3f))
+                        ) {
+                            Text(
+                                text = "${specs.deviceCategory} PERFORMANCE",
+                                color = badgeColor,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                            )
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Button(
+                    onClick = {
+                        viewModel.applyRecommendedSettings()
+                        Toast.makeText(context, "Applied optimal profile: ${specs.deviceCategory} Performance!", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(imageVector = Icons.Default.Refresh, contentDescription = "Auto-Tune")
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = "Auto-Apply Best Settings",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+            }
+        }
+
+        // --- SECTION 5: ADVANCED PERFORMANCE TUNING ---
+        val sliceHeight by viewModel.sliceHeight.collectAsStateWithLifecycle()
+        val lowResScrollDelay by viewModel.lowResScrollDelay.collectAsStateWithLifecycle()
+        val hdScrollDelay by viewModel.hdScrollDelay.collectAsStateWithLifecycle()
+        val staggerDelay by viewModel.staggerDelay.collectAsStateWithLifecycle()
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Build,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "Advanced Performance Tuning",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Manually adjust engine slice size & delays",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // 1. Slice Height
+                Text(
+                    text = "VERTICAL SLICE HEIGHT",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                val sliceHeightOptions = listOf(1024 to "1024 px", 1536 to "1536 px", 2048 to "2048 px", 3072 to "3072 px")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    sliceHeightOptions.forEach { (h, label) ->
+                        val isSelected = sliceHeight == h
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clickable { viewModel.setSliceHeight(h) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // 2. Low Res Delay
+                Text(
+                    text = "LOW-RES PLACEHOLDER SCROLL DELAY",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                val lowResOptions = listOf(0L to "Instant", 30L to "30 ms", 60L to "60 ms", 120L to "120 ms", 200L to "200 ms")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    lowResOptions.forEach { (d, label) ->
+                        val isSelected = lowResScrollDelay == d
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clickable { viewModel.setLowResScrollDelay(d) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // 3. HD Render Delay
+                Text(
+                    text = "HD RENDERING SCROLL DELAY",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                val hdOptions = listOf(0L to "Instant", 80L to "80 ms", 150L to "150 ms", 300L to "300 ms", 500L to "500 ms")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    hdOptions.forEach { (d, label) ->
+                        val isSelected = hdScrollDelay == d
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clickable { viewModel.setHdScrollDelay(d) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // 4. Stagger Delay
+                Text(
+                    text = "STATIONARY SLICE STAGGERING DELAY",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                val staggerOptions = listOf(0L to "None", 40L to "40 ms", 80L to "80 ms", 150L to "150 ms", 250L to "250 ms")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    staggerOptions.forEach { (d, label) ->
+                        val isSelected = staggerDelay == d
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clickable { viewModel.setStaggerDelay(d) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
                 }
             }
         }

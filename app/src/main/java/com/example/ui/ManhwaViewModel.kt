@@ -177,6 +177,18 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _maxStorageAllocation = MutableStateFlow(sharedPrefs.getInt("max_storage_allocation", 500)) // in MB
     val maxStorageAllocation: StateFlow<Int> = _maxStorageAllocation.asStateFlow()
 
+    private val _sliceHeight = MutableStateFlow(sharedPrefs.getInt("slice_height", 1536))
+    val sliceHeight: StateFlow<Int> = _sliceHeight.asStateFlow()
+
+    private val _lowResScrollDelay = MutableStateFlow(sharedPrefs.getLong("low_res_scroll_delay", 60L))
+    val lowResScrollDelay: StateFlow<Long> = _lowResScrollDelay.asStateFlow()
+
+    private val _hdScrollDelay = MutableStateFlow(sharedPrefs.getLong("hd_scroll_delay", 150L))
+    val hdScrollDelay: StateFlow<Long> = _hdScrollDelay.asStateFlow()
+
+    private val _staggerDelay = MutableStateFlow(sharedPrefs.getLong("stagger_delay", 80L))
+    val staggerDelay: StateFlow<Long> = _staggerDelay.asStateFlow()
+
     // --- State: Advanced Zoom & Magnifier settings ---
     private val _zoomLockEnabled = MutableStateFlow(sharedPrefs.getBoolean("zoom_lock_enabled", false))
     val zoomLockEnabled: StateFlow<Boolean> = _zoomLockEnabled.asStateFlow()
@@ -716,6 +728,94 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     fun setMagnifierEnabled(enabled: Boolean) {
         _isMagnifierEnabled.value = enabled
+    }
+
+    fun setSliceHeight(height: Int) {
+        _sliceHeight.value = height
+        sharedPrefs.edit().putInt("slice_height", height).apply()
+    }
+
+    fun setLowResScrollDelay(delay: Long) {
+        _lowResScrollDelay.value = delay
+        sharedPrefs.edit().putLong("low_res_scroll_delay", delay).apply()
+    }
+
+    fun setHdScrollDelay(delay: Long) {
+        _hdScrollDelay.value = delay
+        sharedPrefs.edit().putLong("hd_scroll_delay", delay).apply()
+    }
+
+    fun setStaggerDelay(delay: Long) {
+        _staggerDelay.value = delay
+        sharedPrefs.edit().putLong("stagger_delay", delay).apply()
+    }
+
+    data class DeviceSpecs(
+        val maxJvmHeapMb: Long,
+        val processorCores: Int,
+        val totalRamMb: Long,
+        val deviceCategory: String // "LOW", "MEDIUM", "HIGH"
+    )
+
+    fun getDeviceSpecs(): DeviceSpecs {
+        val maxJvmHeapMb = Runtime.getRuntime().maxMemory() / (1024 * 1024)
+        val processorCores = Runtime.getRuntime().availableProcessors()
+        
+        var totalRamMb = 0L
+        try {
+            val actManager = application.getSystemService(Context.ACTIVITY_SERVICE) as? android.app.ActivityManager
+            if (actManager != null) {
+                val memInfo = android.app.ActivityManager.MemoryInfo()
+                actManager.getMemoryInfo(memInfo)
+                totalRamMb = memInfo.totalMem / (1024 * 1024)
+            }
+        } catch (e: Exception) {
+            // Fallback
+        }
+        
+        val isLow = maxJvmHeapMb < 256 || processorCores <= 4 || (totalRamMb > 0 && totalRamMb <= 3500)
+        val isHigh = maxJvmHeapMb >= 512 && processorCores >= 8 && (totalRamMb == 0L || totalRamMb > 6500)
+        
+        val category = when {
+            isLow -> "LOW"
+            isHigh -> "HIGH"
+            else -> "MEDIUM"
+        }
+        
+        return DeviceSpecs(maxJvmHeapMb, processorCores, totalRamMb, category)
+    }
+
+    fun applyRecommendedSettings() {
+        val specs = getDeviceSpecs()
+        when (specs.deviceCategory) {
+            "LOW" -> {
+                setQualitySelectionEnabled(true)
+                setQualityLevel("LOW")
+                setMaxStorageAllocation(100)
+                setSliceHeight(1024)
+                setLowResScrollDelay(120L)
+                setHdScrollDelay(300L)
+                setStaggerDelay(150L)
+            }
+            "HIGH" -> {
+                setQualitySelectionEnabled(true)
+                setQualityLevel("HIGH")
+                setMaxStorageAllocation(1000)
+                setSliceHeight(2048)
+                setLowResScrollDelay(0L)
+                setHdScrollDelay(80L)
+                setStaggerDelay(40L)
+            }
+            else -> { // MEDIUM
+                setQualitySelectionEnabled(true)
+                setQualityLevel("MEDIUM")
+                setMaxStorageAllocation(500)
+                setSliceHeight(1536)
+                setLowResScrollDelay(60L)
+                setHdScrollDelay(150L)
+                setStaggerDelay(80L)
+            }
+        }
     }
 
     fun getQualityScaleFactor(level: String): Float {
