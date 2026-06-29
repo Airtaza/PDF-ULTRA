@@ -17,6 +17,8 @@ import com.example.data.SeriesParser
 import com.example.pdf.ManhwaPdfRenderer
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.MutableSharedFlow
+import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -188,6 +190,43 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     private val _staggerDelay = MutableStateFlow(sharedPrefs.getLong("stagger_delay", 80L))
     val staggerDelay: StateFlow<Long> = _staggerDelay.asStateFlow()
+
+    private val _pageSpacing = MutableStateFlow(sharedPrefs.getInt("page_spacing", 0))
+    val pageSpacing: StateFlow<Int> = _pageSpacing.asStateFlow()
+
+    private val _doubleTapZoomScale = MutableStateFlow(sharedPrefs.getFloat("double_tap_zoom_scale", 2.0f))
+    val doubleTapZoomScale: StateFlow<Float> = _doubleTapZoomScale.asStateFlow()
+
+    private val _volumeScrollEnabled = MutableStateFlow(sharedPrefs.getBoolean("volume_scroll_enabled", false))
+    val volumeScrollEnabled: StateFlow<Boolean> = _volumeScrollEnabled.asStateFlow()
+
+    private val _bitmapConfigSetting = MutableStateFlow(sharedPrefs.getString("bitmap_config", "ARGB_8888") ?: "ARGB_8888")
+    val bitmapConfigSetting: StateFlow<String> = _bitmapConfigSetting.asStateFlow()
+
+    private val _hapticFeedbackEnabled = MutableStateFlow(sharedPrefs.getBoolean("haptic_feedback_enabled", true))
+    val hapticFeedbackEnabled: StateFlow<Boolean> = _hapticFeedbackEnabled.asStateFlow()
+
+    private val _doubleTapResetEnabled = MutableStateFlow(sharedPrefs.getBoolean("double_tap_reset_enabled", true))
+    val doubleTapResetEnabled: StateFlow<Boolean> = _doubleTapResetEnabled.asStateFlow()
+
+    private val _aggressiveGcEnabled = MutableStateFlow(sharedPrefs.getBoolean("aggressive_gc_enabled", false))
+    val aggressiveGcEnabled: StateFlow<Boolean> = _aggressiveGcEnabled.asStateFlow()
+
+    private val _keepScreenOn = MutableStateFlow(sharedPrefs.getBoolean("keep_screen_on", true))
+    val keepScreenOn: StateFlow<Boolean> = _keepScreenOn.asStateFlow()
+
+    private val _preloadCount = MutableStateFlow(sharedPrefs.getInt("preload_count", 2))
+    val preloadCount: StateFlow<Int> = _preloadCount.asStateFlow()
+
+    private val _autoScrollStep = MutableStateFlow(sharedPrefs.getFloat("auto_scroll_step", 1.5f))
+    val autoScrollStep: StateFlow<Float> = _autoScrollStep.asStateFlow()
+
+    private val _volumeKeyEvent = MutableSharedFlow<Int>(extraBufferCapacity = 1)
+    val volumeKeyEvent = _volumeKeyEvent.asSharedFlow()
+
+    fun triggerVolumeKey(keyCode: Int) {
+        _volumeKeyEvent.tryEmit(keyCode)
+    }
 
     // --- State: Advanced Zoom & Magnifier settings ---
     private val _zoomLockEnabled = MutableStateFlow(sharedPrefs.getBoolean("zoom_lock_enabled", false))
@@ -586,10 +625,15 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val qualityCompression = getQualityCompression(_qualityLevel.value)
         val maxStorage = _maxStorageAllocation.value
 
-        renderer.renderPageSlice(
+        val bitmap = renderer.renderPageSlice(
             pageIndex, targetWidth, sliceIndex, sliceHeight, scale,
-            isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
+            isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage,
+            bitmapConfig = _bitmapConfigSetting.value
         )
+        if (_aggressiveGcEnabled.value) {
+            System.gc()
+        }
+        bitmap
     }
 
     suspend fun renderPage(pageIndex: Int, targetWidth: Int): Bitmap? = withContext(Dispatchers.IO) {
@@ -614,10 +658,15 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val qualityCompression = getQualityCompression(_qualityLevel.value)
         val maxStorage = _maxStorageAllocation.value
 
-        renderer.renderPage(
+        val bitmap = renderer.renderPage(
             pageIndex, targetWidth, scale,
-            isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage
+            isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage,
+            bitmapConfig = _bitmapConfigSetting.value
         )
+        if (_aggressiveGcEnabled.value) {
+            System.gc()
+        }
+        bitmap
     }
 
     suspend fun renderPageLowRes(pageIndex: Int, targetWidth: Int): Bitmap? = withContext(Dispatchers.IO) {
@@ -637,7 +686,11 @@ class ManhwaViewModel(private val application: Application, private val reposito
             null
         } ?: return@withContext null
 
-        renderer.renderPageLowRes(pageIndex, targetWidth)
+        val bitmap = renderer.renderPageLowRes(pageIndex, targetWidth, bitmapConfig = _bitmapConfigSetting.value)
+        if (_aggressiveGcEnabled.value) {
+            System.gc()
+        }
+        bitmap
     }
 
     // --- Bookmarking & Outlining ---
@@ -750,6 +803,56 @@ class ManhwaViewModel(private val application: Application, private val reposito
         sharedPrefs.edit().putLong("stagger_delay", delay).apply()
     }
 
+    fun setPageSpacing(spacing: Int) {
+        _pageSpacing.value = spacing
+        sharedPrefs.edit().putInt("page_spacing", spacing).apply()
+    }
+
+    fun setDoubleTapZoomScale(scale: Float) {
+        _doubleTapZoomScale.value = scale
+        sharedPrefs.edit().putFloat("double_tap_zoom_scale", scale).apply()
+    }
+
+    fun setVolumeScrollEnabled(enabled: Boolean) {
+        _volumeScrollEnabled.value = enabled
+        sharedPrefs.edit().putBoolean("volume_scroll_enabled", enabled).apply()
+    }
+
+    fun setBitmapConfigSetting(config: String) {
+        _bitmapConfigSetting.value = config
+        sharedPrefs.edit().putString("bitmap_config", config).apply()
+    }
+
+    fun setHapticFeedbackEnabled(enabled: Boolean) {
+        _hapticFeedbackEnabled.value = enabled
+        sharedPrefs.edit().putBoolean("haptic_feedback_enabled", enabled).apply()
+    }
+
+    fun setDoubleTapResetEnabled(enabled: Boolean) {
+        _doubleTapResetEnabled.value = enabled
+        sharedPrefs.edit().putBoolean("double_tap_reset_enabled", enabled).apply()
+    }
+
+    fun setAggressiveGcEnabled(enabled: Boolean) {
+        _aggressiveGcEnabled.value = enabled
+        sharedPrefs.edit().putBoolean("aggressive_gc_enabled", enabled).apply()
+    }
+
+    fun setKeepScreenOn(enabled: Boolean) {
+        _keepScreenOn.value = enabled
+        sharedPrefs.edit().putBoolean("keep_screen_on", enabled).apply()
+    }
+
+    fun setPreloadCount(count: Int) {
+        _preloadCount.value = count
+        sharedPrefs.edit().putInt("preload_count", count).apply()
+    }
+
+    fun setAutoScrollStep(step: Float) {
+        _autoScrollStep.value = step
+        sharedPrefs.edit().putFloat("auto_scroll_step", step).apply()
+    }
+
     data class DeviceSpecs(
         val maxJvmHeapMb: Long,
         val processorCores: Int,
@@ -796,6 +899,16 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 setLowResScrollDelay(120L)
                 setHdScrollDelay(300L)
                 setStaggerDelay(150L)
+                setPageSpacing(0)
+                setDoubleTapZoomScale(1.8f)
+                setVolumeScrollEnabled(false)
+                setBitmapConfigSetting("RGB_565")
+                setHapticFeedbackEnabled(false)
+                setDoubleTapResetEnabled(true)
+                setAggressiveGcEnabled(true)
+                setKeepScreenOn(true)
+                setPreloadCount(1)
+                setAutoScrollStep(1.0f)
             }
             "HIGH" -> {
                 setQualitySelectionEnabled(true)
@@ -805,6 +918,16 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 setLowResScrollDelay(0L)
                 setHdScrollDelay(80L)
                 setStaggerDelay(40L)
+                setPageSpacing(0)
+                setDoubleTapZoomScale(2.2f)
+                setVolumeScrollEnabled(true)
+                setBitmapConfigSetting("ARGB_8888")
+                setHapticFeedbackEnabled(true)
+                setDoubleTapResetEnabled(true)
+                setAggressiveGcEnabled(false)
+                setKeepScreenOn(true)
+                setPreloadCount(3)
+                setAutoScrollStep(2.0f)
             }
             else -> { // MEDIUM
                 setQualitySelectionEnabled(true)
@@ -814,6 +937,16 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 setLowResScrollDelay(60L)
                 setHdScrollDelay(150L)
                 setStaggerDelay(80L)
+                setPageSpacing(0)
+                setDoubleTapZoomScale(2.0f)
+                setVolumeScrollEnabled(false)
+                setBitmapConfigSetting("ARGB_8888")
+                setHapticFeedbackEnabled(true)
+                setDoubleTapResetEnabled(true)
+                setAggressiveGcEnabled(false)
+                setKeepScreenOn(true)
+                setPreloadCount(2)
+                setAutoScrollStep(1.5f)
             }
         }
     }

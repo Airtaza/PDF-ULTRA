@@ -114,7 +114,8 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
         qualityLevel: String = "HIGH",
         qualityCompression: Int = 90,
         maxStorageAllocationMb: Int = 500,
-        isLowResPlaceholder: Boolean = false
+        isLowResPlaceholder: Boolean = false,
+        bitmapConfig: String = "ARGB_8888"
     ): Bitmap? = withContext(Dispatchers.IO) {
         if (!this@withContext.isActive) return@withContext null
 
@@ -156,7 +157,8 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                     if (!this@withContext.isActive) return@synchronized null
 
                     // Directly create high-performance native-allocated bitmap
-                    val bmp = Bitmap.createBitmap(totalWidth, actualSliceHeight, Bitmap.Config.ARGB_8888)
+                    val config = if (bitmapConfig == "RGB_565") Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
+                    val bmp = Bitmap.createBitmap(totalWidth, actualSliceHeight, config)
 
                     val scaleX = totalWidth.toFloat() / widthPt
                     val scaleY = totalHeight.toFloat() / heightPt
@@ -199,20 +201,23 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
         qualitySelectionEnabled: Boolean = true,
         qualityLevel: String = "HIGH",
         qualityCompression: Int = 90,
-        maxStorageAllocationMb: Int = 500
+        maxStorageAllocationMb: Int = 500,
+        bitmapConfig: String = "ARGB_8888"
     ): Bitmap? {
         val aspect = getPageAspectRatio(pageIndex)
         val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
         val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
         return renderPageSlice(
             pageIndex, targetWidth, 0, totalHeight, scaleFactor,
-            qualitySelectionEnabled, qualityLevel, qualityCompression, maxStorageAllocationMb
+            qualitySelectionEnabled, qualityLevel, qualityCompression, maxStorageAllocationMb,
+            bitmapConfig = bitmapConfig
         )
     }
 
     suspend fun renderPageLowRes(
         pageIndex: Int,
-        targetWidth: Int
+        targetWidth: Int,
+        bitmapConfig: String = "ARGB_8888"
     ): Bitmap? {
         val aspect = getPageAspectRatio(pageIndex)
         val lowResScale = 0.4f
@@ -228,7 +233,8 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
             qualityLevel = "LOW",
             qualityCompression = 60,
             maxStorageAllocationMb = 100,
-            isLowResPlaceholder = true
+            isLowResPlaceholder = true,
+            bitmapConfig = bitmapConfig
         )
     }
 

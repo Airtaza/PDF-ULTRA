@@ -22,6 +22,7 @@ import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.scrollBy
+import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -61,6 +62,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.magnifier
 import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.Bookmark
 import com.example.data.Manhwa
@@ -1021,6 +1023,20 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     val zoomLockEnabled by viewModel.zoomLockEnabled.collectAsStateWithLifecycle()
     val lockedZoomLevel by viewModel.lockedZoomLevel.collectAsStateWithLifecycle()
 
+    val pageSpacing by viewModel.pageSpacing.collectAsStateWithLifecycle()
+    val keepScreenOn by viewModel.keepScreenOn.collectAsStateWithLifecycle()
+    val volumeScrollEnabled by viewModel.volumeScrollEnabled.collectAsStateWithLifecycle()
+
+    val currentView = androidx.compose.ui.platform.LocalView.current
+    DisposableEffect(keepScreenOn) {
+        if (keepScreenOn) {
+            currentView.keepScreenOn = true
+        }
+        onDispose {
+            currentView.keepScreenOn = false
+        }
+    }
+
     var zoomScaleTarget by remember { mutableStateOf(1.0f) }
     LaunchedEffect(activeZoomScale) {
         zoomScaleTarget = activeZoomScale
@@ -1088,6 +1104,20 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                     }
                 }
                 androidx.compose.runtime.withFrameMillis { }
+            }
+        }
+    }
+
+    // Volume Key Scroll Navigation
+    LaunchedEffect(volumeScrollEnabled) {
+        if (volumeScrollEnabled) {
+            viewModel.volumeKeyEvent.collect { keyCode ->
+                val scrollAmount = if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP) -600f else 600f
+                try {
+                    lazyListState.animateScrollBy(scrollAmount)
+                } catch (e: Exception) {
+                    // Ignore conflicts
+                }
             }
         }
     }
@@ -1178,7 +1208,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
             modifier = Modifier
                 .width(with(LocalDensity.current) { (componentWidth * animatedZoomScale).toDp() })
                 .fillMaxHeight(),
-            verticalArrangement = Arrangement.spacedBy(0.dp) // GAPLESS reading (Mandatory for Manhwa!)
+            verticalArrangement = Arrangement.spacedBy(pageSpacing.dp) // Dynamic reading spacing!
         ) {
             if (prevChapter != null) {
                 item {
@@ -1615,6 +1645,12 @@ fun PdfPageItem(
     var aspectRatio by remember { mutableStateOf<Float?>(null) }
     var isLoadingAspect by remember { mutableStateOf(true) }
 
+    val doubleTapZoomScale by viewModel.doubleTapZoomScale.collectAsStateWithLifecycle()
+    val doubleTapResetEnabled by viewModel.doubleTapResetEnabled.collectAsStateWithLifecycle()
+    val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsStateWithLifecycle()
+
+    val hapticFeedback = androidx.compose.ui.platform.LocalHapticFeedback.current
+
     LaunchedEffect(pageIndex, viewModel) {
         isLoadingAspect = true
         aspectRatio = viewModel.getPageAspectRatio(pageIndex)
@@ -1625,7 +1661,29 @@ fun PdfPageItem(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.White)
-            .clickable(onClick = onPdfClick)
+            .pointerInput(Unit) {
+                detectTapGestures(
+                    onTap = {
+                        onPdfClick()
+                    },
+                    onDoubleTap = {
+                        if (hapticFeedbackEnabled) {
+                            try {
+                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                            } catch (e: Exception) {
+                                // Fallback if not supported
+                            }
+                        }
+                        if (zoomScale > 1.05f) {
+                            if (doubleTapResetEnabled) {
+                                viewModel.setActiveZoomScale(1.0f)
+                            }
+                        } else {
+                            viewModel.setActiveZoomScale(doubleTapZoomScale)
+                        }
+                    }
+                )
+            }
             .onGloballyPositioned { }
     ) {
         val aspect = aspectRatio
@@ -2662,6 +2720,17 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
     val qualitySelectionEnabled by viewModel.qualitySelectionEnabled.collectAsStateWithLifecycle()
     val qualityLevel by viewModel.qualityLevel.collectAsStateWithLifecycle()
     val maxStorageAllocation by viewModel.maxStorageAllocation.collectAsStateWithLifecycle()
+
+    val pageSpacing by viewModel.pageSpacing.collectAsStateWithLifecycle()
+    val doubleTapZoomScale by viewModel.doubleTapZoomScale.collectAsStateWithLifecycle()
+    val volumeScrollEnabled by viewModel.volumeScrollEnabled.collectAsStateWithLifecycle()
+    val bitmapConfigSetting by viewModel.bitmapConfigSetting.collectAsStateWithLifecycle()
+    val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsStateWithLifecycle()
+    val doubleTapResetEnabled by viewModel.doubleTapResetEnabled.collectAsStateWithLifecycle()
+    val aggressiveGcEnabled by viewModel.aggressiveGcEnabled.collectAsStateWithLifecycle()
+    val keepScreenOn by viewModel.keepScreenOn.collectAsStateWithLifecycle()
+    val preloadCount by viewModel.preloadCount.collectAsStateWithLifecycle()
+    val autoScrollStep by viewModel.autoScrollStep.collectAsStateWithLifecycle()
     
     var cacheSizeText by remember { mutableStateOf("0.00 MB") }
     val context = LocalContext.current
@@ -3392,6 +3461,428 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                                     fontSize = 10.sp,
                                     fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
                                     color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "Personalized Engine & Gestures",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Custom navigation, page spacing, gestures, and memory optimizations",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(16.dp))
+
+                // 1. Page Spacing
+                Text(
+                    text = "VERTICAL PAGE SPACING (GAPLESS READING)",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Defines the padding between pages. 0 dp is recommended for continuous scrolling Webtoons / Manhwa.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                val spacingOptions = listOf(0 to "0 dp (Webtoon)", 4 to "4 dp", 8 to "8 dp", 16 to "16 dp", 24 to "24 dp")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    spacingOptions.forEach { (sp, label) ->
+                        val isSelected = pageSpacing == sp
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clickable { viewModel.setPageSpacing(sp) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // 2. Double Tap Zoom Level
+                Text(
+                    text = "DOUBLE TAP ZOOM LEVEL",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Specifies the precise zoom factor applied when you double tap a page in the reader.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                val zoomOptions = listOf(1.5f to "1.5x", 1.8f to "1.8x", 2.0f to "2.0x (Default)", 2.5f to "2.5x", 3.0f to "3.0x")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    zoomOptions.forEach { (scale, label) ->
+                        val isSelected = Math.abs(doubleTapZoomScale - scale) < 0.05f
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clickable { viewModel.setDoubleTapZoomScale(scale) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // 3. Double Tap Reset Zoom Switch
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "DOUBLE TAP TO RESET ZOOM",
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            letterSpacing = 1.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "If enabled, double tapping a zoomed-in page instantly resets zoom back to normal. If disabled, it toggles zoom.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Switch(
+                        checked = doubleTapResetEnabled,
+                        onCheckedChange = { viewModel.setDoubleTapResetEnabled(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // 4. Bitmap Config selection
+                Text(
+                    text = "IMAGE RENDER BITMAP CONFIGURATION",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "High Quality (ARGB_8888) uses 32-bit color depth for beautiful visuals. Memory Efficient (RGB_565) uses 16-bit color depth, saving up to 50% RAM to prevent Out-Of-Memory crashes.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                val configOptions = listOf("ARGB_8888" to "High Quality (ARGB_8888)", "RGB_565" to "Memory Efficient (RGB_565)")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    configOptions.forEach { (config, label) ->
+                        val isSelected = bitmapConfigSetting == config
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clickable { viewModel.setBitmapConfigSetting(config) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // 5. Volume Scroll Switch
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "VOLUME KEY SCROLL NAVIGATION",
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            letterSpacing = 1.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Use physical volume buttons to scroll smoothly up or down through page slices without touching the screen.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Switch(
+                        checked = volumeScrollEnabled,
+                        onCheckedChange = { viewModel.setVolumeScrollEnabled(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // 6. Preload lookahead page count
+                Text(
+                    text = "PRELOAD LOOKAHEAD PAGE BUFFER",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Controls how many subsequent pages are silently warmed and cached in the background for zero-lag page transition.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                val preloadOptions = listOf(0 to "None (OFF)", 1 to "1 Page", 2 to "2 Pages", 3 to "3 Pages", 5 to "5 Pages (RAM heavy)")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    preloadOptions.forEach { (count, label) ->
+                        val isSelected = preloadCount == count
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clickable { viewModel.setPreloadCount(count) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // 7. Aggressive Garbage Collection
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "AGGRESSIVE GC OPTIMIZER",
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            letterSpacing = 1.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Forces JVM Garbage Collection immediately after rendering to free up unused bitmap RAM. Highly recommended for devices with low RAM (3GB or 4GB) to avoid system slowdown.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Switch(
+                        checked = aggressiveGcEnabled,
+                        onCheckedChange = { viewModel.setAggressiveGcEnabled(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // 8. Haptic feedback switch
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "HAPTIC FEEDBACK SENSATION",
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            letterSpacing = 1.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Vibrates your device gently during double-tap zooming, drawing sketch starts, and other major reader actions.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Switch(
+                        checked = hapticFeedbackEnabled,
+                        onCheckedChange = { viewModel.setHapticFeedbackEnabled(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // 9. Keep Screen On Switch
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "PREVENT SCREEN TIMEOUT (KEEP ON)",
+                            fontWeight = FontWeight.ExtraBold,
+                            fontSize = 11.sp,
+                            letterSpacing = 1.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text(
+                            text = "Keeps the screen fully lit and active while reading chapters. Screen will not dim or turn off automatically.",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Switch(
+                        checked = keepScreenOn,
+                        onCheckedChange = { viewModel.setKeepScreenOn(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // 10. Auto-Scroll Fine Tuning Step
+                Text(
+                    text = "AUTO-SCROLL ADJUSTMENT STEP VELOCITY",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Configures the speed increment when adjusting hands-free scrolling speeds. Lower values allow finer control.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(modifier = Modifier.height(8.dp))
+                val stepOptions = listOf(0.5f to "0.5 (Ultra Fine)", 1.0f to "1.0", 1.5f to "1.5 (Normal)", 2.0f to "2.0", 3.0f to "3.0")
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    stepOptions.forEach { (step, label) ->
+                        val isSelected = Math.abs(autoScrollStep - step) < 0.05f
+                        Surface(
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(38.dp)
+                                .clickable { viewModel.setAutoScrollStep(step) },
+                            shape = RoundedCornerShape(10.dp),
+                            color = if (isSelected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                            border = if (isSelected) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                        ) {
+                            Box(contentAlignment = Alignment.Center) {
+                                Text(
+                                    text = label,
+                                    fontSize = 10.sp,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+                                    textAlign = TextAlign.Center
                                 )
                             }
                         }

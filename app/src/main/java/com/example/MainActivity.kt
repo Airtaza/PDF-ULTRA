@@ -15,14 +15,14 @@ import com.example.ui.ManhwaViewModelFactory
 import com.example.ui.theme.MyApplicationTheme
 
 class MainActivity : ComponentActivity() {
+    private val viewModel: ManhwaViewModel by viewModels {
+        val repository = (application as ManhwaApplication).repository
+        ManhwaViewModelFactory(application, repository)
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
-
-        val repository = (application as ManhwaApplication).repository
-        val viewModel: ManhwaViewModel by viewModels {
-            ManhwaViewModelFactory(application, repository)
-        }
 
         setContent {
             MyApplicationTheme {
@@ -34,5 +34,15 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onKeyDown(keyCode: Int, event: android.view.KeyEvent?): Boolean {
+        if (viewModel.volumeScrollEnabled.value) {
+            if (keyCode == android.view.KeyEvent.KEYCODE_VOLUME_UP || keyCode == android.view.KeyEvent.KEYCODE_VOLUME_DOWN) {
+                viewModel.triggerVolumeKey(keyCode)
+                return true
+            }
+        }
+        return super.onKeyDown(keyCode, event)
     }
 }
