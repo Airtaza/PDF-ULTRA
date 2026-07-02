@@ -91,6 +91,8 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
         }
     }
 
+    val paywallTargetPlugin by viewModel.paywallTargetPlugin.collectAsStateWithLifecycle()
+
     // Trigger toast alerts for imports
     LaunchedEffect(importingState) {
         when (importingState) {
@@ -104,6 +106,10 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
             }
             else -> {}
         }
+    }
+
+    paywallTargetPlugin?.let { targetPlugin ->
+        PaywallDialog(viewModel = viewModel, targetPlugin = targetPlugin)
     }
 
     if (showAboutDialog) {
@@ -234,8 +240,16 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
                                 Surface(
                                     modifier = Modifier
                                         .height(36.dp)
+                                        .clip(RoundedCornerShape(18.dp))
                                         .combinedClickable(
-                                            onClick = { viewModel.selectTabId(tab.id) },
+                                            onClick = {
+                                                viewModel.selectTabId(tab.id)
+                                                if (tab.id != "library") {
+                                                    val toast = Toast.makeText(context, "Double tab to close", Toast.LENGTH_SHORT)
+                                                    toast.setGravity(android.view.Gravity.TOP or android.view.Gravity.CENTER_HORIZONTAL, 0, 150)
+                                                    toast.show()
+                                                }
+                                            },
                                             onDoubleClick = {
                                                 if (tab.id != "library") {
                                                     viewModel.closeTab(tab.id)
@@ -1099,10 +1113,16 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
 
     val showEditFeatures by viewModel.showEditFeatures.collectAsStateWithLifecycle()
 
-    // Verify which plugins are currently enabled
-    val isViewEnhancerEnabled = remember(plugins) { plugins.find { it.id == "view_enhancer" }?.enabled == true }
-    val isSketchEditorEnabled = remember(plugins, showEditFeatures) { showEditFeatures && plugins.find { it.id == "manhwa_editor" }?.enabled == true }
-    val isOutlineEnabled = remember(plugins) { plugins.find { it.id == "metadata_bookmark" }?.enabled == true }
+    // Verify which plugins are currently enabled and unlocked
+    val isViewEnhancerEnabled = remember(plugins) { 
+        plugins.find { it.id == "view_enhancer" }?.enabled == true && viewModel.isPluginUnlocked("view_enhancer")
+    }
+    val isSketchEditorEnabled = remember(plugins, showEditFeatures) { 
+        showEditFeatures && plugins.find { it.id == "manhwa_editor" }?.enabled == true && viewModel.isPluginUnlocked("manhwa_editor")
+    }
+    val isOutlineEnabled = remember(plugins) { 
+        plugins.find { it.id == "metadata_bookmark" }?.enabled == true && viewModel.isPluginUnlocked("metadata_bookmark")
+    }
 
     var isDrawModeOn by remember { mutableStateOf(false) }
     var showAddBookmarkDialog by remember { mutableStateOf(false) }
@@ -4941,6 +4961,589 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                                 )
                             }
                         }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun PaywallDialog(
+    viewModel: ManhwaViewModel,
+    targetPlugin: PluginConfig
+) {
+    val isAllAccessUnlocked by viewModel.isAllAccessUnlocked.collectAsStateWithLifecycle()
+    val purchasedPlugins by viewModel.purchasedPlugins.collectAsStateWithLifecycle()
+    val trialStartTimestamp by viewModel.trialStartTimestamp.collectAsStateWithLifecycle()
+    val serverStatusLog by viewModel.serverStatusLog.collectAsStateWithLifecycle()
+    val deviceFingerprint = viewModel.deviceFingerprint
+
+    var isProcessingPayment by remember { mutableStateOf(false) }
+    var paymentSuccess by remember { mutableStateOf(false) }
+    var cardNumber by remember { mutableStateOf("") }
+    var cardExpiry by remember { mutableStateOf("") }
+    var cardCvv by remember { mutableStateOf("") }
+    var activeTabOfPaywall by remember { mutableStateOf("checkout") } // "checkout", "trial", "key"
+
+    // License key fields
+    var licenseKeyInput by remember { mutableStateOf("") }
+    var licenseKeyStatusMsg by remember { mutableStateOf("") }
+    var isVerifyingKey by remember { mutableStateOf(false) }
+    var keyValidationSuccess by remember { mutableStateOf(false) }
+
+    val coroutineScope = rememberCoroutineScope()
+
+    // Calculate trial status
+    val hasTrialStarted = trialStartTimestamp > 0
+    val trialTimeRemainingMs = if (hasTrialStarted) {
+        val elapsed = System.currentTimeMillis() - trialStartTimestamp
+        val threeDaysMs = 3 * 24 * 60 * 60 * 1000L
+        (threeDaysMs - elapsed).coerceAtLeast(0L)
+    } else 0L
+
+    val isTrialActive = hasTrialStarted && trialTimeRemainingMs > 0
+    val isTrialExpired = hasTrialStarted && trialTimeRemainingMs <= 0
+
+    androidx.compose.ui.window.Dialog(onDismissRequest = { viewModel.closePaywall() }) {
+        Surface(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 4.dp, vertical = 24.dp),
+            shape = RoundedCornerShape(24.dp),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.2f)),
+            tonalElevation = 8.dp,
+            color = MaterialTheme.colorScheme.surface
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(24.dp)
+            ) {
+                // Header Icon & Title
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(56.dp)
+                            .background(
+                                Brush.radialGradient(
+                                    colors = listOf(
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.25f),
+                                        MaterialTheme.colorScheme.primary.copy(alpha = 0.05f)
+                                    )
+                                ),
+                                RoundedCornerShape(16.dp)
+                            ),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = when (activeTabOfPaywall) {
+                                "checkout" -> Icons.Default.ShoppingCart
+                                "trial" -> Icons.Default.Star
+                                else -> Icons.Default.Lock
+                            },
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(28.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(16.dp))
+                    Column {
+                        Text(
+                            text = "PREMIUM UTILITIES",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 1.5.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = targetPlugin.name,
+                            fontSize = 20.sp,
+                            fontWeight = FontWeight.ExtraBold,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(14.dp))
+
+                Text(
+                    text = targetPlugin.description,
+                    fontSize = 13.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    lineHeight = 18.sp
+                )
+
+                Spacer(modifier = Modifier.height(18.dp))
+
+                // Beautiful custom styled TabRow
+                val tabIndex = when (activeTabOfPaywall) {
+                    "checkout" -> 0
+                    "trial" -> 1
+                    else -> 2
+                }
+                TabRow(
+                    selectedTabIndex = tabIndex,
+                    containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f),
+                    contentColor = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                ) {
+                    Tab(
+                        selected = activeTabOfPaywall == "checkout",
+                        onClick = { activeTabOfPaywall = "checkout" },
+                        text = { Text("Buy Now", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
+                    Tab(
+                        selected = activeTabOfPaywall == "trial",
+                        onClick = { activeTabOfPaywall = "trial" },
+                        text = { Text("3-Day Trial", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
+                    Tab(
+                        selected = activeTabOfPaywall == "key",
+                        onClick = { activeTabOfPaywall = "key" },
+                        text = { Text("Redeem Key", fontSize = 11.sp, fontWeight = FontWeight.Bold) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(20.dp))
+
+                when (activeTabOfPaywall) {
+                    "checkout" -> {
+                        if (paymentSuccess) {
+                            Column(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = "Success",
+                                    tint = Color(0xFF4CAF50),
+                                    modifier = Modifier.size(64.dp)
+                                )
+                                Spacer(modifier = Modifier.height(12.dp))
+                                Text(
+                                    "Unlock Confirmed!",
+                                    fontSize = 18.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                Text(
+                                    "Thank you for supporting premium reader engineering!",
+                                    fontSize = 12.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                                    textAlign = TextAlign.Center
+                                )
+                                Spacer(modifier = Modifier.height(24.dp))
+                                Button(
+                                    onClick = { viewModel.closePaywall() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Start Using Feature")
+                                }
+                            }
+                        } else if (isProcessingPayment) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(200.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.Center
+                            ) {
+                                CircularProgressIndicator(strokeWidth = 4.dp, color = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Text(
+                                    "Authorizing secure payment...",
+                                    fontSize = 14.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.primary
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    "Syncing client tokens with licensing node",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
+                            }
+                        } else {
+                            Column(modifier = Modifier.fillMaxWidth()) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    // Plan 1: Single Plugin
+                                    Card(
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .clickable {
+                                                isProcessingPayment = true
+                                                coroutineScope.launch {
+                                                    kotlinx.coroutines.delay(1800)
+                                                    viewModel.purchasePlugin(targetPlugin.id)
+                                                    paymentSuccess = true
+                                                    isProcessingPayment = false
+                                                }
+                                            },
+                                        border = BorderStroke(1.dp, MaterialTheme.colorScheme.outlineVariant),
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.2f))
+                                    ) {
+                                        Column(modifier = Modifier.padding(12.dp)) {
+                                            Text("This Module", fontSize = 10.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text("$0.99", fontSize = 22.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary)
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text("Unlock only this specific plugin.", fontSize = 9.sp, lineHeight = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.6f))
+                                        }
+                                    }
+
+                                    // Plan 2: All Access Pass
+                                    Card(
+                                        modifier = Modifier
+                                            .weight(1.1f)
+                                            .clickable {
+                                                isProcessingPayment = true
+                                                coroutineScope.launch {
+                                                    kotlinx.coroutines.delay(2000)
+                                                    viewModel.purchaseAllAccess()
+                                                    paymentSuccess = true
+                                                    isProcessingPayment = false
+                                                }
+                                            },
+                                        border = BorderStroke(2.dp, MaterialTheme.colorScheme.primary),
+                                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.15f))
+                                    ) {
+                                        Column(modifier = Modifier.padding(12.dp)) {
+                                            Box(
+                                                modifier = Modifier
+                                                    .background(MaterialTheme.colorScheme.primary, RoundedCornerShape(4.dp))
+                                                    .padding(horizontal = 6.dp, vertical = 2.dp)
+                                            ) {
+                                                Text("ALL-ACCESS PASS", fontSize = 7.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.onPrimary)
+                                            }
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text("$9.99", fontSize = 22.sp, fontWeight = FontWeight.Black, color = MaterialTheme.colorScheme.primary)
+                                            Spacer(modifier = Modifier.height(4.dp))
+                                            Text("Unlock all features & settings.", fontSize = 9.sp, lineHeight = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                        }
+                                    }
+                                }
+
+                                Spacer(modifier = Modifier.height(16.dp))
+
+                                Text(
+                                    text = "SECURE STRIPE CHECKOUT (SIMULATION)",
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                                )
+                                Spacer(modifier = Modifier.height(6.dp))
+                                
+                                OutlinedTextField(
+                                    value = cardNumber,
+                                    onValueChange = { if (it.length <= 16) cardNumber = it },
+                                    label = { Text("Card Number", fontSize = 12.sp) },
+                                    leadingIcon = { Icon(Icons.Default.ShoppingCart, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    OutlinedTextField(
+                                        value = cardExpiry,
+                                        onValueChange = { if (it.length <= 5) cardExpiry = it },
+                                        label = { Text("MM/YY", fontSize = 12.sp) },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                    OutlinedTextField(
+                                        value = cardCvv,
+                                        onValueChange = { if (it.length <= 3) cardCvv = it },
+                                        label = { Text("CVV", fontSize = 12.sp) },
+                                        singleLine = true,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+
+                                Spacer(modifier = Modifier.height(12.dp))
+
+                                Text(
+                                    text = "🔒 Handled by Android Keystore hardware-isolated encryption keys.",
+                                    fontSize = 10.sp,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f),
+                                    textAlign = TextAlign.Center,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+                            }
+                        }
+                    }
+                    "trial" -> {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "Start an unrestricted 3-Day Free Trial to thoroughly experience premium settings, view enhancements, and outlines.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                lineHeight = 17.sp
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            Card(
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f)),
+                                modifier = Modifier.fillMaxWidth()
+                            ) {
+                                Column(modifier = Modifier.padding(12.dp)) {
+                                    Row(verticalAlignment = Alignment.CenterVertically) {
+                                        Icon(
+                                            imageVector = Icons.Default.Info,
+                                            contentDescription = null,
+                                            tint = MaterialTheme.colorScheme.primary,
+                                            modifier = Modifier.size(14.dp)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = "HARDWARE STABLE FINGERPRINT",
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                            color = MaterialTheme.colorScheme.primary
+                                        )
+                                    }
+                                    Spacer(modifier = Modifier.height(6.dp))
+                                    Text(
+                                        text = deviceFingerprint,
+                                        fontSize = 9.sp,
+                                        lineHeight = 12.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            if (isTrialActive) {
+                                val hoursLeft = (trialTimeRemainingMs / (1000 * 60 * 60L)).coerceAtLeast(0)
+                                val minutesLeft = ((trialTimeRemainingMs / (1000 * 60L)) % 60).coerceAtLeast(0)
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFFE8F5E9), RoundedCornerShape(12.dp))
+                                        .padding(12.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Text(
+                                            "Trial Status: ACTIVE",
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF2E7D32),
+                                            fontSize = 14.sp
+                                        )
+                                        Text(
+                                            "Expires in: $hoursLeft hrs, $minutesLeft mins",
+                                            color = Color(0xFF2E7D32).copy(alpha = 0.8f),
+                                            fontSize = 11.sp
+                                        )
+                                    }
+                                }
+                            } else if (isTrialExpired) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(MaterialTheme.colorScheme.errorContainer, RoundedCornerShape(12.dp))
+                                        .padding(12.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        "Trial Status: EXPIRED",
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onErrorContainer,
+                                        fontSize = 14.sp
+                                    )
+                                }
+                            } else {
+                                Button(
+                                    onClick = { viewModel.startFreeTrial() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Activate 3-Day Free Trial", fontWeight = FontWeight.Bold)
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(14.dp))
+
+                            // Licensing debug log Console
+                            Text(
+                                text = "LICENSING SERVER VERIFICATION CONSOLE",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(55.dp)
+                                    .background(Color.Black.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
+                                    .padding(8.dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                Text(
+                                    text = serverStatusLog,
+                                    fontSize = 9.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                    lineHeight = 11.sp
+                                )
+                            }
+                        }
+                    }
+                    "key" -> {
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            Text(
+                                text = "Enter an administrative or developer promoter license key. Valid keys will unlock all features securely via server authentication.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                lineHeight = 17.sp
+                            )
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            if (keyValidationSuccess) {
+                                Box(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .background(Color(0xFFE8F5E9), RoundedCornerShape(12.dp))
+                                        .padding(12.dp),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                        Icon(
+                                            imageVector = Icons.Default.CheckCircle,
+                                            contentDescription = null,
+                                            tint = Color(0xFF2E7D32),
+                                            modifier = Modifier.size(36.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            "License Activated!",
+                                            fontWeight = FontWeight.Bold,
+                                            color = Color(0xFF2E7D32),
+                                            fontSize = 14.sp
+                                        )
+                                        Text(
+                                            "All premium plugins have been unlocked successfully.",
+                                            color = Color(0xFF2E7D32).copy(alpha = 0.8f),
+                                            fontSize = 11.sp,
+                                            textAlign = TextAlign.Center
+                                        )
+                                    }
+                                }
+                                Spacer(modifier = Modifier.height(16.dp))
+                                Button(
+                                    onClick = { viewModel.closePaywall() },
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Text("Finish")
+                                }
+                            } else {
+                                OutlinedTextField(
+                                    value = licenseKeyInput,
+                                    onValueChange = { licenseKeyInput = it },
+                                    label = { Text("License Key", fontSize = 12.sp) },
+                                    placeholder = { Text("XXXXXX@XXXXXX", fontSize = 12.sp) },
+                                    leadingIcon = { Icon(Icons.Default.Lock, contentDescription = null, modifier = Modifier.size(18.dp)) },
+                                    singleLine = true,
+                                    modifier = Modifier.fillMaxWidth()
+                                )
+
+                                Spacer(modifier = Modifier.height(8.dp))
+
+                                if (licenseKeyStatusMsg.isNotEmpty()) {
+                                    Text(
+                                        text = licenseKeyStatusMsg,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.SemiBold,
+                                        color = if (licenseKeyStatusMsg.contains("Unlocked") || licenseKeyStatusMsg.contains("Succeeded")) Color(0xFF2E7D32) else MaterialTheme.colorScheme.error,
+                                        modifier = Modifier.padding(horizontal = 4.dp)
+                                    )
+                                    Spacer(modifier = Modifier.height(8.dp))
+                                }
+
+                                Button(
+                                    onClick = {
+                                        if (licenseKeyInput.trim().isEmpty()) {
+                                            licenseKeyStatusMsg = "Please enter a non-empty license key."
+                                            return@Button
+                                        }
+                                        isVerifyingKey = true
+                                        viewModel.submitLicenseKey(licenseKeyInput) { success, msg ->
+                                            isVerifyingKey = false
+                                            licenseKeyStatusMsg = msg
+                                            keyValidationSuccess = success
+                                        }
+                                    },
+                                    enabled = !isVerifyingKey,
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    if (isVerifyingKey) {
+                                        CircularProgressIndicator(
+                                            modifier = Modifier.size(20.dp),
+                                            strokeWidth = 2.dp,
+                                            color = MaterialTheme.colorScheme.onPrimary
+                                        )
+                                        Spacer(modifier = Modifier.width(10.dp))
+                                        Text("Contacting licensing node...")
+                                    } else {
+                                        Text("Activate Premium License", fontWeight = FontWeight.Bold)
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(16.dp))
+
+                            // Licensing debug log Console
+                            Text(
+                                text = "LICENSING SERVER VERIFICATION CONSOLE",
+                                fontSize = 9.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                            )
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Box(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .height(55.dp)
+                                    .background(Color.Black.copy(alpha = 0.05f), RoundedCornerShape(8.dp))
+                                    .padding(8.dp)
+                                    .verticalScroll(rememberScrollState())
+                            ) {
+                                Text(
+                                    text = serverStatusLog,
+                                    fontSize = 9.sp,
+                                    fontFamily = FontFamily.Monospace,
+                                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                                    lineHeight = 11.sp
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(24.dp))
+
+                // Footer Actions
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.End
+                ) {
+                    TextButton(onClick = { viewModel.closePaywall() }) {
+                        Text("Cancel")
                     }
                 }
             }

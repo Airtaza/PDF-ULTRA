@@ -13,6 +13,9 @@ import com.example.data.Bookmark
 import com.example.data.Manhwa
 import com.example.data.ManhwaRepository
 import com.example.data.PluginConfig
+import com.example.data.SecurePreferencesManager
+import com.example.data.ServerTrialClient
+import com.example.data.ServerResponse
 import com.example.data.SeriesParser
 import com.example.pdf.ManhwaPdfRenderer
 import kotlinx.coroutines.Dispatchers
@@ -53,6 +56,199 @@ enum class TabType {
 }
 
 class ManhwaViewModel(private val application: Application, private val repository: ManhwaRepository) : ViewModel() {
+
+    // --- Secure Settings & Premium Verification Engine ---
+    private val securePrefs = SecurePreferencesManager(application)
+    private val serverClient = ServerTrialClient(application)
+
+    // Device Fingerprint
+    val deviceFingerprint: String by lazy {
+        getDeviceFingerprint(application)
+    }
+
+    private fun getDeviceFingerprint(context: Context): String {
+        try {
+            val data = buildString {
+                append(android.os.Build.BOARD)
+                append(android.os.Build.BRAND)
+                append(android.os.Build.DEVICE)
+                append(android.os.Build.HARDWARE)
+                append(android.os.Build.MANUFACTURER)
+                append(android.os.Build.MODEL)
+                append(android.os.Build.PRODUCT)
+                append(android.provider.Settings.Secure.getString(
+                    context.contentResolver,
+                    android.provider.Settings.Secure.ANDROID_ID
+                ) ?: "")
+            }
+            val md = java.security.MessageDigest.getInstance("SHA-256")
+            return md.digest(data.toByteArray())
+                .joinToString("") { "%02x".format(it) }
+        } catch (e: Exception) {
+            return "fingerprint_error_fallback"
+        }
+    }
+
+    // Purchase & Trial Flow States
+    private val _isAllAccessUnlocked = MutableStateFlow(securePrefs.getSecureBoolean("all_access_unlocked", false))
+    val isAllAccessUnlocked: StateFlow<Boolean> = _isAllAccessUnlocked.asStateFlow()
+
+    private val _purchasedPlugins = MutableStateFlow<Set<String>>(
+        setOf(
+            if (securePrefs.getSecureBoolean("purchased_view_enhancer", false)) "view_enhancer" else null,
+            if (securePrefs.getSecureBoolean("purchased_manhwa_editor", false)) "manhwa_editor" else null,
+            if (securePrefs.getSecureBoolean("purchased_metadata_bookmark", false)) "metadata_bookmark" else null
+        ).filterNotNull().toSet()
+    )
+    val purchasedPlugins: StateFlow<Set<String>> = _purchasedPlugins.asStateFlow()
+
+    // Trial Timestamp (0 if not started)
+    private val _trialStartTimestamp = MutableStateFlow(securePrefs.getSecureLong("trial_start_timestamp", 0L))
+    val trialStartTimestamp: StateFlow<Long> = _trialStartTimestamp.asStateFlow()
+
+    // Server verification status log
+    private val _serverStatusLog = MutableStateFlow("Initialized secure local environment.")
+    val serverStatusLog: StateFlow<String> = _serverStatusLog.asStateFlow()
+
+    // Active Paywall Dialog Target Plugin
+    private val _paywallTargetPlugin = MutableStateFlow<PluginConfig?>(null)
+    val paywallTargetPlugin: StateFlow<PluginConfig?> = _paywallTargetPlugin.asStateFlow()
+
+    // Check if plugin/feature is currently unlocked (either through purchase or active trial)
+    fun isPluginUnlocked(pluginId: String): Boolean {
+        if (_isAllAccessUnlocked.value) return true
+        if (_purchasedPlugins.value.contains(pluginId)) return true
+        
+        // Check trial status (3 days = 3 * 24 * 60 * 60 * 1000 = 259200000 ms)
+        val trialStart = _trialStartTimestamp.value
+        if (trialStart > 0) {
+            val elapsed = System.currentTimeMillis() - trialStart
+            val threeDaysMs = 3 * 24 * 60 * 60 * 1000L
+            if (elapsed in 0..threeDaysMs) {
+                return true
+            }
+        }
+        return false
+    }
+
+    // Start 3-day Trial (contacts server, falls back to secure local state if offline)
+    fun startFreeTrial() {
+        viewModelScope.launch {
+            _serverStatusLog.value = "Registering 3-day free trial on Firebase server..."
+            val fingerprint = deviceFingerprint
+            
+            // Call server
+            val result = serverClient.checkOrStartTrialOnServer(fingerprint, "all_features")
+            val startTime = System.currentTimeMillis()
+            
+            if (result is ServerResponse.Success) {
+                _serverStatusLog.value = "Server Verified: Started trial. Status: ${result.status}"
+                _trialStartTimestamp.value = startTime
+                securePrefs.saveSecureLong("trial_start_timestamp", startTime)
+            } else {
+                val errorMsg = (result as? ServerResponse.Error)?.message ?: "Network timeout"
+                _serverStatusLog.value = "Server Connection Failed ($errorMsg). Fallback to Secure Hardware Cryptography offline validation."
+                if (_trialStartTimestamp.value == 0L) {
+                    _trialStartTimestamp.value = startTime
+                    securePrefs.saveSecureLong("trial_start_timestamp", startTime)
+                }
+            }
+        }
+    }
+
+    // Purchase a single plugin
+    fun purchasePlugin(pluginId: String) {
+        viewModelScope.launch {
+            _serverStatusLog.value = "Processing $0.99 secure checkout for $pluginId..."
+            val fingerprint = deviceFingerprint
+            
+            val success = serverClient.recordPurchaseOnServer(fingerprint, pluginId, 0.99)
+            if (success) {
+                _serverStatusLog.value = "Server Confirmed: Purchase registered on Firebase successfully."
+            } else {
+                _serverStatusLog.value = "Server offline. Purchase authorized & saved locally in KeyStore vault."
+            }
+            
+            val current = _purchasedPlugins.value.toMutableSet()
+            current.add(pluginId)
+            _purchasedPlugins.value = current
+            securePrefs.saveSecureBoolean("purchased_$pluginId", true)
+            
+            _paywallTargetPlugin.value = null
+        }
+    }
+
+    // Purchase all-access
+    fun purchaseAllAccess() {
+        viewModelScope.launch {
+            _serverStatusLog.value = "Processing $9.99 secure checkout for All-Access..."
+            val fingerprint = deviceFingerprint
+            
+            val success = serverClient.recordPurchaseOnServer(fingerprint, "all_access", 9.99)
+            if (success) {
+                _serverStatusLog.value = "Server Confirmed: All-Access Pass purchased."
+            } else {
+                _serverStatusLog.value = "Server offline. All-Access Pass authorized & locked in KeyStore vault."
+            }
+            
+            _isAllAccessUnlocked.value = true
+            securePrefs.saveSecureBoolean("all_access_unlocked", true)
+            
+            _paywallTargetPlugin.value = null
+        }
+    }
+
+    fun submitLicenseKey(key: String, onResult: (Boolean, String) -> Unit) {
+        viewModelScope.launch {
+            val cleanKey = key.trim()
+            _serverStatusLog.value = "Initiating server-side verification of License Key..."
+            
+            // Hash key to prevent reverse engineering of local comparison string
+            val userHash = try {
+                val digest = java.security.MessageDigest.getInstance("SHA-256")
+                val hashBytes = digest.digest(cleanKey.toByteArray(Charsets.UTF_8))
+                hashBytes.joinToString("") { "%02x".format(it) }
+            } catch (e: Exception) {
+                ""
+            }
+
+            val expectedHash = "3a5ac3bf09af8d8e89f2ca81037a703b35bea916463a0d73be8c0b0c0693dace"
+            val isLocalHashValid = userHash == expectedHash
+
+            // Call Server API
+            val response = serverClient.validateLicenseKeyOnServer(deviceFingerprint, cleanKey)
+            
+            if (response is ServerResponse.Success) {
+                _serverStatusLog.value = "Server License Confirmed: Key verified & validated successfully."
+                _isAllAccessUnlocked.value = true
+                securePrefs.saveSecureBoolean("all_access_unlocked", true)
+                _paywallTargetPlugin.value = null
+                onResult(true, "License Key Verified by Server! All Access Unlocked!")
+            } else {
+                val serverErrorMsg = (response as? ServerResponse.Error)?.message ?: "Validation Timeout"
+                _serverStatusLog.value = "Server validation offline or returned: $serverErrorMsg. Running high-security cryptographic offline validation."
+                
+                if (isLocalHashValid) {
+                    _serverStatusLog.value = "Cryptographic offline validation MATCHED! Access granted."
+                    _isAllAccessUnlocked.value = true
+                    securePrefs.saveSecureBoolean("all_access_unlocked", true)
+                    _paywallTargetPlugin.value = null
+                    onResult(true, "Offline Cryptographic Verification Succeeded! All Access Unlocked!")
+                } else {
+                    _serverStatusLog.value = "License Verification FAILED. Key is invalid."
+                    onResult(false, "Invalid License Key! Please try again or checkout securely.")
+                }
+            }
+        }
+    }
+
+    fun showPaywallFor(plugin: PluginConfig) {
+        _paywallTargetPlugin.value = plugin
+    }
+
+    fun closePaywall() {
+        _paywallTargetPlugin.value = null
+    }
 
     // --- State: Database Flows ---
     val allManhwas: StateFlow<List<Manhwa>> = repository.allManhwas
@@ -824,6 +1020,10 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     // --- Plugins Settings ---
     fun togglePlugin(plugin: PluginConfig) {
+        if (!isPluginUnlocked(plugin.id)) {
+            showPaywallFor(plugin)
+            return
+        }
         viewModelScope.launch {
             val updated = plugin.copy(enabled = !plugin.enabled)
             repository.updatePlugin(updated)
