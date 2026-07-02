@@ -1750,6 +1750,7 @@ fun PdfPageSliceItem(
                 contentDescription = "Page ${pageIndex + 1} Slice ${sliceIndex + 1}",
                 contentScale = ContentScale.FillWidth,
                 colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
+                filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -1886,6 +1887,7 @@ fun PdfPageItem(
                         contentDescription = "Page ${pageIndex + 1} Low-res Preview",
                         contentScale = ContentScale.FillBounds,
                         colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
+                        filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
                         modifier = Modifier.fillMaxSize()
                     )
                 }

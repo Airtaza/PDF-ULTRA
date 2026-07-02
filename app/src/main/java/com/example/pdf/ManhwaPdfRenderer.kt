@@ -171,9 +171,12 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                     if (actualSliceHeight <= 0) return@synchronized null
                     if (!this@withContext.isActive) return@synchronized null
 
-                    // PdfRenderer requires ARGB_8888 format
+                    // PdfRenderer strictly requires ARGB_8888 format
                     val config = Bitmap.Config.ARGB_8888
-                    val bmp = Bitmap.createBitmap(totalWidth, actualSliceHeight, config)
+                    var bmp = webPCacheManager.getReusableBitmap(totalWidth, actualSliceHeight, config)
+                    if (bmp == null) {
+                        bmp = Bitmap.createBitmap(totalWidth, actualSliceHeight, config)
+                    }
                     
                     // Fill with white background, as PdfRenderer draws on top and many PDFs have transparent backgrounds
                     val canvas = android.graphics.Canvas(bmp)

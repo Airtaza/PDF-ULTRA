@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.async
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -480,22 +481,28 @@ class ManhwaViewModel(private val application: Application, private val reposito
                     val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
                     
                     // Pre-render actual slices (WebP compression runs in background)
-                    for (slice in 0 until numSlices) {
-                        if (!isActive) break
-                        renderer.renderPageSlice(
-                            pageIndex = i,
-                            targetWidth = targetWidth,
-                            sliceIndex = slice,
-                            sliceHeight = sliceHeight,
-                            scaleFactor = scaleFactor,
-                            qualitySelectionEnabled = _qualitySelectionEnabled.value,
-                            qualityLevel = _qualityLevel.value,
-                            qualityCompression = _webpQuality.value,
-                            maxStorageAllocationMb = _maxStorageAllocation.value,
-                            bitmapConfig = _bitmapConfigSetting.value
-                        )
-                        kotlinx.coroutines.delay(50) // Yield CPU heavily
+                    kotlinx.coroutines.coroutineScope {
+                        val deferredSlices = (0 until numSlices).map { slice ->
+                            async(Dispatchers.IO) {
+                                if (isActive) {
+                                    renderer.renderPageSlice(
+                                        pageIndex = i,
+                                        targetWidth = targetWidth,
+                                        sliceIndex = slice,
+                                        sliceHeight = sliceHeight,
+                                        scaleFactor = scaleFactor,
+                                        qualitySelectionEnabled = _qualitySelectionEnabled.value,
+                                        qualityLevel = _qualityLevel.value,
+                                        qualityCompression = _webpQuality.value,
+                                        maxStorageAllocationMb = _maxStorageAllocation.value,
+                                        bitmapConfig = _bitmapConfigSetting.value
+                                    )
+                                }
+                            }
+                        }
+                        kotlinx.coroutines.awaitAll(*deferredSlices.toTypedArray())
                     }
+                    kotlinx.coroutines.delay(50) // Yield CPU heavily between pages
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }

@@ -28,24 +28,32 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
         }
     }
 
-    private fun getReusableBitmap(options: BitmapFactory.Options): Bitmap? {
-        val targetBytes = if (options.inPreferredConfig == Bitmap.Config.RGB_565) {
-            options.outWidth * options.outHeight * 2
+    fun getReusableBitmap(width: Int, height: Int, config: Bitmap.Config): Bitmap? {
+        val targetBytes = if (config == Bitmap.Config.RGB_565) {
+            width * height * 2
         } else {
-            options.outWidth * options.outHeight * 4
+            width * height * 4
         }
         
         synchronized(bitmapPool) {
             val iterator = bitmapPool.iterator()
             while (iterator.hasNext()) {
                 val item = iterator.next()
-                if (item.allocationByteCount >= targetBytes) {
+                if (item.allocationByteCount >= targetBytes && item.isMutable) {
                     iterator.remove()
+                    item.reconfigure(width, height, config)
                     return item
                 }
             }
         }
         return null
+    }
+
+    private fun getReusableBitmap(options: BitmapFactory.Options): Bitmap? {
+        val width = options.outWidth
+        val height = options.outHeight
+        val config = options.inPreferredConfig ?: Bitmap.Config.ARGB_8888
+        return getReusableBitmap(width, height, config)
     }
 
     suspend fun saveToCache(key: String, bitmap: Bitmap, quality: Int = 80) = withContext(Dispatchers.IO) {
