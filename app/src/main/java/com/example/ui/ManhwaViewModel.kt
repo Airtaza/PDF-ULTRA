@@ -233,6 +233,14 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _bitmapConfigSetting = MutableStateFlow(sharedPrefs.getString("bitmap_config", "ARGB_8888") ?: "ARGB_8888")
     val bitmapConfigSetting: StateFlow<String> = _bitmapConfigSetting.asStateFlow()
 
+    private val _webpQuality = MutableStateFlow(sharedPrefs.getInt("webp_quality", 80))
+    val webpQuality: StateFlow<Int> = _webpQuality.asStateFlow()
+
+    fun setWebpQuality(quality: Int) {
+        _webpQuality.value = quality
+        sharedPrefs.edit().putInt("webp_quality", quality).apply()
+    }
+
     private val _hapticFeedbackEnabled = MutableStateFlow(sharedPrefs.getBoolean("haptic_feedback_enabled", true))
     val hapticFeedbackEnabled: StateFlow<Boolean> = _hapticFeedbackEnabled.asStateFlow()
 
@@ -661,7 +669,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
         val isCacheEnabled = _qualitySelectionEnabled.value
         val scale = activeScaleFactor.value
-        val qualityCompression = getQualityCompression(_qualityLevel.value)
+        val qualityCompression = _webpQuality.value
         val maxStorage = _maxStorageAllocation.value
 
         val bitmap = renderer.renderPageSlice(
@@ -694,7 +702,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
         val isCacheEnabled = _qualitySelectionEnabled.value
         val scale = activeScaleFactor.value
-        val qualityCompression = getQualityCompression(_qualityLevel.value)
+        val qualityCompression = _webpQuality.value
         val maxStorage = _maxStorageAllocation.value
 
         val bitmap = renderer.renderPage(
@@ -1250,9 +1258,78 @@ class ManhwaViewModel(private val application: Application, private val reposito
         }
     }
 
-    // --- Reading Velocity Cache Warming ---
+    private var prefetchJob: kotlinx.coroutines.Job? = null
+
     fun warmCacheForVelocity(currentPage: Int, targetWidth: Int, velocity: Float) {
-        // Disabling pre-warming to avoid lock contention and CPU load during continuous scroll.
+        val countToPreload = 3
+        val direction = if (velocity > 0) 1 else -1
+        
+        prefetchJob?.cancel()
+        prefetchJob = viewModelScope.launch(Dispatchers.IO) {
+            val tab = _tabs.value.find { it.id == _activeTabId.value }
+            val manhwaId = tab?.manhwa?.id ?: return@launch
+            val renderer = synchronized(renderers) {
+                renderers[manhwaId]
+            } ?: return@launch
+
+            val totalPages = renderer.pageCount
+            
+            // Only preload if velocity isn't crazy high (prevent CPU choke)
+            if (Math.abs(velocity) < 5.0f) {
+                for (i in 1..countToPreload) {
+                    val pageToLoad = currentPage + (i * direction)
+                    if (pageToLoad in 0 until totalPages) {
+                        // Preload low-res thumbnail first
+                        renderer.renderPageLowRes(
+                            pageIndex = pageToLoad,
+                            targetWidth = targetWidth,
+                            bitmapConfig = _bitmapConfigSetting.value
+                        )
+
+                        // Yield before heavy work
+                        kotlinx.coroutines.delay(100)
+
+                        // Then preload full page slices (let's assume first few slices)
+                        // This uses renderPageSlice which saves to WebP Cache
+                        val aspect = renderer.getPageAspectRatio(pageToLoad)
+                        val scaleFactor = getQualityScaleFactor(_qualityLevel.value)
+                        val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
+                        val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
+                        val sliceHeight = _sliceHeight.value
+                        val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
+                        
+                        // Just preload the first 3 slices to save memory and CPU
+                        val slicesToPreload = minOf(numSlices, 3)
+                        for (slice in 0 until slicesToPreload) {
+                            renderer.renderPageSlice(
+                                pageIndex = pageToLoad,
+                                targetWidth = targetWidth,
+                                sliceIndex = slice,
+                                sliceHeight = sliceHeight,
+                                scaleFactor = scaleFactor,
+                                qualitySelectionEnabled = _qualitySelectionEnabled.value,
+                                qualityLevel = _qualityLevel.value,
+                                qualityCompression = _webpQuality.value,
+                                maxStorageAllocationMb = _maxStorageAllocation.value,
+                                bitmapConfig = _bitmapConfigSetting.value
+                            )
+                        }
+                    }
+                }
+            } else {
+                // If scrolling extremely fast, JUST preload low-res thumbnails
+                for (i in 1..(countToPreload + 2)) {
+                    val pageToLoad = currentPage + (i * direction)
+                    if (pageToLoad in 0 until totalPages) {
+                        renderer.renderPageLowRes(
+                            pageIndex = pageToLoad,
+                            targetWidth = targetWidth,
+                            bitmapConfig = _bitmapConfigSetting.value
+                        )
+                    }
+                }
+            }
+        }
     }
 
     override fun onCleared() {

@@ -18,6 +18,8 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
     private var parcelFileDescriptor: ParcelFileDescriptor? = null
     private var pdfRenderer: PdfRenderer? = null
     private val aspectRatios = java.util.concurrent.ConcurrentHashMap<Int, Float>()
+    
+    private val webPCacheManager = WebPCacheManager(context, file.nameWithoutExtension)
 
     // Cache to hold rendered page bitmaps. Limit size in bytes to safe heap levels to prevent OOM/GC freezes.
     private val memoryCache: LruCache<String, Bitmap> = run {
@@ -126,6 +128,13 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
             return@withContext cached
         }
 
+        // Try getting from disk cache (WebP)
+        val webpCached = webPCacheManager.getFromCache(cacheKey, bitmapConfig)
+        if (webpCached != null) {
+            memoryCache.put(cacheKey, webpCached)
+            return@withContext webpCached
+        }
+
         // Fallback or Normal PDF Render
         val renderer = pdfRenderer ?: return@withContext null
         if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withContext null
@@ -191,6 +200,16 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                 kotlinx.coroutines.yield() // Yield background thread control to prevent scroll micro-stutter
             }
 
+            // Save to WebP in background
+            if (bitmap != null) {
+                // Determine quality based on settings
+                val quality = if (isLowResPlaceholder) 60 else qualityCompression
+                // Launch in a new coroutine so we don't block the return of the bitmap
+                CoroutineScope(Dispatchers.IO).launch {
+                    webPCacheManager.saveToCache(cacheKey, bitmap, quality)
+                }
+            }
+
             bitmap
         } catch (e: Throwable) {
             e.printStackTrace()
@@ -245,6 +264,9 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
     fun clearCache() {
         memoryCache.evictAll()
         aspectRatios.clear()
+        CoroutineScope(Dispatchers.IO).launch {
+            webPCacheManager.clearCache()
+        }
     }
 
     fun getMemoryCacheSize(): Int {

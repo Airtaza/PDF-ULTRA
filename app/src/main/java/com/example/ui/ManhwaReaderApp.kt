@@ -1233,7 +1233,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
         // Calculate velocity (approximate 1 page as 3000px height)
         val indexDiff = lazyListState.firstVisibleItemIndex - lastScrollIndex
         val offsetDiff = lazyListState.firstVisibleItemScrollOffset - lastScrollOffset
-        val pixelsScrolled = Math.abs(indexDiff * 3000 + offsetDiff)
+        val pixelsScrolled = (indexDiff * 3000 + offsetDiff)
         val velocity = pixelsScrolled.toFloat() / timeDelta.toFloat() // pixels per millisecond
 
         // Update database with index and offset
@@ -3157,6 +3157,7 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
     val doubleTapZoomScale by viewModel.doubleTapZoomScale.collectAsStateWithLifecycle()
     val volumeScrollEnabled by viewModel.volumeScrollEnabled.collectAsStateWithLifecycle()
     val bitmapConfigSetting by viewModel.bitmapConfigSetting.collectAsStateWithLifecycle()
+    val webpQuality by viewModel.webpQuality.collectAsStateWithLifecycle()
     val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsStateWithLifecycle()
     val doubleTapResetEnabled by viewModel.doubleTapResetEnabled.collectAsStateWithLifecycle()
     val aggressiveGcEnabled by viewModel.aggressiveGcEnabled.collectAsStateWithLifecycle()
@@ -3385,6 +3386,119 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                             lineHeight = 15.sp,
                             fontWeight = FontWeight.Medium
                         )
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- SECTION 1.5: WEBP BACKGROUND PRELOADER ---
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.PlayArrow,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "WebP Background Preloader",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Intelligently predicts scroll & pre-renders to disk",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "While reading, the app silently renders upcoming pages in the background using WebP compression. It detects your scroll direction to ensure the next pages are instantly available with zero white screens.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    lineHeight = 16.sp
+                )
+                
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Text(
+                    text = "WEBP COMPRESSION QUALITY: $webpQuality%",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                androidx.compose.material3.Slider(
+                    value = webpQuality.toFloat(),
+                    onValueChange = { viewModel.setWebpQuality(it.toInt()) },
+                    valueRange = 10f..100f,
+                    steps = 8,
+                    modifier = Modifier.fillMaxWidth()
+                )
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                
+                Text(
+                    text = "BITMAP BIT-DEPTH",
+                    fontWeight = FontWeight.ExtraBold,
+                    fontSize = 11.sp,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(10.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    val is32Bit = bitmapConfigSetting == "ARGB_8888"
+                    Surface(
+                        modifier = Modifier.weight(1f).height(38.dp)
+                            .clickable { viewModel.setBitmapConfigSetting("ARGB_8888") },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (is32Bit) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        border = if (is32Bit) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(text = "32-Bit (High Color)", fontSize = 10.sp, fontWeight = if (is32Bit) FontWeight.Bold else FontWeight.Medium, color = if (is32Bit) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
+                    }
+                    Surface(
+                        modifier = Modifier.weight(1f).height(38.dp)
+                            .clickable { viewModel.setBitmapConfigSetting("RGB_565") },
+                        shape = RoundedCornerShape(10.dp),
+                        color = if (!is32Bit) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                        border = if (!is32Bit) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f))
+                    ) {
+                        Box(contentAlignment = Alignment.Center) {
+                            Text(text = "16-Bit (Fast/Low RAM)", fontSize = 10.sp, fontWeight = if (!is32Bit) FontWeight.Bold else FontWeight.Medium, color = if (!is32Bit) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant)
+                        }
                     }
                 }
             }
