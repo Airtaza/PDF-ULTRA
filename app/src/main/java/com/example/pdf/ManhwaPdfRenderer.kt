@@ -156,9 +156,13 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                     if (actualSliceHeight <= 0) return@synchronized null
                     if (!this@withContext.isActive) return@synchronized null
 
-                    // Directly create high-performance native-allocated bitmap
-                    val config = if (bitmapConfig == "RGB_565") Bitmap.Config.RGB_565 else Bitmap.Config.ARGB_8888
+                    // PdfRenderer requires ARGB_8888 format
+                    val config = Bitmap.Config.ARGB_8888
                     val bmp = Bitmap.createBitmap(totalWidth, actualSliceHeight, config)
+                    
+                    // Fill with white background, as PdfRenderer draws on top and many PDFs have transparent backgrounds
+                    val canvas = android.graphics.Canvas(bmp)
+                    canvas.drawColor(android.graphics.Color.WHITE)
 
                     val scaleX = totalWidth.toFloat() / widthPt
                     val scaleY = totalHeight.toFloat() / heightPt

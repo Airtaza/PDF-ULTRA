@@ -992,6 +992,13 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     // Color/view enhancements
     val brightness by viewModel.brightness.collectAsStateWithLifecycle()
     val contrast by viewModel.contrast.collectAsStateWithLifecycle()
+    val saturation by viewModel.saturation.collectAsStateWithLifecycle()
+    val warmth by viewModel.warmth.collectAsStateWithLifecycle()
+    val gamma by viewModel.gamma.collectAsStateWithLifecycle()
+    val autoGammaEnabled by viewModel.autoGammaEnabled.collectAsStateWithLifecycle()
+    val customTint by viewModel.customTint.collectAsStateWithLifecycle()
+    val autoNightShift by viewModel.autoNightShift.collectAsStateWithLifecycle()
+    val mangaScanCrisper by viewModel.mangaScanCrisper.collectAsStateWithLifecycle()
     val colorMode by viewModel.colorMode.collectAsStateWithLifecycle()
     val hdMode by viewModel.hdModeEnabled.collectAsStateWithLifecycle()
 
@@ -1000,9 +1007,11 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     val strokeWidth by viewModel.activeStrokeWidth.collectAsStateWithLifecycle()
     val sketches by viewModel.sketches.collectAsStateWithLifecycle()
 
+    val showEditFeatures by viewModel.showEditFeatures.collectAsStateWithLifecycle()
+
     // Verify which plugins are currently enabled
     val isViewEnhancerEnabled = remember(plugins) { plugins.find { it.id == "view_enhancer" }?.enabled == true }
-    val isSketchEditorEnabled = remember(plugins) { plugins.find { it.id == "manhwa_editor" }?.enabled == true }
+    val isSketchEditorEnabled = remember(plugins, showEditFeatures) { showEditFeatures && plugins.find { it.id == "manhwa_editor" }?.enabled == true }
     val isOutlineEnabled = remember(plugins) { plugins.find { it.id == "metadata_bookmark" }?.enabled == true }
 
     var isDrawModeOn by remember { mutableStateOf(false) }
@@ -1269,6 +1278,13 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                         viewModel = viewModel,
                         brightness = brightness,
                         contrast = contrast,
+                        saturation = saturation,
+                        warmth = warmth,
+                        gamma = gamma,
+                        autoGammaEnabled = autoGammaEnabled,
+                        customTint = customTint,
+                        autoNightShift = autoNightShift,
+                        mangaScanCrisper = mangaScanCrisper,
                         colorMode = colorMode,
                         onPdfClick = {
                             val currentTime = System.currentTimeMillis()
@@ -1451,6 +1467,13 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                 isViewEnhancerEnabled = isViewEnhancerEnabled,
                 brightness = brightness,
                 contrast = contrast,
+                saturation = saturation,
+                warmth = warmth,
+                gamma = gamma,
+                autoGammaEnabled = autoGammaEnabled,
+                customTint = customTint,
+                autoNightShift = autoNightShift,
+                mangaScanCrisper = mangaScanCrisper,
                 colorMode = colorMode,
                 hdMode = hdMode,
                 isOutlineEnabled = isOutlineEnabled,
@@ -1471,6 +1494,13 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                 },
                 onBrightnessChange = { viewModel.setBrightness(it) },
                 onContrastChange = { viewModel.setContrast(it) },
+                onSaturationChange = { viewModel.setSaturation(it) },
+                onWarmthChange = { viewModel.setWarmth(it) },
+                onGammaChange = { viewModel.setGamma(it) },
+                onToggleAutoGamma = { viewModel.setAutoGammaEnabled(it) },
+                onCustomTintChange = { viewModel.setCustomTint(it) },
+                onToggleAutoNightShift = { viewModel.setAutoNightShift(it) },
+                onToggleMangaScanCrisper = { viewModel.setMangaScanCrisper(it) },
                 onColorModeChange = { viewModel.setColorMode(it) },
                 onToggleHdMode = { viewModel.toggleHdMode() },
                 autoScrollSpeed = autoScrollSpeed,
@@ -1577,6 +1607,13 @@ fun PdfPageSliceItem(
     viewModel: ManhwaViewModel,
     brightness: Float,
     contrast: Float,
+    saturation: Float,
+    warmth: Float,
+    gamma: Float,
+    autoGammaEnabled: Boolean,
+    customTint: String,
+    autoNightShift: Boolean,
+    mangaScanCrisper: Boolean,
     colorMode: ManhwaViewModel.ColorMode
 ) {
     val hdScrollDelay by viewModel.hdScrollDelay.collectAsStateWithLifecycle()
@@ -1613,8 +1650,19 @@ fun PdfPageSliceItem(
     ) {
         val bitmap = sliceBitmap
         if (bitmap != null) {
-            val adjustedMatrix = remember(brightness, contrast, colorMode) {
-                getAdjustedColorMatrix(brightness, contrast, colorMode)
+            val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode) {
+                getAdjustedColorMatrix(
+                    brightness = brightness,
+                    contrast = contrast,
+                    saturation = saturation,
+                    warmth = warmth,
+                    gamma = gamma,
+                    autoGammaEnabled = autoGammaEnabled,
+                    customTint = customTint,
+                    autoNightShift = autoNightShift,
+                    mangaScanCrisper = mangaScanCrisper,
+                    mode = colorMode
+                )
             }
 
             Image(
@@ -1638,6 +1686,13 @@ fun PdfPageItem(
     viewModel: ManhwaViewModel,
     brightness: Float,
     contrast: Float,
+    saturation: Float,
+    warmth: Float,
+    gamma: Float,
+    autoGammaEnabled: Boolean,
+    customTint: String,
+    autoNightShift: Boolean,
+    mangaScanCrisper: Boolean,
     colorMode: ManhwaViewModel.ColorMode,
     onPdfClick: () -> Unit
 ) {
@@ -1732,8 +1787,19 @@ fun PdfPageItem(
                     .aspectRatio(aspect)
             ) {
                 lowResBitmap?.let { bmp ->
-                    val adjustedMatrix = remember(brightness, contrast, colorMode) {
-                        getAdjustedColorMatrix(brightness, contrast, colorMode)
+                    val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode) {
+                        getAdjustedColorMatrix(
+                            brightness = brightness,
+                            contrast = contrast,
+                            saturation = saturation,
+                            warmth = warmth,
+                            gamma = gamma,
+                            autoGammaEnabled = autoGammaEnabled,
+                            customTint = customTint,
+                            autoNightShift = autoNightShift,
+                            mangaScanCrisper = mangaScanCrisper,
+                            mode = colorMode
+                        )
                     }
                     Image(
                         bitmap = bmp.asImageBitmap(),
@@ -1760,6 +1826,13 @@ fun PdfPageItem(
                             viewModel = viewModel,
                             brightness = brightness,
                             contrast = contrast,
+                            saturation = saturation,
+                            warmth = warmth,
+                            gamma = gamma,
+                            autoGammaEnabled = autoGammaEnabled,
+                            customTint = customTint,
+                            autoNightShift = autoNightShift,
+                            mangaScanCrisper = mangaScanCrisper,
                             colorMode = colorMode
                         )
                     }
@@ -2038,6 +2111,13 @@ fun HUDBottomBar(
     isViewEnhancerEnabled: Boolean,
     brightness: Float,
     contrast: Float,
+    saturation: Float,
+    warmth: Float,
+    gamma: Float,
+    autoGammaEnabled: Boolean,
+    customTint: String,
+    autoNightShift: Boolean,
+    mangaScanCrisper: Boolean,
     colorMode: ManhwaViewModel.ColorMode,
     hdMode: Boolean,
     isOutlineEnabled: Boolean,
@@ -2052,6 +2132,13 @@ fun HUDBottomBar(
     onAddBookmarkClick: () -> Unit,
     onBrightnessChange: (Float) -> Unit,
     onContrastChange: (Float) -> Unit,
+    onSaturationChange: (Float) -> Unit,
+    onWarmthChange: (Float) -> Unit,
+    onGammaChange: (Float) -> Unit,
+    onToggleAutoGamma: (Boolean) -> Unit,
+    onCustomTintChange: (String) -> Unit,
+    onToggleAutoNightShift: (Boolean) -> Unit,
+    onToggleMangaScanCrisper: (Boolean) -> Unit,
     onColorModeChange: (ManhwaViewModel.ColorMode) -> Unit,
     onToggleHdMode: () -> Unit,
     autoScrollSpeed: Float,
@@ -2083,7 +2170,7 @@ fun HUDBottomBar(
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
                     Text(
-                        "IMAGE ENHANCEMENTS",
+                        "IMAGE ENHANCEMENTS & FILTERS",
                         fontSize = 11.sp,
                         fontWeight = FontWeight.Black,
                         letterSpacing = 1.sp,
@@ -2116,6 +2203,56 @@ fun HUDBottomBar(
                             colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
                         )
                         Text(String.format("%.1fx", contrast), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                    }
+
+                    // Saturation slider
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Saturation", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                        Slider(
+                            value = saturation,
+                            onValueChange = onSaturationChange,
+                            valueRange = 0.0f..2.0f,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
+                        )
+                        Text(String.format("%.1fx", saturation), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                    }
+
+                    // Warmth slider
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Eye Warmth", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                        Slider(
+                            value = warmth,
+                            onValueChange = onWarmthChange,
+                            valueRange = 0.0f..1.0f,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
+                        )
+                        Text(String.format("%.1f", warmth), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                    }
+
+                    // Gamma slider
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Gamma", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                        Slider(
+                            value = gamma,
+                            onValueChange = onGammaChange,
+                            valueRange = 0.5f..2.0f,
+                            enabled = !autoGammaEnabled,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(
+                                thumbColor = MaterialTheme.colorScheme.primary,
+                                disabledThumbColor = Color.Gray,
+                                disabledActiveTrackColor = Color.DarkGray
+                            )
+                        )
+                        Text(
+                            text = if (autoGammaEnabled) "Auto" else String.format("%.1fx", gamma),
+                            fontSize = 11.sp,
+                            modifier = Modifier.width(30.dp),
+                            textAlign = TextAlign.End,
+                            color = if (autoGammaEnabled) MaterialTheme.colorScheme.primary else Color.White
+                        )
                     }
 
                     Spacer(modifier = Modifier.height(8.dp))
@@ -2161,7 +2298,72 @@ fun HUDBottomBar(
                         }
                     }
 
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Custom Tint Presets
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Tint Preset: ", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.padding(end = 6.dp))
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            val tints = listOf("None", "Parchment", "Eye Care Green", "Mint", "Cobalt Filter", "Warm Amber")
+                            tints.forEach { tint ->
+                                val selected = customTint == tint
+                                Text(
+                                    text = tint,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) MaterialTheme.colorScheme.primary else Color.Gray,
+                                    modifier = Modifier
+                                        .clickable { onCustomTintChange(tint) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                                        .background(
+                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
+
+                    // Auto-Tuning and Manga scan binarizer options
+                    Text("AUTOMATIC ENHANCEMENTS", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
                     Spacer(modifier = Modifier.height(6.dp))
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        HudOptionChip(
+                            text = "Auto Gamma Correction",
+                            selected = autoGammaEnabled,
+                            onClick = { onToggleAutoGamma(!autoGammaEnabled) }
+                        )
+
+                        HudOptionChip(
+                            text = "Auto-Night Shift",
+                            selected = autoNightShift,
+                            onClick = { onToggleAutoNightShift(!autoNightShift) }
+                        )
+
+                        HudOptionChip(
+                            text = "Manga Scan Crisper",
+                            selected = mangaScanCrisper,
+                            onClick = { onToggleMangaScanCrisper(!mangaScanCrisper) }
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(10.dp))
                     HorizontalDivider(color = Color.DarkGray, thickness = 0.5.dp)
                     Spacer(modifier = Modifier.height(6.dp))
 
@@ -2484,6 +2686,36 @@ fun HUDBottomBar(
     }
 }
 
+// --- COMPOSABLE: HUD Option Chip ---
+@Composable
+fun HudOptionChip(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit
+) {
+    Box(
+        modifier = Modifier
+            .clickable { onClick() }
+            .background(
+                color = if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.18f) else Color.DarkGray.copy(alpha = 0.3f),
+                shape = RoundedCornerShape(8.dp)
+            )
+            .border(
+                width = 1.dp,
+                color = if (selected) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.3f),
+                shape = RoundedCornerShape(8.dp)
+            )
+            .padding(horizontal = 10.dp, vertical = 6.dp)
+    ) {
+        Text(
+            text = text,
+            color = if (selected) MaterialTheme.colorScheme.primary else Color.LightGray,
+            fontSize = 11.sp,
+            fontWeight = FontWeight.Bold
+        )
+    }
+}
+
 // --- COMPOSABLE: Chapter Outline Drawer Panel ---
 @Composable
 fun ChapterOutlineDrawer(
@@ -2630,88 +2862,208 @@ fun ChapterOutlineDrawer(
 }
 
 // Helpers for combining matrices
-fun getAdjustedColorMatrix(brightness: Float, contrast: Float, mode: ManhwaViewModel.ColorMode): ColorMatrix {
-    val scale = contrast * brightness
-    val translate = ((1.0f - contrast) * 0.5f + (brightness - 1.0f)) * 255f
+fun concatColorMatrices(a: FloatArray, b: FloatArray): FloatArray {
+    val result = FloatArray(20)
+    for (row in 0 until 4) {
+        for (col in 0 until 4) {
+            result[row * 5 + col] = 
+                a[row * 5 + 0] * b[0 * 5 + col] +
+                a[row * 5 + 1] * b[1 * 5 + col] +
+                a[row * 5 + 2] * b[2 * 5 + col] +
+                a[row * 5 + 3] * b[3 * 5 + col]
+        }
+        result[row * 5 + 4] = 
+            a[row * 5 + 0] * b[0 * 5 + 4] +
+            a[row * 5 + 1] * b[1 * 5 + 4] +
+            a[row * 5 + 2] * b[2 * 5 + 4] +
+            a[row * 5 + 3] * b[3 * 5 + 4] +
+            a[row * 5 + 4]
+    }
+    return result
+}
 
-    return when (mode) {
+fun getAdjustedColorMatrix(
+    brightness: Float,
+    contrast: Float,
+    saturation: Float,
+    warmth: Float,
+    gamma: Float,
+    autoGammaEnabled: Boolean,
+    customTint: String,
+    autoNightShift: Boolean,
+    mangaScanCrisper: Boolean,
+    mode: ManhwaViewModel.ColorMode
+): ColorMatrix {
+    val calendar = java.util.Calendar.getInstance()
+    val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
+    val isNightTime = hour >= 18 || hour < 6
+
+    var effectiveGamma = gamma
+    if (autoGammaEnabled) {
+        effectiveGamma = if (isNightTime) 1.3f else 0.8f
+    }
+
+    var effectiveWarmth = warmth
+    if (autoNightShift && isNightTime) {
+        effectiveWarmth = (warmth + 0.35f).coerceAtMost(1.0f)
+    }
+
+    // Apply gamma multiplier approximation on base scale and translation
+    val baseScale = contrast * brightness
+    val baseTranslate = ((1.0f - contrast) * 0.5f + (brightness - 1.0f)) * 255f
+
+    // Nonlinear mapping approximation
+    val scale = if (effectiveGamma > 0f) Math.pow(baseScale.toDouble(), 1.0 / effectiveGamma.toDouble()).toFloat() else baseScale
+    val translate = baseTranslate * (1.5f - (effectiveGamma * 0.5f))
+
+    var finalScale = scale
+    var finalTranslate = translate
+
+    if (mangaScanCrisper) {
+        // High contrast and high brightness thresholding to wash out scan gray backgrounds to pure white
+        finalScale = scale * 2.2f
+        finalTranslate = translate - 95f
+    }
+
+    val baseMatrix = when (mode) {
         ManhwaViewModel.ColorMode.GRAYSCALE -> {
-            val grayMatrix = floatArrayOf(
-                0.299f * scale, 0.587f * scale, 0.114f * scale, 0f, translate,
-                0.299f * scale, 0.587f * scale, 0.114f * scale, 0f, translate,
-                0.299f * scale, 0.587f * scale, 0.114f * scale, 0f, translate,
+            floatArrayOf(
+                0.299f * finalScale, 0.587f * finalScale, 0.114f * finalScale, 0f, finalTranslate,
+                0.299f * finalScale, 0.587f * finalScale, 0.114f * finalScale, 0f, finalTranslate,
+                0.299f * finalScale, 0.587f * finalScale, 0.114f * finalScale, 0f, finalTranslate,
                 0f, 0f, 0f, 1f, 0f
             )
-            ColorMatrix(grayMatrix)
         }
         ManhwaViewModel.ColorMode.SEPIA -> {
-            val sepiaMatrix = floatArrayOf(
-                0.393f * scale, 0.769f * scale, 0.189f * scale, 0f, translate,
-                0.349f * scale, 0.686f * scale, 0.168f * scale, 0f, translate,
-                0.272f * scale, 0.534f * scale, 0.131f * scale, 0f, translate,
+            floatArrayOf(
+                0.393f * finalScale, 0.769f * finalScale, 0.189f * finalScale, 0f, finalTranslate,
+                0.349f * finalScale, 0.686f * finalScale, 0.168f * finalScale, 0f, finalTranslate,
+                0.272f * finalScale, 0.534f * finalScale, 0.131f * finalScale, 0f, finalTranslate,
                 0f, 0f, 0f, 1f, 0f
             )
-            ColorMatrix(sepiaMatrix)
         }
         ManhwaViewModel.ColorMode.INVERTED -> {
-            val invScale = -scale
-            val invTranslate = scale * 255f + translate
-            val invertMatrix = floatArrayOf(
+            val invScale = -finalScale
+            val invTranslate = finalScale * 255f + finalTranslate
+            floatArrayOf(
                 invScale, 0f, 0f, 0f, invTranslate,
                 0f, invScale, 0f, 0f, invTranslate,
                 0f, 0f, invScale, 0f, invTranslate,
                 0f, 0f, 0f, 1f, 0f
             )
-            ColorMatrix(invertMatrix)
         }
         ManhwaViewModel.ColorMode.PROTANOPIA -> {
-            val protanopiaMatrix = floatArrayOf(
-                0.567f * scale, 0.433f * scale, 0f, 0f, translate,
-                0.558f * scale, 0.442f * scale, 0f, 0f, translate,
-                0f, 0.242f * scale, 0.758f * scale, 0f, translate,
+            floatArrayOf(
+                0.567f * finalScale, 0.433f * finalScale, 0f, 0f, finalTranslate,
+                0.558f * finalScale, 0.442f * finalScale, 0f, 0f, finalTranslate,
+                0f, 0.242f * finalScale, 0.758f * finalScale, 0f, finalTranslate,
                 0f, 0f, 0f, 1f, 0f
             )
-            ColorMatrix(protanopiaMatrix)
         }
         ManhwaViewModel.ColorMode.DEUTERANOPIA -> {
-            val deuteranopiaMatrix = floatArrayOf(
-                0.625f * scale, 0.375f * scale, 0f, 0f, translate,
-                0.7f * scale, 0.3f * scale, 0f, 0f, translate,
-                0f, 0.3f * scale, 0.7f * scale, 0f, translate,
+            floatArrayOf(
+                0.625f * finalScale, 0.375f * finalScale, 0f, 0f, finalTranslate,
+                0.7f * finalScale, 0.3f * finalScale, 0f, 0f, finalTranslate,
+                0f, 0.3f * finalScale, 0.7f * finalScale, 0f, finalTranslate,
                 0f, 0f, 0f, 1f, 0f
             )
-            ColorMatrix(deuteranopiaMatrix)
         }
         ManhwaViewModel.ColorMode.TRITANOPIA -> {
-            val tritanopiaMatrix = floatArrayOf(
-                0.95f * scale, 0.05f * scale, 0f, 0f, translate,
-                0f, 0.433f * scale, 0.567f * scale, 0f, translate,
-                0f, 0.475f * scale, 0.525f * scale, 0f, translate,
+            floatArrayOf(
+                0.95f * finalScale, 0.05f * finalScale, 0f, 0f, finalTranslate,
+                0f, 0.433f * finalScale, 0.567f * finalScale, 0f, finalTranslate,
+                0f, 0.475f * finalScale, 0.525f * finalScale, 0f, finalTranslate,
                 0f, 0f, 0f, 1f, 0f
             )
-            ColorMatrix(tritanopiaMatrix)
         }
         ManhwaViewModel.ColorMode.HIGH_CONTRAST -> {
-            val hcScale = scale * 1.5f
-            val hcTranslate = translate - 30f
-            val highContrastMatrix = floatArrayOf(
+            val hcScale = finalScale * 1.5f
+            val hcTranslate = finalTranslate - 30f
+            floatArrayOf(
                 hcScale, 0f, 0f, 0f, hcTranslate,
                 0f, hcScale, 0f, 0f, hcTranslate,
                 0f, 0f, hcScale, 0f, hcTranslate,
                 0f, 0f, 0f, 1f, 0f
             )
-            ColorMatrix(highContrastMatrix)
         }
         else -> {
-            val array = floatArrayOf(
-                scale, 0f, 0f, 0f, translate,
-                0f, scale, 0f, 0f, translate,
-                0f, 0f, scale, 0f, translate,
+            floatArrayOf(
+                finalScale, 0f, 0f, 0f, finalTranslate,
+                0f, finalScale, 0f, 0f, finalTranslate,
+                0f, 0f, finalScale, 0f, finalTranslate,
                 0f, 0f, 0f, 1f, 0f
             )
-            ColorMatrix(array)
         }
     }
+
+    // Apply Saturation Matrix
+    val lr = 0.299f
+    val lg = 0.587f
+    val lb = 0.114f
+    val invSat = 1.0f - saturation
+    val satMatrix = floatArrayOf(
+        invSat * lr + saturation, invSat * lg, invSat * lb, 0f, 0f,
+        invSat * lr, invSat * lg + saturation, invSat * lb, 0f, 0f,
+        invSat * lr, invSat * lg, invSat * lb + saturation, 0f, 0f,
+        0f, 0f, 0f, 1f, 0f
+    )
+
+    // Apply Warmth (Yellow-Amber Red shift Filter) Matrix
+    val wRed = 1.0f + effectiveWarmth * 0.1f
+    val wGreen = 1.0f + effectiveWarmth * 0.02f
+    val wBlue = 1.0f - effectiveWarmth * 0.35f
+    val warmthMatrix = floatArrayOf(
+        wRed, 0f, 0f, 0f, 0f,
+        0f, wGreen, 0f, 0f, 0f,
+        0f, 0f, wBlue, 0f, 0f,
+        0f, 0f, 0f, 1f, 0f
+    )
+
+    // Apply Custom Tint Presets
+    val tintMatrix = when (customTint) {
+        "Parchment" -> floatArrayOf(
+            1.04f, 0f, 0f, 0f, 0f,
+            0f, 0.96f, 0f, 0f, 0f,
+            0f, 0f, 0.85f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        )
+        "Eye Care Green" -> floatArrayOf(
+            0.85f, 0f, 0f, 0f, 0f,
+            0f, 1.02f, 0f, 0f, 0f,
+            0f, 0f, 0.88f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        )
+        "Mint" -> floatArrayOf(
+            0.82f, 0f, 0f, 0f, 0f,
+            0f, 1.00f, 0f, 0f, 0f,
+            0f, 0f, 0.95f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        )
+        "Cobalt Filter" -> floatArrayOf(
+            1.00f, 0f, 0f, 0f, 0f,
+            0f, 0.85f, 0f, 0f, 0f,
+            0f, 0f, 0.55f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        )
+        "Warm Amber" -> floatArrayOf(
+            1.00f, 0f, 0f, 0f, 0f,
+            0f, 0.72f, 0f, 0f, 0f,
+            0f, 0f, 0.30f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        )
+        else -> floatArrayOf(
+            1f, 0f, 0f, 0f, 0f,
+            0f, 1f, 0f, 0f, 0f,
+            0f, 0f, 1f, 0f, 0f,
+            0f, 0f, 0f, 1f, 0f
+        )
+    }
+
+    val withSat = concatColorMatrices(satMatrix, baseMatrix)
+    val withWarmth = concatColorMatrices(warmthMatrix, withSat)
+    val withTint = concatColorMatrices(tintMatrix, withWarmth)
+
+    return ColorMatrix(withTint)
 }
 
 // --- SCREEN: Settings Manager ---
@@ -3044,6 +3396,72 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
 
         Spacer(modifier = Modifier.height(16.dp))
 
+        // --- SECTION FOR PLUGINS & EDIT FEATURES ---
+        val showEditFeatures by viewModel.showEditFeatures.collectAsStateWithLifecycle()
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(40.dp)
+                                .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Edit,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(12.dp))
+                        Column {
+                            Text(
+                                text = "Drawing & Sketch Edit Tools",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = MaterialTheme.colorScheme.onSurface
+                            )
+                            Text(
+                                text = "Show or hide editing overlay & drawing menu",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                            )
+                        }
+                    }
+                    Switch(
+                        checked = showEditFeatures,
+                        onCheckedChange = { viewModel.setShowEditFeatures(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Text(
+                    text = "If you use this app primarily for reading, you can disable the drawing tools to maximize performance, save memory, and simplify the interface. Drawing features can be re-enabled anytime.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
+                    lineHeight = 16.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
         // --- SECTION 3: READER & ZOOM PREFERENCES ---
         val zoomLockEnabled by viewModel.zoomLockEnabled.collectAsStateWithLifecycle()
         val lockedZoomLevel by viewModel.lockedZoomLevel.collectAsStateWithLifecycle()
@@ -3120,8 +3538,336 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
             }
         }
 
+
+        // --- READER BEHAVIOR & UX ---
+        val immersiveMode by viewModel.immersiveMode.collectAsStateWithLifecycle()
+        val volumeKeyNavigation by viewModel.volumeKeyNavigation.collectAsStateWithLifecycle()
+        val readingDirection by viewModel.readingDirection.collectAsStateWithLifecycle()
+
+        // --- ADVANCED VIEWING & EYE CARE PREFERENCES ---
+        val gamma by viewModel.gamma.collectAsStateWithLifecycle()
+        val autoGammaEnabled by viewModel.autoGammaEnabled.collectAsStateWithLifecycle()
+        val customTint by viewModel.customTint.collectAsStateWithLifecycle()
+        val autoNightShift by viewModel.autoNightShift.collectAsStateWithLifecycle()
+        val mangaScanCrisper by viewModel.mangaScanCrisper.collectAsStateWithLifecycle()
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "Reader Behavior & Navigation",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Customize reading modes and physical controls",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Toggle 1: Immersive Mode
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Immersive Mode", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Switch(
+                        checked = immersiveMode,
+                        onCheckedChange = { viewModel.setImmersiveMode(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Toggle 2: Volume Key Nav
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text("Volume Key Navigation", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Switch(
+                        checked = volumeKeyNavigation,
+                        onCheckedChange = { viewModel.setVolumeKeyNavigation(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(8.dp))
+
+                // Choice 3: Reading Direction
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text("Reading Direction", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        val directions = listOf("Vertical", "Horizontal")
+                        directions.forEach { dir ->
+                            val selected = readingDirection == dir
+                            Surface(
+                                modifier = Modifier
+                                    .clickable { viewModel.setReadingDirection(dir) }
+                                    .padding(4.dp),
+                                color = if (selected) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.2f),
+                                shape = RoundedCornerShape(8.dp)
+                            ) {
+                                Text(dir, modifier = Modifier.padding(8.dp), color = if (selected) Color.White else Color.Black)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(40.dp)
+                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Settings,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp)
+                        )
+                    }
+                    Spacer(modifier = Modifier.width(12.dp))
+                    Column {
+                        Text(
+                            text = "Advanced Viewing & Eye Care",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 16.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Calibrate rendering parameters for comfortable reading",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Toggle 1: Auto Gamma
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Auto Gamma Correction",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Adapts contrast to environmental lighting profiles",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                    Switch(
+                        checked = autoGammaEnabled,
+                        onCheckedChange = { viewModel.setAutoGammaEnabled(it) }
+                    )
+                }
+
+                if (!autoGammaEnabled) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Gamma:",
+                            fontSize = 13.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f),
+                            modifier = Modifier.width(60.dp)
+                        )
+                        Slider(
+                            value = gamma,
+                            onValueChange = { viewModel.setGamma(it) },
+                            valueRange = 0.5f..2.0f,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Text(
+                            text = String.format("%.1fx", gamma),
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.width(40.dp),
+                            textAlign = TextAlign.End
+                        )
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Toggle 2: Auto Night Shift
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Auto-Night Shift",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Shifts color warmth automatically at night to block blue light",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                    Switch(
+                        checked = autoNightShift,
+                        onCheckedChange = { viewModel.setAutoNightShift(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Toggle 3: Manga Scan Crisper
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text(
+                            text = "Manga Scan Background Eraser",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 14.sp,
+                            color = MaterialTheme.colorScheme.onSurface
+                        )
+                        Text(
+                            text = "Binarizes background textures to whiten scans and crispen lines",
+                            fontSize = 11.sp,
+                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                        )
+                    }
+                    Switch(
+                        checked = mangaScanCrisper,
+                        onCheckedChange = { viewModel.setMangaScanCrisper(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Choice 4: Custom Tint Preset
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "Default Overlay Tint Preset",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp,
+                        color = MaterialTheme.colorScheme.onSurface
+                    )
+                    Text(
+                        text = "Select default paper color filter for eye comfort",
+                        fontSize = 11.sp,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.5f)
+                    )
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(rememberScrollState()),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val tints = listOf("None", "Parchment", "Eye Care Green", "Mint", "Cobalt Filter", "Warm Amber")
+                        tints.forEach { tint ->
+                            val selected = customTint == tint
+                            Box(
+                                modifier = Modifier
+                                    .clickable { viewModel.setCustomTint(tint) }
+                                    .background(
+                                        color = if (selected) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.4f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .border(
+                                        width = 1.dp,
+                                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.12f),
+                                        shape = RoundedCornerShape(8.dp)
+                                    )
+                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                            ) {
+                                Text(
+                                    text = tint,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         // --- SECTION 4: DEVICE-SPECIFIC AUTO-TUNER ---
-        val specs = remember { viewModel.getDeviceSpecs() }
+        val specs = viewModel.getDeviceSpecs()
+
         Spacer(modifier = Modifier.height(16.dp))
 
         Card(

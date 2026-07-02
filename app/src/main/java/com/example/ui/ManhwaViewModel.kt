@@ -154,21 +154,51 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _historyIndex = MutableStateFlow(-1)
     val historyIndex: StateFlow<Int> = _historyIndex.asStateFlow()
 
-    // --- State: View Enhancer Plugin Properties ---
-    private val _brightness = MutableStateFlow(1.0f)
-    val brightness: StateFlow<Float> = _brightness.asStateFlow()
-
-    private val _contrast = MutableStateFlow(1.0f)
-    val contrast: StateFlow<Float> = _contrast.asStateFlow()
-
-    private val _colorMode = MutableStateFlow(ColorMode.NORMAL)
-    val colorMode: StateFlow<ColorMode> = _colorMode.asStateFlow()
-
-    private val _hdModeEnabled = MutableStateFlow(true)
-    val hdModeEnabled: StateFlow<Boolean> = _hdModeEnabled.asStateFlow()
-
     // --- Core Fast-Render & WebP Caching Settings ---
     private val sharedPrefs = application.getSharedPreferences("manhwa_settings", Context.MODE_PRIVATE)
+
+    // --- State: View Enhancer Plugin Properties ---
+    private val _brightness = MutableStateFlow(sharedPrefs.getFloat("view_brightness", 1.0f))
+    val brightness: StateFlow<Float> = _brightness.asStateFlow()
+
+    private val _contrast = MutableStateFlow(sharedPrefs.getFloat("view_contrast", 1.0f))
+    val contrast: StateFlow<Float> = _contrast.asStateFlow()
+
+    private val _saturation = MutableStateFlow(sharedPrefs.getFloat("view_saturation", 1.0f))
+    val saturation: StateFlow<Float> = _saturation.asStateFlow()
+
+    private val _warmth = MutableStateFlow(sharedPrefs.getFloat("view_warmth", 0.0f))
+    val warmth: StateFlow<Float> = _warmth.asStateFlow()
+
+    private val _gamma = MutableStateFlow(sharedPrefs.getFloat("view_gamma", 1.0f))
+    val gamma: StateFlow<Float> = _gamma.asStateFlow()
+
+    private val _autoGammaEnabled = MutableStateFlow(sharedPrefs.getBoolean("auto_gamma", false))
+    val autoGammaEnabled: StateFlow<Boolean> = _autoGammaEnabled.asStateFlow()
+
+    private val _customTint = MutableStateFlow(sharedPrefs.getString("custom_tint", "None") ?: "None")
+    val customTint: StateFlow<String> = _customTint.asStateFlow()
+
+    private val _autoNightShift = MutableStateFlow(sharedPrefs.getBoolean("auto_night_shift", false))
+    val autoNightShift: StateFlow<Boolean> = _autoNightShift.asStateFlow()
+
+    private val _mangaScanCrisper = MutableStateFlow(sharedPrefs.getBoolean("manga_scan_crisper", false))
+    val mangaScanCrisper: StateFlow<Boolean> = _mangaScanCrisper.asStateFlow()
+
+    private val _colorMode = MutableStateFlow(
+        try {
+            ColorMode.valueOf(sharedPrefs.getString("color_mode", ColorMode.NORMAL.name) ?: ColorMode.NORMAL.name)
+        } catch (e: Exception) {
+            ColorMode.NORMAL
+        }
+    )
+    val colorMode: StateFlow<ColorMode> = _colorMode.asStateFlow()
+
+    private val _hdModeEnabled = MutableStateFlow(sharedPrefs.getBoolean("hd_mode_enabled", true))
+    val hdModeEnabled: StateFlow<Boolean> = _hdModeEnabled.asStateFlow()
+
+    private val _showEditFeatures = MutableStateFlow(sharedPrefs.getBoolean("show_edit_features", true))
+    val showEditFeatures: StateFlow<Boolean> = _showEditFeatures.asStateFlow()
 
     private val _qualitySelectionEnabled = MutableStateFlow(sharedPrefs.getBoolean("quality_selection_enabled", true))
     val qualitySelectionEnabled: StateFlow<Boolean> = _qualitySelectionEnabled.asStateFlow()
@@ -214,6 +244,15 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     private val _keepScreenOn = MutableStateFlow(sharedPrefs.getBoolean("keep_screen_on", true))
     val keepScreenOn: StateFlow<Boolean> = _keepScreenOn.asStateFlow()
+
+    private val _immersiveMode = MutableStateFlow(sharedPrefs.getBoolean("immersive_mode", false))
+    val immersiveMode: StateFlow<Boolean> = _immersiveMode.asStateFlow()
+
+    private val _volumeKeyNavigation = MutableStateFlow(sharedPrefs.getBoolean("volume_key_navigation", true))
+    val volumeKeyNavigation: StateFlow<Boolean> = _volumeKeyNavigation.asStateFlow()
+
+    private val _readingDirection = MutableStateFlow(sharedPrefs.getString("reading_direction", "Vertical") ?: "Vertical")
+    val readingDirection: StateFlow<String> = _readingDirection.asStateFlow()
 
     private val _preloadCount = MutableStateFlow(sharedPrefs.getInt("preload_count", 2))
     val preloadCount: StateFlow<Int> = _preloadCount.asStateFlow()
@@ -724,18 +763,63 @@ class ManhwaViewModel(private val application: Application, private val reposito
     // --- View Enhancer Controls ---
     fun setBrightness(value: Float) {
         _brightness.value = value
+        sharedPrefs.edit().putFloat("view_brightness", value).apply()
     }
 
     fun setContrast(value: Float) {
         _contrast.value = value
+        sharedPrefs.edit().putFloat("view_contrast", value).apply()
+    }
+
+    fun setSaturation(value: Float) {
+        _saturation.value = value
+        sharedPrefs.edit().putFloat("view_saturation", value).apply()
+    }
+
+    fun setWarmth(value: Float) {
+        _warmth.value = value
+        sharedPrefs.edit().putFloat("view_warmth", value).apply()
+    }
+
+    fun setGamma(value: Float) {
+        _gamma.value = value
+        sharedPrefs.edit().putFloat("view_gamma", value).apply()
+    }
+
+    fun setAutoGammaEnabled(enabled: Boolean) {
+        _autoGammaEnabled.value = enabled
+        sharedPrefs.edit().putBoolean("auto_gamma", enabled).apply()
+    }
+
+    fun setCustomTint(tint: String) {
+        _customTint.value = tint
+        sharedPrefs.edit().putString("custom_tint", tint).apply()
+    }
+
+    fun setAutoNightShift(enabled: Boolean) {
+        _autoNightShift.value = enabled
+        sharedPrefs.edit().putBoolean("auto_night_shift", enabled).apply()
+    }
+
+    fun setMangaScanCrisper(enabled: Boolean) {
+        _mangaScanCrisper.value = enabled
+        sharedPrefs.edit().putBoolean("manga_scan_crisper", enabled).apply()
     }
 
     fun setColorMode(mode: ColorMode) {
         _colorMode.value = mode
+        sharedPrefs.edit().putString("color_mode", mode.name).apply()
     }
 
     fun toggleHdMode() {
-        _hdModeEnabled.value = !_hdModeEnabled.value
+        val newVal = !_hdModeEnabled.value
+        _hdModeEnabled.value = newVal
+        sharedPrefs.edit().putBoolean("hd_mode_enabled", newVal).apply()
+    }
+
+    fun setShowEditFeatures(enabled: Boolean) {
+        _showEditFeatures.value = enabled
+        sharedPrefs.edit().putBoolean("show_edit_features", enabled).apply()
     }
 
     // --- Core Fast-Render & WebP Cache Controls ---
@@ -841,6 +925,21 @@ class ManhwaViewModel(private val application: Application, private val reposito
     fun setKeepScreenOn(enabled: Boolean) {
         _keepScreenOn.value = enabled
         sharedPrefs.edit().putBoolean("keep_screen_on", enabled).apply()
+    }
+
+    fun setImmersiveMode(enabled: Boolean) {
+        _immersiveMode.value = enabled
+        sharedPrefs.edit().putBoolean("immersive_mode", enabled).apply()
+    }
+
+    fun setVolumeKeyNavigation(enabled: Boolean) {
+        _volumeKeyNavigation.value = enabled
+        sharedPrefs.edit().putBoolean("volume_key_navigation", enabled).apply()
+    }
+
+    fun setReadingDirection(direction: String) {
+        _readingDirection.value = direction
+        sharedPrefs.edit().putString("reading_direction", direction).apply()
     }
 
     fun setPreloadCount(count: Int) {
