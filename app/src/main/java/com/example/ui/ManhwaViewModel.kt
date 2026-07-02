@@ -812,9 +812,12 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     fun toggleHdMode() {
-        val newVal = !_hdModeEnabled.value
-        _hdModeEnabled.value = newVal
-        sharedPrefs.edit().putBoolean("hd_mode_enabled", newVal).apply()
+        setHdModeEnabled(!_hdModeEnabled.value)
+    }
+
+    fun setHdModeEnabled(enabled: Boolean) {
+        _hdModeEnabled.value = enabled
+        sharedPrefs.edit().putBoolean("hd_mode_enabled", enabled).apply()
     }
 
     fun setShowEditFeatures(enabled: Boolean) {
@@ -987,9 +990,10 @@ class ManhwaViewModel(private val application: Application, private val reposito
         return DeviceSpecs(maxJvmHeapMb, processorCores, totalRamMb, category)
     }
 
-    fun applyRecommendedSettings() {
+    fun applyRecommendedSettings(forceTier: String? = null) {
         val specs = getDeviceSpecs()
-        when (specs.deviceCategory) {
+        val tier = forceTier ?: specs.deviceCategory
+        when (tier) {
             "LOW" -> {
                 setQualitySelectionEnabled(true)
                 setQualityLevel("LOW")
@@ -1048,6 +1052,23 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 setAutoScrollStep(1.5f)
             }
         }
+    }
+
+    fun resetSettings() {
+        // Reset all visible settings to defaults
+        setBrightness(1.0f)
+        setContrast(1.0f)
+        setSaturation(1.0f)
+        setWarmth(0.0f)
+        setGamma(1.0f)
+        setAutoGammaEnabled(false)
+        setCustomTint("None")
+        setAutoNightShift(false)
+        setMangaScanCrisper(false)
+        setColorMode(ColorMode.NORMAL)
+        setHdModeEnabled(false)
+        
+        applyRecommendedSettings(forceTier = "MEDIUM")
     }
 
     fun getQualityScaleFactor(level: String): Float {

@@ -23,6 +23,8 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.animateScrollBy
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
@@ -331,6 +333,8 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
             }
         }
     }
+    
+    var selectedTab by remember { mutableStateOf(0) }
 
     Column(
         modifier = Modifier
@@ -371,8 +375,27 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
                 )
             }
         }
-
-        if (manhwas.isEmpty()) {
+        
+        // Tabs
+        androidx.compose.material3.TabRow(
+            selectedTabIndex = selectedTab,
+            containerColor = MaterialTheme.colorScheme.surface,
+            contentColor = MaterialTheme.colorScheme.primary
+        ) {
+            androidx.compose.material3.Tab(
+                selected = selectedTab == 0,
+                onClick = { selectedTab = 0 },
+                text = { Text("Loaded PDFs") }
+            )
+            androidx.compose.material3.Tab(
+                selected = selectedTab == 1,
+                onClick = { selectedTab = 1 },
+                text = { Text("Reading Analysis") }
+            )
+        }
+        
+        if (selectedTab == 0) {
+            if (manhwas.isEmpty()) {
             // Elegant Empty Shelf State
             Box(
                 modifier = Modifier
@@ -663,6 +686,45 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
                 }
             }
         }
+        } else {
+            // Reading Analysis Tab
+            val totalManhwas = manhwas.size
+            val manhwasStarted = manhwas.count { it.lastReadPage > 0 }
+            val totalPagesRead = manhwas.sumOf { it.lastReadPage }
+
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+                    .padding(24.dp)
+            ) {
+                Text(
+                    text = "READING STATISTICS",
+                    fontSize = 18.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onBackground
+                )
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    AnalysisCard("Total Books", totalManhwas.toString(), modifier = Modifier.weight(1f))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    AnalysisCard("Books Started", manhwasStarted.toString(), modifier = Modifier.weight(1f))
+                }
+                Spacer(modifier = Modifier.height(16.dp))
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    AnalysisCard("Total Pages Read", totalPagesRead.toString(), modifier = Modifier.weight(1f))
+                    Spacer(modifier = Modifier.width(16.dp))
+                    AnalysisCard("Avg Completion", if (totalManhwas == 0) "0%" else "${(manhwasStarted * 100 / totalManhwas)}%", modifier = Modifier.weight(1f))
+                }
+            }
+        }
     }
 
     // Delete Confirmation dialog
@@ -690,6 +752,34 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
             containerColor = MaterialTheme.colorScheme.surface,
             shape = RoundedCornerShape(16.dp)
         )
+    }
+}
+
+@Composable
+fun AnalysisCard(title: String, value: String, modifier: Modifier = Modifier) {
+    Card(
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+        shape = RoundedCornerShape(12.dp),
+        modifier = modifier
+    ) {
+        Column(
+            modifier = Modifier.padding(16.dp),
+            horizontalAlignment = Alignment.CenterHorizontally
+        ) {
+            Text(
+                text = value,
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Black,
+                color = MaterialTheme.colorScheme.primary
+            )
+            Spacer(modifier = Modifier.height(4.dp))
+            Text(
+                text = title,
+                fontSize = 12.sp,
+                color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f),
+                textAlign = TextAlign.Center
+            )
+        }
     }
 }
 
@@ -1075,14 +1165,14 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
         }
     } else Modifier
 
+    val transformableState = rememberTransformableState { zoomChange, _, _ ->
+        val newZoom = (zoomScaleTarget * zoomChange).coerceIn(0.5f, 3.0f)
+        zoomScaleTarget = newZoom
+        viewModel.setActiveZoomScale(newZoom)
+    }
+
     val zoomGestureModifier = if (!isMagnifierEnabled && !isDrawModeOn) {
-        Modifier.pointerInput(Unit) {
-            detectTransformGestures { _, _, zoom, _ ->
-                val newZoom = (zoomScaleTarget * zoom).coerceIn(0.5f, 3.0f)
-                zoomScaleTarget = newZoom
-                viewModel.setActiveZoomScale(newZoom)
-            }
-        }
+        Modifier.transformable(state = transformableState)
     } else Modifier
 
     // Chapter navigation position memory restorer (Index + Offset)
@@ -1192,24 +1282,8 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
         val prevChapter = activeManhwa?.let { viewModel.getPreviousChapter(it) }
         val nextChapter = activeManhwa?.let { viewModel.getNextChapter(it) }
 
-        // Chapter reach auto-load checking
-        LaunchedEffect(lazyListState.firstVisibleItemIndex, lazyListState.isScrollInProgress) {
-            if (!lazyListState.isScrollInProgress) {
-                val hasNext = nextChapter != null
-                val totalPages = activeManhwa?.totalPages ?: 0
-                val totalListItems = totalPages + (if (prevChapter != null) 1 else 0) + (if (hasNext) 1 else 0)
-                val lastVisibleIdx = lazyListState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: 0
-                if (hasNext && lastVisibleIdx >= totalListItems - 1) {
-                    viewModel.navigateToChapter(nextChapter!!)
-                }
-
-                val hasPrev = prevChapter != null
-                val firstVisibleIdx = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull()?.index ?: 0
-                if (hasPrev && firstVisibleIdx == 0) {
-                    viewModel.navigateToChapter(prevChapter!!)
-                }
-            }
-        }
+        // Chapter reach auto-load checking removed to prevent chaotic scroll jumping
+        // Users must tap the Next/Prev chapter cards to navigate
 
         LazyColumn(
             state = lazyListState,
@@ -1227,7 +1301,10 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(16.dp)
-                            .clickable { viewModel.navigateToChapter(prevChapter) }
+                            .clickable { 
+                                viewModel.navigateToChapter(prevChapter)
+                                coroutineScope.launch { lazyListState.scrollToItem(0) }
+                            }
                     ) {
                         Column(
                             modifier = Modifier
@@ -1319,7 +1396,10 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(16.dp)
-                                .clickable { viewModel.navigateToChapter(nextChapter) }
+                                .clickable { 
+                                    viewModel.navigateToChapter(nextChapter)
+                                    coroutineScope.launch { lazyListState.scrollToItem(0) }
+                                }
                         ) {
                             Column(
                                 modifier = Modifier
@@ -1784,7 +1864,7 @@ fun PdfPageItem(
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .aspectRatio(aspect)
+                    .aspectRatio(1f / aspect)
             ) {
                 lowResBitmap?.let { bmp ->
                     val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode) {
@@ -3115,6 +3195,73 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
 
         Spacer(modifier = Modifier.height(20.dp))
 
+        // --- PRESETS ---
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Button(
+                onClick = { 
+                    viewModel.setQualityLevel("HIGH")
+                    viewModel.setQualitySelectionEnabled(true)
+                    viewModel.setBitmapConfigSetting("ARGB_8888")
+                    viewModel.setAggressiveGcEnabled(false)
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Device HD", fontSize = 11.sp, textAlign = TextAlign.Center)
+            }
+            Button(
+                onClick = { 
+                    viewModel.setQualityLevel("AVERAGE")
+                    viewModel.setQualitySelectionEnabled(true)
+                    viewModel.setBitmapConfigSetting("RGB_565")
+                    viewModel.setAggressiveGcEnabled(true)
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Device Smooth", fontSize = 11.sp, textAlign = TextAlign.Center)
+            }
+            Button(
+                onClick = { 
+                    viewModel.resetSettings()
+                },
+                modifier = Modifier.weight(1f),
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                shape = RoundedCornerShape(10.dp)
+            ) {
+                Text("Reset", fontSize = 11.sp, textAlign = TextAlign.Center)
+            }
+        }
+        
+        Button(
+            onClick = {
+                val memClass = (context.getSystemService(android.content.Context.ACTIVITY_SERVICE) as? android.app.ActivityManager)?.memoryClass ?: 256
+                if (memClass > 300) {
+                    viewModel.setQualityLevel("MAX")
+                    viewModel.setMaxStorageAllocation(600)
+                    viewModel.setBitmapConfigSetting("ARGB_8888")
+                    viewModel.setAggressiveGcEnabled(false)
+                } else {
+                    viewModel.setQualityLevel("AVERAGE")
+                    viewModel.setMaxStorageAllocation(200)
+                    viewModel.setBitmapConfigSetting("RGB_565")
+                    viewModel.setAggressiveGcEnabled(true)
+                }
+            },
+            modifier = Modifier.fillMaxWidth().padding(bottom = 20.dp),
+            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary),
+            shape = RoundedCornerShape(12.dp)
+        ) {
+            Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp))
+            Spacer(modifier = Modifier.width(8.dp))
+            Text("Auto-Adjust to Device Capability", fontSize = 13.sp)
+        }
+
         // --- SECTION 1: QUALITY SELECTION ---
         Card(
             colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
@@ -3989,6 +4136,35 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
 
                 Spacer(modifier = Modifier.height(14.dp))
 
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Button(
+                        onClick = {
+                            viewModel.applyRecommendedSettings(forceTier = "LOW")
+                            Toast.makeText(context, "Applied Device Smooth Profile", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Device Smooth", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                    Button(
+                        onClick = {
+                            viewModel.applyRecommendedSettings(forceTier = "HIGH")
+                            Toast.makeText(context, "Applied Device HD Profile", Toast.LENGTH_SHORT).show()
+                        },
+                        modifier = Modifier.weight(1f),
+                        colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                        shape = RoundedCornerShape(10.dp)
+                    ) {
+                        Text("Device HD", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+
                 Button(
                     onClick = {
                         viewModel.applyRecommendedSettings()
@@ -4002,6 +4178,23 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                     Spacer(modifier = Modifier.width(8.dp))
                     Text(
                         text = "Auto-Apply Best Settings",
+                        fontWeight = FontWeight.Bold,
+                        fontSize = 14.sp
+                    )
+                }
+                
+                Spacer(modifier = Modifier.height(8.dp))
+                Button(
+                    onClick = {
+                        viewModel.resetSettings()
+                        Toast.makeText(context, "Settings Reset to Defaults!", Toast.LENGTH_SHORT).show()
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text(
+                        text = "Reset All Settings",
                         fontWeight = FontWeight.Bold,
                         fontSize = 14.sp
                     )
