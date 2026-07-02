@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
 
@@ -438,6 +439,8 @@ class ManhwaViewModel(private val application: Application, private val reposito
                     for (i in startPage until (startPage + 5).coerceAtMost(pageCount)) {
                         r.getPageAspectRatio(i)
                     }
+                    // Start AOT Background Pre-processor for true instant loading
+                    startAotPreload(manhwa, r, startPage)
                 } catch (e: Throwable) {
                     e.printStackTrace()
                 }
@@ -445,6 +448,58 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
             // Save last opened
             repository.updateManhwa(manhwa.copy(lastOpened = System.currentTimeMillis()))
+        }
+    }
+
+    private var aotJob: kotlinx.coroutines.Job? = null
+
+    private fun startAotPreload(manhwa: Manhwa, renderer: ManhwaPdfRenderer, startPage: Int) {
+        aotJob?.cancel()
+        aotJob = viewModelScope.launch(Dispatchers.IO) {
+            val totalPages = renderer.pageCount
+            val targetWidth = 1080 // Assumption for standard screens. A real target width is dynamically passed in renderPageSlice, but for AOT, 1080 is a safe baseline.
+            
+            // Loop through pages radiating outwards from current page
+            // Or simply forward from the current page to the end
+            for (i in startPage until totalPages) {
+                if (!isActive) break
+                try {
+                    // Pre-generate the low-res placeholder instantly
+                    renderer.renderPageLowRes(
+                        pageIndex = i,
+                        targetWidth = targetWidth,
+                        bitmapConfig = _bitmapConfigSetting.value
+                    )
+                    kotlinx.coroutines.delay(50) // Yield CPU to avoid UI stutters
+
+                    val aspect = renderer.getPageAspectRatio(i)
+                    val scaleFactor = getQualityScaleFactor(_qualityLevel.value)
+                    val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
+                    val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
+                    val sliceHeight = _sliceHeight.value
+                    val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
+                    
+                    // Pre-render actual slices (WebP compression runs in background)
+                    for (slice in 0 until numSlices) {
+                        if (!isActive) break
+                        renderer.renderPageSlice(
+                            pageIndex = i,
+                            targetWidth = targetWidth,
+                            sliceIndex = slice,
+                            sliceHeight = sliceHeight,
+                            scaleFactor = scaleFactor,
+                            qualitySelectionEnabled = _qualitySelectionEnabled.value,
+                            qualityLevel = _qualityLevel.value,
+                            qualityCompression = _webpQuality.value,
+                            maxStorageAllocationMb = _maxStorageAllocation.value,
+                            bitmapConfig = _bitmapConfigSetting.value
+                        )
+                        kotlinx.coroutines.delay(50) // Yield CPU heavily
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
+                }
+            }
         }
     }
 

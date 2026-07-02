@@ -33,6 +33,12 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
             override fun sizeOf(key: String, value: Bitmap): Int {
                 return value.byteCount
             }
+            override fun entryRemoved(evicted: Boolean, key: String, oldValue: Bitmap, newValue: Bitmap?) {
+                super.entryRemoved(evicted, key, oldValue, newValue)
+                if (evicted && oldValue !== newValue) {
+                    webPCacheManager.releaseBitmap(oldValue)
+                }
+            }
         }
     }
 
