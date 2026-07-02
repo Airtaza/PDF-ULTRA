@@ -1141,6 +1141,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     val isMagnifierEnabled by viewModel.isMagnifierEnabled.collectAsStateWithLifecycle()
     val zoomLockEnabled by viewModel.zoomLockEnabled.collectAsStateWithLifecycle()
     val lockedZoomLevel by viewModel.lockedZoomLevel.collectAsStateWithLifecycle()
+    val doubleTapZoomScale by viewModel.doubleTapZoomScale.collectAsStateWithLifecycle()
 
     val pageSpacing by viewModel.pageSpacing.collectAsStateWithLifecycle()
     val keepScreenOn by viewModel.keepScreenOn.collectAsStateWithLifecycle()
@@ -1386,11 +1387,38 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                         onPdfClick = {
                             val currentTime = System.currentTimeMillis()
                             if (currentTime - lastClickTime > 100) {
-                                    lastClickTime = currentTime
-                                    areControlsVisible = !areControlsVisible
+                                lastClickTime = currentTime
+                                areControlsVisible = !areControlsVisible
+                            }
+                        },
+                        onDoubleTap = { fractionX, fractionY, aspect ->
+                            val viewportHeight = lazyListState.layoutInfo.viewportSize.height
+                            val targetScrollX = (fractionX * componentWidth * doubleTapZoomScale) - (componentWidth / 2f)
+                            val pageHeight = componentWidth * aspect
+                            val targetOffsetY = (fractionY * pageHeight * doubleTapZoomScale) - (viewportHeight / 2f)
+                            coroutineScope.launch {
+                                kotlinx.coroutines.delay(80)
+                                launch {
+                                    horizScrollState.animateScrollTo(
+                                        targetScrollX.toInt().coerceIn(0, horizScrollState.maxValue)
+                                    )
+                                }
+                                launch {
+                                    try {
+                                        lazyListState.animateScrollToItem(
+                                            index = pageIdx,
+                                            scrollOffset = targetOffsetY.toInt().coerceAtLeast(0)
+                                        )
+                                    } catch (e: Exception) {
+                                        lazyListState.scrollToItem(
+                                            index = pageIdx,
+                                            scrollOffset = targetOffsetY.toInt().coerceAtLeast(0)
+                                        )
+                                    }
                                 }
                             }
-                        )
+                        }
+                    )
 
                         // Draw drawing sketch overlay on page
                         if (isSketchEditorEnabled) {
@@ -1795,7 +1823,8 @@ fun PdfPageItem(
     autoNightShift: Boolean,
     mangaScanCrisper: Boolean,
     colorMode: ManhwaViewModel.ColorMode,
-    onPdfClick: () -> Unit
+    onPdfClick: () -> Unit,
+    onDoubleTap: (fractionX: Float, fractionY: Float, aspect: Float) -> Unit
 ) {
     val scaleFactor by viewModel.activeScaleFactor.collectAsStateWithLifecycle()
     var aspectRatio by remember { mutableStateOf<Float?>(null) }
@@ -1822,7 +1851,7 @@ fun PdfPageItem(
                     onTap = {
                         onPdfClick()
                     },
-                    onDoubleTap = {
+                    onDoubleTap = { tapOffset ->
                         if (hapticFeedbackEnabled) {
                             try {
                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
@@ -1836,6 +1865,11 @@ fun PdfPageItem(
                             }
                         } else {
                             viewModel.setActiveZoomScale(doubleTapZoomScale)
+                            val aspect = aspectRatio ?: 1.0f
+                            val pageHeight = targetWidth * aspect
+                            val fractionX = tapOffset.x / targetWidth
+                            val fractionY = tapOffset.y / pageHeight
+                            onDoubleTap(fractionX, fractionY, aspect)
                         }
                     }
                 )
