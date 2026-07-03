@@ -170,17 +170,27 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                     val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
                     val totalHeight = (totalWidth * halfPageAspectRatio).toInt().coerceAtLeast(400)
 
-                    val sliceY = if (isLowResPlaceholder) 0 else sliceIndex * sliceHeight
-                    val actualSliceHeight = if (isLowResPlaceholder) totalHeight else (totalHeight - sliceY).coerceAtMost(sliceHeight)
+                    // Calculate slices based on the base page height (at scale 1.0) to keep numSlices stable
+                    val basePageHeight = targetWidth * halfPageAspectRatio
+                    val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
 
-                    if (actualSliceHeight <= 0) return@synchronized null
+                    val pixelSliceY = if (isLowResPlaceholder) 0 else (sliceIndex * sliceHeight * scaleFactor).toInt()
+                    val pixelRenderHeight = if (isLowResPlaceholder) {
+                        totalHeight 
+                    } else if (sliceIndex == numSlices - 1) {
+                        totalHeight - pixelSliceY
+                    } else {
+                        ((sliceIndex + 1) * sliceHeight * scaleFactor).toInt() - pixelSliceY
+                    }
+
+                    if (pixelRenderHeight <= 0) return@synchronized null
                     if (!this@withContext.isActive) return@synchronized null
 
                     // PdfRenderer strictly requires ARGB_8888 format
                     val config = Bitmap.Config.ARGB_8888
-                    var bmp = webPCacheManager.getReusableBitmap(totalWidth, actualSliceHeight, config)
+                    var bmp = webPCacheManager.getReusableBitmap(totalWidth, pixelRenderHeight, config)
                     if (bmp == null) {
-                        bmp = Bitmap.createBitmap(totalWidth, actualSliceHeight, config)
+                        bmp = Bitmap.createBitmap(totalWidth, pixelRenderHeight, config)
                     }
                     
                     // Fill with white background, as PdfRenderer draws on top and many PDFs have transparent backgrounds
@@ -196,7 +206,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                     matrix.postScale(scaleX, scaleY)
                     
                     val translateX = if (landscapeSplitMode == "RIGHT_HALF") -totalWidth.toFloat() else 0f
-                    matrix.postTranslate(translateX, -sliceY.toFloat())
+                    matrix.postTranslate(translateX, -pixelSliceY.toFloat())
 
                     if (!this@withContext.isActive) {
                         bmp.recycle()

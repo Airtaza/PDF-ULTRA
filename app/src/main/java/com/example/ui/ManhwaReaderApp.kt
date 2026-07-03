@@ -1854,15 +1854,15 @@ fun PdfPageSliceItem(
         isRendering = false
     }
 
-    val sliceY = sliceIndex * sliceHeight
-    val actualSliceHeight = (totalHeight - sliceY).coerceAtMost(sliceHeight)
+    val pixelSliceY = (sliceIndex * sliceHeight * scaleFactor).toInt()
+    val pixelRenderHeight = (totalHeight - pixelSliceY).coerceAtMost((sliceHeight * scaleFactor).toInt()).coerceAtLeast(0)
     
-    if (actualSliceHeight <= 0 || totalWidth <= 0) {
+    if (pixelRenderHeight <= 0 || totalWidth <= 0) {
         Spacer(modifier = Modifier.height(1.dp))
         return
     }
     
-    val sliceWidthToHeightRatio = totalWidth.toFloat() / actualSliceHeight.toFloat()
+    val sliceWidthToHeightRatio = totalWidth.toFloat() / pixelRenderHeight.toFloat()
 
     Box(
         modifier = Modifier
@@ -1942,6 +1942,7 @@ fun PdfPageItem(
         isLoadingAspect = true
         val baseAspect = viewModel.getPageAspectRatio(pageIndex)
         aspectRatio = if (landscapeSplitMode != "NONE") baseAspect * 2f else baseAspect
+        if (aspectRatio == null || (aspectRatio ?: 0f) <= 0.01f) aspectRatio = 1.0f 
         isLoadingAspect = false
     }
 
@@ -2009,7 +2010,8 @@ fun PdfPageItem(
 
             val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
             val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
-            val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
+            val basePageHeight = targetWidth * aspect
+            val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
 
             var lowResBitmap by remember { mutableStateOf<Bitmap?>(null) }
             LaunchedEffect(pageIndex, targetWidth, isScrollInProgress, lowResScrollDelay, viewModel, landscapeSplitMode) {
@@ -2417,14 +2419,16 @@ fun HUDBottomBar(
         ) {
             // View Enhancer Control panel
             if (isViewEnhancerEnabled && showEnhancerControls) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 280.dp)
-                        .background(Color.Black.copy(alpha = 0.92f))
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth(0.95f)
+                            .heightIn(max = 240.dp)
+                            .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                            .background(Color.Black.copy(alpha = 0.95f))
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.SpaceBetween,
@@ -2730,17 +2734,20 @@ fun HUDBottomBar(
                     }
                 }
             }
+        }
 
             // Zoom & Focus engine control panel
             if (showZoomControls) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 280.dp)
-                        .background(Color.Black.copy(alpha = 0.92f))
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth(0.95f)
+                            .heightIn(max = 240.dp)
+                            .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                            .background(Color.Black.copy(alpha = 0.95f))
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
                     Text(
                         "ZOOM & FOCUS ENGINE",
                         fontSize = 11.sp,
@@ -2877,17 +2884,20 @@ fun HUDBottomBar(
                     }
                 }
             }
+        }
 
             // Hands-Free Auto-Scroll control panel
             if (showScrollControls) {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .heightIn(max = 280.dp)
-                        .background(Color.Black.copy(alpha = 0.92f))
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
+                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth(0.95f)
+                            .heightIn(max = 240.dp)
+                            .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
+                            .background(Color.Black.copy(alpha = 0.95f))
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 16.dp, vertical = 8.dp)
+                    ) {
                     Text(
                         "HANDS-FREE AUTO-SCROLL MODE",
                         fontSize = 11.sp,
@@ -2933,10 +2943,11 @@ fun HUDBottomBar(
                     )
                 }
             }
+        }
 
 
 
-            // Main HUD action buttons
+        // Main HUD action buttons
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
