@@ -489,6 +489,47 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _isMagnifierEnabled = MutableStateFlow(false)
     val isMagnifierEnabled: StateFlow<Boolean> = _isMagnifierEnabled.asStateFlow()
 
+    // --- Lightroom-style View Settings (Exposure, Highlights, Shadows) ---
+    private val _exposure = MutableStateFlow(sharedPrefs.getFloat("view_exposure", 1.0f))
+    val exposure: StateFlow<Float> = _exposure.asStateFlow()
+
+    private val _highlights = MutableStateFlow(sharedPrefs.getFloat("view_highlights", 0.0f))
+    val highlights: StateFlow<Float> = _highlights.asStateFlow()
+
+    private val _shadows = MutableStateFlow(sharedPrefs.getFloat("view_shadows", 0.0f))
+    val shadows: StateFlow<Float> = _shadows.asStateFlow()
+
+    fun setExposure(value: Float) {
+        _exposure.value = value
+        sharedPrefs.edit().putFloat("view_exposure", value).apply()
+    }
+
+    fun setHighlights(value: Float) {
+        _highlights.value = value
+        sharedPrefs.edit().putFloat("view_highlights", value).apply()
+    }
+
+    fun setShadows(value: Float) {
+        _shadows.value = value
+        sharedPrefs.edit().putFloat("view_shadows", value).apply()
+    }
+
+    fun resetViewEnhancerSettings() {
+        setBrightness(1.0f)
+        setContrast(1.0f)
+        setSaturation(1.0f)
+        setWarmth(0.0f)
+        setGamma(1.0f)
+        setAutoGammaEnabled(false)
+        setCustomTint("None")
+        setAutoNightShift(false)
+        setMangaScanCrisper(false)
+        setColorMode(ColorMode.NORMAL)
+        setExposure(1.0f)
+        setHighlights(0.0f)
+        setShadows(0.0f)
+    }
+
     val activeScaleFactor: StateFlow<Float> = combine(
         _qualitySelectionEnabled,
         _qualityLevel,
@@ -828,11 +869,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
             try {
                 val id = repository.importPdf(uri)
                 _importingState.value = ImportState.Success("Successfully imported!")
-                if (!_qualitySelectionEnabled.value) {
-                    val manhwa = repository.getManhwaById(id)
-                    if (manhwa != null) {
-                        openManhwaInTab(manhwa)
-                    }
+                val manhwa = repository.getManhwaById(id)
+                if (manhwa != null) {
+                    openManhwaInTab(manhwa)
                 }
             } catch (e: Exception) {
                 _importingState.value = ImportState.Error(e.localizedMessage ?: "Failed to import PDF")

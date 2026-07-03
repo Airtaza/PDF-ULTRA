@@ -1106,6 +1106,11 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     val colorMode by viewModel.colorMode.collectAsStateWithLifecycle()
     val hdMode by viewModel.hdModeEnabled.collectAsStateWithLifecycle()
 
+    // Lightroom Enhancements
+    val exposure by viewModel.exposure.collectAsStateWithLifecycle()
+    val highlights by viewModel.highlights.collectAsStateWithLifecycle()
+    val shadows by viewModel.shadows.collectAsStateWithLifecycle()
+
     // Sketch editor
     val drawColor by viewModel.activeDrawColor.collectAsStateWithLifecycle()
     val strokeWidth by viewModel.activeStrokeWidth.collectAsStateWithLifecycle()
@@ -1277,10 +1282,12 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
         lastScrollOffset = lazyListState.firstVisibleItemScrollOffset
     }
 
+    val backgroundBrushModifier = Modifier.background(Color.Black)
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .background(Color.Black) // Perfect backdrop for comics
+            .then(backgroundBrushModifier)
             .onGloballyPositioned { componentWidth = it.size.width }
             .then(magnifierGestureModifier)
             .then(zoomGestureModifier)
@@ -1636,7 +1643,14 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                 canNavigateBack = viewModel.canNavigateBack(),
                 canNavigateForward = viewModel.canNavigateForward(),
                 onNavigateBack = { viewModel.navigateBack() },
-                onNavigateForward = { viewModel.navigateForward() }
+                onNavigateForward = { viewModel.navigateForward() },
+                exposure = exposure,
+                highlights = highlights,
+                shadows = shadows,
+                onExposureChange = { viewModel.setExposure(it) },
+                onHighlightsChange = { viewModel.setHighlights(it) },
+                onShadowsChange = { viewModel.setShadows(it) },
+                onResetViewEnhancerSettings = { viewModel.resetViewEnhancerSettings() }
             )
         }
 
@@ -1678,6 +1692,8 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                 )
             }
         }
+
+
     }
 
     // Bookmark / Title creation dialog
@@ -1747,6 +1763,10 @@ fun PdfPageSliceItem(
     val hdScrollDelay by viewModel.hdScrollDelay.collectAsStateWithLifecycle()
     val staggerDelay by viewModel.staggerDelay.collectAsStateWithLifecycle()
 
+    val exposure by viewModel.exposure.collectAsStateWithLifecycle()
+    val highlights by viewModel.highlights.collectAsStateWithLifecycle()
+    val shadows by viewModel.shadows.collectAsStateWithLifecycle()
+
     var sliceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isRendering by remember { mutableStateOf(true) }
 
@@ -1778,7 +1798,7 @@ fun PdfPageSliceItem(
     ) {
         val bitmap = sliceBitmap
         if (bitmap != null) {
-            val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode) {
+            val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows) {
                 getAdjustedColorMatrix(
                     brightness = brightness,
                     contrast = contrast,
@@ -1789,7 +1809,10 @@ fun PdfPageSliceItem(
                     customTint = customTint,
                     autoNightShift = autoNightShift,
                     mangaScanCrisper = mangaScanCrisper,
-                    mode = colorMode
+                    mode = colorMode,
+                    exposure = exposure,
+                    highlights = highlights,
+                    shadows = shadows
                 )
             }
 
@@ -1829,6 +1852,10 @@ fun PdfPageItem(
     val scaleFactor by viewModel.activeScaleFactor.collectAsStateWithLifecycle()
     var aspectRatio by remember { mutableStateOf<Float?>(null) }
     var isLoadingAspect by remember { mutableStateOf(true) }
+
+    val exposure by viewModel.exposure.collectAsStateWithLifecycle()
+    val highlights by viewModel.highlights.collectAsStateWithLifecycle()
+    val shadows by viewModel.shadows.collectAsStateWithLifecycle()
 
     val doubleTapZoomScale by viewModel.doubleTapZoomScale.collectAsStateWithLifecycle()
     val doubleTapResetEnabled by viewModel.doubleTapResetEnabled.collectAsStateWithLifecycle()
@@ -1922,7 +1949,7 @@ fun PdfPageItem(
                     .aspectRatio(1f / aspect)
             ) {
                 lowResBitmap?.let { bmp ->
-                    val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode) {
+                    val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows) {
                         getAdjustedColorMatrix(
                             brightness = brightness,
                             contrast = contrast,
@@ -1933,7 +1960,10 @@ fun PdfPageItem(
                             customTint = customTint,
                             autoNightShift = autoNightShift,
                             mangaScanCrisper = mangaScanCrisper,
-                            mode = colorMode
+                            mode = colorMode,
+                            exposure = exposure,
+                            highlights = highlights,
+                            shadows = shadows
                         )
                     }
                     Image(
@@ -2282,7 +2312,14 @@ fun HUDBottomBar(
     canNavigateBack: Boolean,
     canNavigateForward: Boolean,
     onNavigateBack: () -> Unit,
-    onNavigateForward: () -> Unit
+    onNavigateForward: () -> Unit,
+    exposure: Float,
+    highlights: Float,
+    shadows: Float,
+    onExposureChange: (Float) -> Unit,
+    onHighlightsChange: (Float) -> Unit,
+    onShadowsChange: (Float) -> Unit,
+    onResetViewEnhancerSettings: () -> Unit
 ) {
     var showEnhancerControls by remember { mutableStateOf(false) }
     var showZoomControls by remember { mutableStateOf(false) }
@@ -2305,13 +2342,28 @@ fun HUDBottomBar(
                         .background(Color.Black.copy(alpha = 0.95f))
                         .padding(horizontal = 16.dp, vertical = 12.dp)
                 ) {
-                    Text(
-                        "IMAGE ENHANCEMENTS & FILTERS",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.Black,
-                        letterSpacing = 1.sp,
-                        color = MaterialTheme.colorScheme.primary
-                    )
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            "IMAGE ENHANCEMENTS & FILTERS",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Black,
+                            letterSpacing = 1.sp,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Text(
+                            text = "RESET ALL",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.error,
+                            modifier = Modifier
+                                .clickable { onResetViewEnhancerSettings() }
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        )
+                    }
 
                     Spacer(modifier = Modifier.height(10.dp))
 
@@ -2339,6 +2391,45 @@ fun HUDBottomBar(
                             colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
                         )
                         Text(String.format("%.1fx", contrast), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                    }
+
+                    // Exposure slider
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Exposure", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                        Slider(
+                            value = exposure,
+                            onValueChange = onExposureChange,
+                            valueRange = 0.5f..2.0f,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
+                        )
+                        Text(String.format("%.1fx", exposure), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                    }
+
+                    // Highlights slider
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Highlights", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                        Slider(
+                            value = highlights,
+                            onValueChange = onHighlightsChange,
+                            valueRange = -1.0f..1.0f,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
+                        )
+                        Text(String.format("%+.1f", highlights), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                    }
+
+                    // Shadows slider
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Text("Shadows", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                        Slider(
+                            value = shadows,
+                            onValueChange = onShadowsChange,
+                            valueRange = -1.0f..1.0f,
+                            modifier = Modifier.weight(1f),
+                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
+                        )
+                        Text(String.format("%+.1f", shadows), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
                     }
 
                     // Saturation slider
@@ -2722,6 +2813,8 @@ fun HUDBottomBar(
                 }
             }
 
+
+
             // Main HUD action buttons
             Row(
                 modifier = Modifier
@@ -3028,7 +3121,10 @@ fun getAdjustedColorMatrix(
     customTint: String,
     autoNightShift: Boolean,
     mangaScanCrisper: Boolean,
-    mode: ManhwaViewModel.ColorMode
+    mode: ManhwaViewModel.ColorMode,
+    exposure: Float = 1.0f,
+    highlights: Float = 0.0f,
+    shadows: Float = 0.0f
 ): ColorMatrix {
     val calendar = java.util.Calendar.getInstance()
     val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
@@ -3045,8 +3141,9 @@ fun getAdjustedColorMatrix(
     }
 
     // Apply gamma multiplier approximation on base scale and translation
-    val baseScale = contrast * brightness
-    val baseTranslate = ((1.0f - contrast) * 0.5f + (brightness - 1.0f)) * 255f
+    val overallScale = brightness * exposure
+    val baseScale = contrast * overallScale
+    val baseTranslate = ((1.0f - contrast) * 0.5f + (overallScale - 1.0f)) * 255f
 
     // Nonlinear mapping approximation
     val scale = if (effectiveGamma > 0f) Math.pow(baseScale.toDouble(), 1.0 / effectiveGamma.toDouble()).toFloat() else baseScale
@@ -3055,10 +3152,18 @@ fun getAdjustedColorMatrix(
     var finalScale = scale
     var finalTranslate = translate
 
+    // Highlights correction (stretches or compresses the brighter end)
+    finalScale = finalScale * (1.0f + highlights * 0.12f)
+    finalTranslate = finalTranslate - highlights * 15f
+
+    // Shadows correction (lifts or crushes the darker end)
+    finalTranslate = finalTranslate + shadows * 35f
+    finalScale = finalScale * (1.0f - shadows * 0.08f)
+
     if (mangaScanCrisper) {
         // High contrast and high brightness thresholding to wash out scan gray backgrounds to pure white
-        finalScale = scale * 2.2f
-        finalTranslate = translate - 95f
+        finalScale = finalScale * 2.2f
+        finalTranslate = finalTranslate - 95f
     }
 
     val baseMatrix = when (mode) {
@@ -4179,6 +4284,12 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                         }
                     }
                 }
+
+                Spacer(modifier = Modifier.height(12.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                Spacer(modifier = Modifier.height(12.dp))
+
+
             }
         }
 

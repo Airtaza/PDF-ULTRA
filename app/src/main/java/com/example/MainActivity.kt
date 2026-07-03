@@ -1,6 +1,9 @@
 package com.example
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
+import android.os.Parcelable
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -24,6 +27,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
+        // Handle incoming PDF intent when app starts
+        intent?.let { handlePdfIntent(it) }
+
         setContent {
             MyApplicationTheme {
                 Surface(
@@ -31,6 +37,35 @@ class MainActivity : ComponentActivity() {
                     color = MaterialTheme.colorScheme.background
                 ) {
                     ManhwaReaderApp(viewModel = viewModel)
+                }
+            }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handlePdfIntent(intent)
+    }
+
+    private fun handlePdfIntent(intent: Intent) {
+        val action = intent.action
+        val type = intent.type
+        if (Intent.ACTION_VIEW == action && type == "application/pdf") {
+            intent.data?.let { uri ->
+                viewModel.importPdfFile(uri)
+            }
+        } else if (Intent.ACTION_SEND == action && type == "application/pdf") {
+            (intent.getParcelableExtra<Parcelable>(Intent.EXTRA_STREAM) as? Uri)?.let { uri ->
+                viewModel.importPdfFile(uri)
+            }
+        } else if (Intent.ACTION_VIEW == action) {
+            // Support cases where files are opened without MIME type but scheme represents a PDF file
+            intent.data?.let { uri ->
+                val scheme = uri.scheme
+                val path = uri.path
+                if (scheme == "content" || (scheme == "file" && path?.endsWith(".pdf", ignoreCase = true) == true)) {
+                    viewModel.importPdfFile(uri)
                 }
             }
         }
