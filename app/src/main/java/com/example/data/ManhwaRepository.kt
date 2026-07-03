@@ -28,6 +28,16 @@ class ManhwaRepository(private val context: Context, private val dao: ManhwaDao)
 
     suspend fun updatePlugin(plugin: PluginConfig) = dao.insertPlugin(plugin)
 
+    val allReadingEvents: Flow<List<ReadingEvent>> = dao.getAllReadingEvents()
+
+    suspend fun logReadingEvent(manhwaId: Long, pageIndex: Int) = withContext(Dispatchers.IO) {
+        dao.insertReadingEvent(ReadingEvent(manhwaId = manhwaId, pageIndex = pageIndex))
+    }
+
+    suspend fun clearReadingStats() = withContext(Dispatchers.IO) {
+        dao.clearAllReadingEvents()
+    }
+
     suspend fun importPdf(uri: Uri): Long = withContext(Dispatchers.IO) {
         var name = "Imported_Manhwa.pdf"
         context.contentResolver.query(uri, null, null, null, null)?.use { cursor ->

@@ -29,3 +29,14 @@ data class PluginConfig(
     val description: String,
     val enabled: Boolean
 )
+
+@Entity(tableName = "reading_events")
+data class ReadingEvent(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val manhwaId: Long,
+    val pageIndex: Int,
+    val virtualPageIndex: Int = -1,
+    val durationSeconds: Int = 0,
+    val timestamp: Long = System.currentTimeMillis()
+)
+

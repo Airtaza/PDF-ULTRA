@@ -123,12 +123,13 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
         qualityCompression: Int = 90,
         maxStorageAllocationMb: Int = 500,
         isLowResPlaceholder: Boolean = false,
-        bitmapConfig: String = "ARGB_8888"
+        bitmapConfig: String = "ARGB_8888",
+        landscapeSplitMode: String = "NONE" // "NONE", "LEFT_HALF", "RIGHT_HALF"
     ): Bitmap? = withContext(Dispatchers.IO) {
         if (!this@withContext.isActive) return@withContext null
 
         val scaleStr = String.format(java.util.Locale.US, "%.2f", scaleFactor)
-        val cacheKey = if (isLowResPlaceholder) "${pageIndex}_low" else "${pageIndex}_${sliceIndex}_$scaleStr"
+        val cacheKey = if (isLowResPlaceholder) "${pageIndex}_low_$landscapeSplitMode" else "${pageIndex}_${sliceIndex}_${scaleStr}_$landscapeSplitMode"
         val cached = memoryCache.get(cacheKey)
         if (cached != null && !cached.isRecycled) {
             return@withContext cached
@@ -162,8 +163,11 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                     val heightPt = page.height
                     val pageAspectRatio = heightPt.toFloat() / widthPt.toFloat()
 
+                    val isSplit = landscapeSplitMode != "NONE"
+                    val halfPageAspectRatio = if (isSplit) 2f * pageAspectRatio else pageAspectRatio
+
                     val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
-                    val totalHeight = (totalWidth * pageAspectRatio).toInt().coerceAtLeast(400)
+                    val totalHeight = (totalWidth * halfPageAspectRatio).toInt().coerceAtLeast(400)
 
                     val sliceY = if (isLowResPlaceholder) 0 else sliceIndex * sliceHeight
                     val actualSliceHeight = if (isLowResPlaceholder) totalHeight else (totalHeight - sliceY).coerceAtMost(sliceHeight)
@@ -182,12 +186,14 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                     val canvas = android.graphics.Canvas(bmp)
                     canvas.drawColor(android.graphics.Color.WHITE)
 
-                    val scaleX = totalWidth.toFloat() / widthPt
-                    val scaleY = totalHeight.toFloat() / heightPt
+                    val scaleX = if (isSplit) totalWidth.toFloat() / (widthPt / 2f) else totalWidth.toFloat() / widthPt
+                    val scaleY = if (isSplit) totalHeight.toFloat() / heightPt else totalHeight.toFloat() / heightPt
 
                     val matrix = Matrix()
                     matrix.postScale(scaleX, scaleY)
-                    matrix.postTranslate(0f, -sliceY.toFloat())
+                    
+                    val translateX = if (landscapeSplitMode == "RIGHT_HALF") -totalWidth.toFloat() else 0f
+                    matrix.postTranslate(translateX, -sliceY.toFloat())
 
                     if (!this@withContext.isActive) {
                         bmp.recycle()
@@ -234,27 +240,32 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
         qualityLevel: String = "HIGH",
         qualityCompression: Int = 90,
         maxStorageAllocationMb: Int = 500,
-        bitmapConfig: String = "ARGB_8888"
+        bitmapConfig: String = "ARGB_8888",
+        landscapeSplitMode: String = "NONE"
     ): Bitmap? {
         val aspect = getPageAspectRatio(pageIndex)
+        val halfAspect = if (landscapeSplitMode != "NONE") 2 * aspect else aspect
         val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
-        val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
+        val totalHeight = (totalWidth * halfAspect).toInt().coerceAtLeast(400)
         return renderPageSlice(
             pageIndex, targetWidth, 0, totalHeight, scaleFactor,
             qualitySelectionEnabled, qualityLevel, qualityCompression, maxStorageAllocationMb,
-            bitmapConfig = bitmapConfig
+            bitmapConfig = bitmapConfig,
+            landscapeSplitMode = landscapeSplitMode
         )
     }
 
     suspend fun renderPageLowRes(
         pageIndex: Int,
         targetWidth: Int,
-        bitmapConfig: String = "ARGB_8888"
+        bitmapConfig: String = "ARGB_8888",
+        landscapeSplitMode: String = "NONE"
     ): Bitmap? {
         val aspect = getPageAspectRatio(pageIndex)
+        val halfAspect = if (landscapeSplitMode != "NONE") 2 * aspect else aspect
         val lowResScale = 0.4f
         val totalWidth = (targetWidth * lowResScale).toInt().coerceAtLeast(200)
-        val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(200)
+        val totalHeight = (totalWidth * halfAspect).toInt().coerceAtLeast(200)
         return renderPageSlice(
             pageIndex = pageIndex,
             targetWidth = targetWidth,
@@ -266,7 +277,8 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
             qualityCompression = 60,
             maxStorageAllocationMb = 100,
             isLowResPlaceholder = true,
-            bitmapConfig = bitmapConfig
+            bitmapConfig = bitmapConfig,
+            landscapeSplitMode = landscapeSplitMode
         )
     }
 

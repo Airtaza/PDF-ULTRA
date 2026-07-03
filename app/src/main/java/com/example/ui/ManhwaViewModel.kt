@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.Bookmark
 import com.example.data.Manhwa
 import com.example.data.ManhwaRepository
+import com.example.data.ReadingEvent
 import com.example.data.PluginConfig
 import com.example.data.SecurePreferencesManager
 import com.example.data.ServerTrialClient
@@ -54,6 +55,12 @@ data class UltraTab(
 enum class TabType {
     LIBRARY, PLUGINS, READER, SETTINGS
 }
+
+data class VirtualPage(
+    val physicalPageIndex: Int,
+    val splitMode: String, // "NONE", "LEFT_HALF", "RIGHT_HALF"
+    val virtualIndex: Int
+)
 
 class ManhwaViewModel(private val application: Application, private val repository: ManhwaRepository) : ViewModel() {
 
@@ -398,6 +405,22 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _showEditFeatures = MutableStateFlow(sharedPrefs.getBoolean("show_edit_features", true))
     val showEditFeatures: StateFlow<Boolean> = _showEditFeatures.asStateFlow()
 
+    private val _presetFilter = MutableStateFlow(sharedPrefs.getString("preset_filter", "NONE") ?: "NONE")
+    val presetFilter: StateFlow<String> = _presetFilter.asStateFlow()
+
+    private val _virtualPages = MutableStateFlow<List<VirtualPage>>(emptyList())
+    val virtualPages: StateFlow<List<VirtualPage>> = _virtualPages.asStateFlow()
+
+    private val _currentVirtualPageIndex = MutableStateFlow(0)
+    val currentVirtualPageIndex: StateFlow<Int> = _currentVirtualPageIndex.asStateFlow()
+
+    val allReadingEvents: StateFlow<List<ReadingEvent>> = repository.allReadingEvents
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = emptyList()
+        )
+
     private val _qualitySelectionEnabled = MutableStateFlow(sharedPrefs.getBoolean("quality_selection_enabled", true))
     val qualitySelectionEnabled: StateFlow<Boolean> = _qualitySelectionEnabled.asStateFlow()
 
@@ -514,6 +537,36 @@ class ManhwaViewModel(private val application: Application, private val reposito
         sharedPrefs.edit().putFloat("view_shadows", value).apply()
     }
 
+    fun setPresetFilter(filter: String) {
+        _presetFilter.value = filter
+        sharedPrefs.edit().putString("preset_filter", filter).apply()
+    }
+
+    fun clearReadingStats() {
+        viewModelScope.launch {
+            repository.clearReadingStats()
+        }
+    }
+
+    fun getVirtualIndexForPhysicalPage(physicalPageIndex: Int): Int {
+        val list = _virtualPages.value
+        val idx = list.indexOfFirst { it.physicalPageIndex == physicalPageIndex }
+        return if (idx >= 0) idx else physicalPageIndex
+    }
+
+    fun setCurrentVirtualPageAndOffset(virtualIndex: Int, offset: Int) {
+        val list = _virtualPages.value
+        val vp = list.getOrNull(virtualIndex)
+        if (vp != null) {
+            _currentVirtualPageIndex.value = virtualIndex
+            // Since we updated current page, save/update active tab page
+            updateActiveTabCurrentPageAndOffset(vp.physicalPageIndex, offset)
+        } else {
+            _currentVirtualPageIndex.value = virtualIndex
+            updateActiveTabCurrentPageAndOffset(virtualIndex, offset)
+        }
+    }
+
     fun resetViewEnhancerSettings() {
         setBrightness(1.0f)
         setContrast(1.0f)
@@ -528,6 +581,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         setExposure(1.0f)
         setHighlights(0.0f)
         setShadows(0.0f)
+        setPresetFilter("NONE")
     }
 
     val activeScaleFactor: StateFlow<Float> = combine(
@@ -556,6 +610,58 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 _stableZoomScale.value = zoom
             }
         }
+        viewModelScope.launch(Dispatchers.IO) {
+            combine(activeManhwa, _readingDirection) { manhwa, dir ->
+                manhwa to dir
+            }.collect { (manhwa, dir) ->
+                if (manhwa != null) {
+                    updateVirtualPagesForManhwa(manhwa, dir)
+                } else {
+                    _virtualPages.value = emptyList()
+                }
+            }
+        }
+    }
+
+    private fun updateVirtualPagesForManhwa(manhwa: Manhwa, direction: String) {
+        val file = File(manhwa.filePath)
+        if (!file.exists()) {
+            _virtualPages.value = (0 until manhwa.totalPages).map { VirtualPage(it, "NONE", it) }
+            return
+        }
+        val renderer = try {
+            synchronized(renderers) {
+                renderers.getOrPut(manhwa.id) {
+                    ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
+                }
+            }
+        } catch (e: Throwable) {
+            null
+        }
+        if (renderer == null) {
+            _virtualPages.value = (0 until manhwa.totalPages).map { VirtualPage(it, "NONE", it) }
+            return
+        }
+
+        val list = mutableListOf<VirtualPage>()
+        var virtualIdx = 0
+        val isRtl = direction == "Right-to-Left"
+
+        for (i in 0 until manhwa.totalPages) {
+            val aspect = kotlinx.coroutines.runBlocking { renderer.getPageAspectRatio(i) }
+            if (aspect < 1.0f) { // Landscape page spread!
+                if (isRtl) {
+                    list.add(VirtualPage(i, "RIGHT_HALF", virtualIdx++))
+                    list.add(VirtualPage(i, "LEFT_HALF", virtualIdx++))
+                } else {
+                    list.add(VirtualPage(i, "LEFT_HALF", virtualIdx++))
+                    list.add(VirtualPage(i, "RIGHT_HALF", virtualIdx++))
+                }
+            } else {
+                list.add(VirtualPage(i, "NONE", virtualIdx++))
+            }
+        }
+        _virtualPages.value = list
     }
 
     // --- State: Manhwa Sketch Editor Plugin Properties ---
@@ -820,6 +926,13 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val currentId = _activeTabId.value
         val existingList = _tabs.value.map { tab ->
             if (tab.id == currentId) {
+                if (tab.currentPage != pageIndex) {
+                    tab.manhwa?.let { manhwa ->
+                        viewModelScope.launch {
+                            repository.logReadingEvent(manhwa.id, pageIndex)
+                        }
+                    }
+                }
                 val updatedTab = tab.copy(currentPage = pageIndex)
                 tab.manhwa?.let { manhwa ->
                     dbUpdateJob?.cancel()
@@ -947,7 +1060,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         renderer.getPageAspectRatio(pageIndex)
     }
 
-    suspend fun renderPageSlice(pageIndex: Int, targetWidth: Int, sliceIndex: Int, sliceHeight: Int): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun renderPageSlice(pageIndex: Int, targetWidth: Int, sliceIndex: Int, sliceHeight: Int, landscapeSplitMode: String = "NONE"): Bitmap? = withContext(Dispatchers.IO) {
         val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext null
         val manhwa = tab.manhwa ?: return@withContext null
         val file = File(manhwa.filePath)
@@ -972,7 +1085,8 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val bitmap = renderer.renderPageSlice(
             pageIndex, targetWidth, sliceIndex, sliceHeight, scale,
             isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage,
-            bitmapConfig = _bitmapConfigSetting.value
+            bitmapConfig = _bitmapConfigSetting.value,
+            landscapeSplitMode = landscapeSplitMode
         )
         if (_aggressiveGcEnabled.value) {
             System.gc()
@@ -980,7 +1094,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         bitmap
     }
 
-    suspend fun renderPage(pageIndex: Int, targetWidth: Int): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun renderPage(pageIndex: Int, targetWidth: Int, landscapeSplitMode: String = "NONE"): Bitmap? = withContext(Dispatchers.IO) {
         val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext null
         val manhwa = tab.manhwa ?: return@withContext null
         val file = File(manhwa.filePath)
@@ -1005,7 +1119,8 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val bitmap = renderer.renderPage(
             pageIndex, targetWidth, scale,
             isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage,
-            bitmapConfig = _bitmapConfigSetting.value
+            bitmapConfig = _bitmapConfigSetting.value,
+            landscapeSplitMode = landscapeSplitMode
         )
         if (_aggressiveGcEnabled.value) {
             System.gc()
@@ -1013,7 +1128,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         bitmap
     }
 
-    suspend fun renderPageLowRes(pageIndex: Int, targetWidth: Int): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun renderPageLowRes(pageIndex: Int, targetWidth: Int, landscapeSplitMode: String = "NONE"): Bitmap? = withContext(Dispatchers.IO) {
         val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext null
         val manhwa = tab.manhwa ?: return@withContext null
         val file = File(manhwa.filePath)
@@ -1030,7 +1145,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
             null
         } ?: return@withContext null
 
-        val bitmap = renderer.renderPageLowRes(pageIndex, targetWidth, bitmapConfig = _bitmapConfigSetting.value)
+        val bitmap = renderer.renderPageLowRes(pageIndex, targetWidth, bitmapConfig = _bitmapConfigSetting.value, landscapeSplitMode = landscapeSplitMode)
         if (_aggressiveGcEnabled.value) {
             System.gc()
         }
@@ -1376,6 +1491,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         setMangaScanCrisper(false)
         setColorMode(ColorMode.NORMAL)
         setHdModeEnabled(false)
+        setPresetFilter("NONE")
         
         applyRecommendedSettings(forceTier = "MEDIUM")
     }

@@ -47,4 +47,14 @@ interface ManhwaDao {
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insertPlugin(plugin: PluginConfig)
+
+    // Reading events / statistics
+    @Insert
+    suspend fun insertReadingEvent(event: ReadingEvent)
+
+    @Query("SELECT * FROM reading_events ORDER BY timestamp ASC")
+    fun getAllReadingEvents(): Flow<List<ReadingEvent>>
+
+    @Query("DELETE FROM reading_events")
+    suspend fun clearAllReadingEvents()
 }

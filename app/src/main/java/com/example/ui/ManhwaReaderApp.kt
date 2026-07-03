@@ -69,6 +69,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.example.data.Bookmark
 import com.example.data.Manhwa
 import com.example.data.PluginConfig
+import com.example.data.ReadingEvent
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -702,41 +703,83 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
         }
         } else {
             // Reading Analysis Tab
+            val readingEvents by viewModel.allReadingEvents.collectAsStateWithLifecycle()
             val totalManhwas = manhwas.size
             val manhwasStarted = manhwas.count { it.lastReadPage > 0 }
-            val totalPagesRead = manhwas.sumOf { it.lastReadPage }
+            
+            val totalReadingSeconds = readingEvents.sumOf { it.durationSeconds.toLong() }
+            val readingHours = totalReadingSeconds / 3600
+            val readingMinutes = (totalReadingSeconds % 3600) / 60
+            val totalAdvancedPages = readingEvents.size // Each event is a page read segment
 
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .fillMaxWidth()
                     .padding(24.dp)
+                    .verticalScroll(rememberScrollState())
             ) {
                 Text(
-                    text = "READING STATISTICS",
+                    text = "ADVANCED READING ANALYSIS",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onBackground
                 )
-                Spacer(modifier = Modifier.height(16.dp))
+                Text(
+                    text = "Tracking your progress with physical and virtual heatmaps.",
+                    fontSize = 12.sp,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                )
+                Spacer(modifier = Modifier.height(24.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    AnalysisCard("Total Books", totalManhwas.toString(), modifier = Modifier.weight(1f))
+                    AnalysisCard("Total Comics", totalManhwas.toString(), modifier = Modifier.weight(1f))
                     Spacer(modifier = Modifier.width(16.dp))
-                    AnalysisCard("Books Started", manhwasStarted.toString(), modifier = Modifier.weight(1f))
+                    AnalysisCard("Started", manhwasStarted.toString(), modifier = Modifier.weight(1f))
                 }
                 Spacer(modifier = Modifier.height(16.dp))
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween
                 ) {
-                    AnalysisCard("Total Pages Read", totalPagesRead.toString(), modifier = Modifier.weight(1f))
+                    AnalysisCard("Reading Time", "${readingHours}h ${readingMinutes}m", modifier = Modifier.weight(1f))
                     Spacer(modifier = Modifier.width(16.dp))
-                    AnalysisCard("Avg Completion", if (totalManhwas == 0) "0%" else "${(manhwasStarted * 100 / totalManhwas)}%", modifier = Modifier.weight(1f))
+                    AnalysisCard("Segments Read", totalAdvancedPages.toString(), modifier = Modifier.weight(1f))
                 }
+                
+                Spacer(modifier = Modifier.height(32.dp))
+                
+                Text(
+                    text = "DATA MANAGEMENT",
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Black,
+                    letterSpacing = 1.sp,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+                
+                Button(
+                    onClick = { viewModel.clearReadingStats() },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer, contentColor = MaterialTheme.colorScheme.onErrorContainer),
+                    modifier = Modifier.fillMaxWidth(),
+                    shape = RoundedCornerShape(12.dp)
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Clear All Reading History", fontWeight = FontWeight.Bold)
+                }
+                
+                Spacer(modifier = Modifier.height(12.dp))
+                Text(
+                    text = "History is stored locally on your device for privacy and progress tracking.",
+                    fontSize = 10.sp,
+                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f),
+                    textAlign = TextAlign.Center,
+                    modifier = Modifier.fillMaxWidth()
+                )
             }
         }
     }
@@ -1105,6 +1148,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     val mangaScanCrisper by viewModel.mangaScanCrisper.collectAsStateWithLifecycle()
     val colorMode by viewModel.colorMode.collectAsStateWithLifecycle()
     val hdMode by viewModel.hdModeEnabled.collectAsStateWithLifecycle()
+    val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
 
     // Lightroom Enhancements
     val exposure by viewModel.exposure.collectAsStateWithLifecycle()
@@ -1117,6 +1161,8 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     val sketches by viewModel.sketches.collectAsStateWithLifecycle()
 
     val showEditFeatures by viewModel.showEditFeatures.collectAsStateWithLifecycle()
+    val virtualPages by viewModel.virtualPages.collectAsStateWithLifecycle()
+    val currentVirtualIndex by viewModel.currentVirtualPageIndex.collectAsStateWithLifecycle()
 
     // Verify which plugins are currently enabled and unlocked
     val isViewEnhancerEnabled = remember(plugins) { 
@@ -1208,7 +1254,8 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
         val lastOffset = activeManhwa?.scrollOffset ?: 0
         if (activeManhwaId > 0 && (lazyListState.firstVisibleItemIndex != lastPage || lazyListState.firstVisibleItemScrollOffset != lastOffset)) {
             try {
-                lazyListState.scrollToItem(lastPage, lastOffset)
+                val virtualLastPage = viewModel.getVirtualIndexForPhysicalPage(lastPage)
+                lazyListState.scrollToItem(virtualLastPage, lastOffset)
             } catch (e: Exception) {
                 // Ignore any instant scroll conflicts
             }
@@ -1263,7 +1310,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
         val velocity = pixelsScrolled.toFloat() / timeDelta.toFloat() // pixels per millisecond
 
         // Update database with index and offset
-        viewModel.setCurrentPageAndOffset(
+        viewModel.setCurrentVirtualPageAndOffset(
             lazyListState.firstVisibleItemIndex,
             lazyListState.firstVisibleItemScrollOffset
         )
@@ -1365,18 +1412,22 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                 }
             }
 
-            val totalPages = activeManhwa?.totalPages ?: 0
+            val totalVirtualPages = virtualPages.size
             items(
-                count = totalPages,
-                key = { pageIdx -> "page_${activeManhwa?.id ?: 0}_$pageIdx" }
-            ) { pageIdx ->
+                count = totalVirtualPages,
+                key = { virtualIdx -> 
+                    val vp = virtualPages.getOrNull(virtualIdx)
+                    "page_${activeManhwa?.id ?: 0}_${vp?.physicalPageIndex ?: virtualIdx}_${vp?.splitMode ?: "NONE"}"
+                }
+            ) { virtualIdx ->
+                val vp = virtualPages.getOrNull(virtualIdx) ?: return@items
                 Box(
                     modifier = Modifier
                         .fillMaxWidth()
                         .wrapContentHeight()
                 ) {
                     PdfPageItem(
-                        pageIndex = pageIdx,
+                        pageIndex = vp.physicalPageIndex,
                         targetWidth = componentWidth,
                         zoomScale = animatedZoomScale,
                         isScrollInProgress = lazyListState.isScrollInProgress,
@@ -1391,6 +1442,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                         autoNightShift = autoNightShift,
                         mangaScanCrisper = mangaScanCrisper,
                         colorMode = colorMode,
+                        landscapeSplitMode = vp.splitMode,
                         onPdfClick = {
                             val currentTime = System.currentTimeMillis()
                             if (currentTime - lastClickTime > 100) {
@@ -1413,12 +1465,12 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                                 launch {
                                     try {
                                         lazyListState.animateScrollToItem(
-                                            index = pageIdx,
+                                            index = virtualIdx,
                                             scrollOffset = targetOffsetY.toInt().coerceAtLeast(0)
                                         )
                                     } catch (e: Exception) {
                                         lazyListState.scrollToItem(
-                                            index = pageIdx,
+                                            index = virtualIdx,
                                             scrollOffset = targetOffsetY.toInt().coerceAtLeast(0)
                                         )
                                     }
@@ -1430,13 +1482,13 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                         // Draw drawing sketch overlay on page
                         if (isSketchEditorEnabled) {
                             DrawingSketchOverlay(
-                                pageIndex = pageIdx,
-                                sketches = sketches[pageIdx] ?: emptyList(),
+                                pageIndex = vp.physicalPageIndex,
+                                sketches = sketches[vp.physicalPageIndex] ?: emptyList(),
                                 isDrawModeOn = isDrawModeOn,
                                 drawColor = drawColor,
                                 strokeWidth = strokeWidth,
                                 onDrawFinished = { path ->
-                                    viewModel.addDrawPath(pageIdx, path)
+                                    viewModel.addDrawPath(vp.physicalPageIndex, path)
                                 }
                             )
                         }
@@ -1611,6 +1663,8 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                 mangaScanCrisper = mangaScanCrisper,
                 colorMode = colorMode,
                 hdMode = hdMode,
+                presetFilter = presetFilter,
+                viewModel = viewModel,
                 isOutlineEnabled = isOutlineEnabled,
                 isMagnifierEnabled = isMagnifierEnabled,
                 onMagnifierToggle = { viewModel.setMagnifierEnabled(it) },
@@ -1758,7 +1812,8 @@ fun PdfPageSliceItem(
     customTint: String,
     autoNightShift: Boolean,
     mangaScanCrisper: Boolean,
-    colorMode: ManhwaViewModel.ColorMode
+    colorMode: ManhwaViewModel.ColorMode,
+    landscapeSplitMode: String = "NONE"
 ) {
     val hdScrollDelay by viewModel.hdScrollDelay.collectAsStateWithLifecycle()
     val staggerDelay by viewModel.staggerDelay.collectAsStateWithLifecycle()
@@ -1766,11 +1821,12 @@ fun PdfPageSliceItem(
     val exposure by viewModel.exposure.collectAsStateWithLifecycle()
     val highlights by viewModel.highlights.collectAsStateWithLifecycle()
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
+    val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
 
     var sliceBitmap by remember { mutableStateOf<Bitmap?>(null) }
     var isRendering by remember { mutableStateOf(true) }
 
-    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, isScrollInProgress, hdScrollDelay, staggerDelay, viewModel) {
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, isScrollInProgress, hdScrollDelay, staggerDelay, viewModel, landscapeSplitMode) {
         isRendering = true
         if (isScrollInProgress) {
             // Under fast scroll, delay HD render to let low-res placeholder render first
@@ -1782,7 +1838,7 @@ fun PdfPageSliceItem(
             // Stagger slice renders slightly even when stationary to prevent lock contention
             kotlinx.coroutines.delay(sliceIndex * staggerDelay)
         }
-        val bitmap = viewModel.renderPageSlice(pageIndex, targetWidth, sliceIndex, sliceHeight)
+        val bitmap = viewModel.renderPageSlice(pageIndex, targetWidth, sliceIndex, sliceHeight, landscapeSplitMode)
         sliceBitmap = bitmap
         isRendering = false
     }
@@ -1798,7 +1854,7 @@ fun PdfPageSliceItem(
     ) {
         val bitmap = sliceBitmap
         if (bitmap != null) {
-            val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows) {
+            val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
                 getAdjustedColorMatrix(
                     brightness = brightness,
                     contrast = contrast,
@@ -1812,7 +1868,8 @@ fun PdfPageSliceItem(
                     mode = colorMode,
                     exposure = exposure,
                     highlights = highlights,
-                    shadows = shadows
+                    shadows = shadows,
+                    presetFilter = presetFilter
                 )
             }
 
@@ -1846,6 +1903,7 @@ fun PdfPageItem(
     autoNightShift: Boolean,
     mangaScanCrisper: Boolean,
     colorMode: ManhwaViewModel.ColorMode,
+    landscapeSplitMode: String = "NONE",
     onPdfClick: () -> Unit,
     onDoubleTap: (fractionX: Float, fractionY: Float, aspect: Float) -> Unit
 ) {
@@ -1863,9 +1921,10 @@ fun PdfPageItem(
 
     val hapticFeedback = androidx.compose.ui.platform.LocalHapticFeedback.current
 
-    LaunchedEffect(pageIndex, viewModel) {
+    LaunchedEffect(pageIndex, viewModel, landscapeSplitMode) {
         isLoadingAspect = true
-        aspectRatio = viewModel.getPageAspectRatio(pageIndex)
+        val baseAspect = viewModel.getPageAspectRatio(pageIndex)
+        aspectRatio = if (landscapeSplitMode != "NONE") baseAspect * 2f else baseAspect
         isLoadingAspect = false
     }
 
@@ -1929,18 +1988,19 @@ fun PdfPageItem(
         } else {
             val sliceHeight by viewModel.sliceHeight.collectAsStateWithLifecycle()
             val lowResScrollDelay by viewModel.lowResScrollDelay.collectAsStateWithLifecycle()
+            val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
 
             val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
             val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
             val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
 
             var lowResBitmap by remember { mutableStateOf<Bitmap?>(null) }
-            LaunchedEffect(pageIndex, targetWidth, isScrollInProgress, lowResScrollDelay, viewModel) {
+            LaunchedEffect(pageIndex, targetWidth, isScrollInProgress, lowResScrollDelay, viewModel, landscapeSplitMode) {
                 if (isScrollInProgress && lowResScrollDelay > 0) {
                     // Under fast scroll, delay preview render slightly to skip pages swiped past
                     kotlinx.coroutines.delay(lowResScrollDelay)
                 }
-                lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth)
+                lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth, landscapeSplitMode)
             }
 
             Box(
@@ -1949,7 +2009,7 @@ fun PdfPageItem(
                     .aspectRatio(1f / aspect)
             ) {
                 lowResBitmap?.let { bmp ->
-                    val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows) {
+                    val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
                         getAdjustedColorMatrix(
                             brightness = brightness,
                             contrast = contrast,
@@ -1963,7 +2023,8 @@ fun PdfPageItem(
                             mode = colorMode,
                             exposure = exposure,
                             highlights = highlights,
-                            shadows = shadows
+                            shadows = shadows,
+                            presetFilter = presetFilter
                         )
                     }
                     Image(
@@ -1999,7 +2060,8 @@ fun PdfPageItem(
                             customTint = customTint,
                             autoNightShift = autoNightShift,
                             mangaScanCrisper = mangaScanCrisper,
-                            colorMode = colorMode
+                            colorMode = colorMode,
+                            landscapeSplitMode = landscapeSplitMode
                         )
                     }
                 }
@@ -2286,6 +2348,8 @@ fun HUDBottomBar(
     mangaScanCrisper: Boolean,
     colorMode: ManhwaViewModel.ColorMode,
     hdMode: Boolean,
+    presetFilter: String,
+    viewModel: ManhwaViewModel,
     isOutlineEnabled: Boolean,
     isMagnifierEnabled: Boolean,
     onMagnifierToggle: (Boolean) -> Unit,
@@ -2549,6 +2613,40 @@ fun HUDBottomBar(
                                     color = if (selected) MaterialTheme.colorScheme.primary else Color.Gray,
                                     modifier = Modifier
                                         .clickable { onCustomTintChange(tint) }
+                                        .padding(horizontal = 8.dp, vertical = 6.dp)
+                                        .background(
+                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
+                                            RoundedCornerShape(6.dp)
+                                        )
+                                )
+                            }
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
+
+                    // Advanced Preset Filters
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text("Presets: ", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.padding(end = 6.dp))
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(4.dp)
+                        ) {
+                            val presets = listOf("NONE" to "None", "FADED_PRINT" to "Faded Print", "BINARIZED" to "Binarized", "NEWSPAPER" to "Newspaper")
+                            presets.forEach { (id, name) ->
+                                val selected = presetFilter == id
+                                Text(
+                                    text = name,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (selected) MaterialTheme.colorScheme.primary else Color.Gray,
+                                    modifier = Modifier
+                                        .clickable { viewModel.setPresetFilter(id) }
                                         .padding(horizontal = 8.dp, vertical = 6.dp)
                                         .background(
                                             if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
@@ -3124,11 +3222,46 @@ fun getAdjustedColorMatrix(
     mode: ManhwaViewModel.ColorMode,
     exposure: Float = 1.0f,
     highlights: Float = 0.0f,
-    shadows: Float = 0.0f
+    shadows: Float = 0.0f,
+    presetFilter: String = "NONE"
 ): ColorMatrix {
     val calendar = java.util.Calendar.getInstance()
     val hour = calendar.get(java.util.Calendar.HOUR_OF_DAY)
     val isNightTime = hour >= 18 || hour < 6
+
+    var effectiveContrast = contrast
+    var effectiveBrightness = brightness
+    var effectiveSaturation = saturation
+    var effectiveHighlights = highlights
+    var effectiveShadows = shadows
+    var effectiveMode = mode
+
+    when (presetFilter) {
+        "FADED_PRINT" -> {
+            effectiveContrast = contrast * 1.5f
+            effectiveBrightness = brightness * 1.2f
+            effectiveSaturation = 0.0f
+            effectiveHighlights = highlights + 0.3f
+            effectiveShadows = shadows - 0.3f
+            effectiveMode = ManhwaViewModel.ColorMode.GRAYSCALE
+        }
+        "BINARIZED" -> {
+            effectiveContrast = contrast * 3.5f
+            effectiveBrightness = brightness * 1.3f
+            effectiveSaturation = 0.0f
+            effectiveHighlights = highlights + 0.5f
+            effectiveShadows = shadows - 0.7f
+            effectiveMode = ManhwaViewModel.ColorMode.GRAYSCALE
+        }
+        "NEWSPAPER" -> {
+            effectiveContrast = contrast * 1.8f
+            effectiveBrightness = brightness * 1.0f
+            effectiveSaturation = 0.1f
+            effectiveHighlights = highlights + 0.1f
+            effectiveShadows = shadows - 0.2f
+            effectiveMode = ManhwaViewModel.ColorMode.GRAYSCALE
+        }
+    }
 
     var effectiveGamma = gamma
     if (autoGammaEnabled) {
@@ -3141,9 +3274,9 @@ fun getAdjustedColorMatrix(
     }
 
     // Apply gamma multiplier approximation on base scale and translation
-    val overallScale = brightness * exposure
-    val baseScale = contrast * overallScale
-    val baseTranslate = ((1.0f - contrast) * 0.5f + (overallScale - 1.0f)) * 255f
+    val overallScale = effectiveBrightness * exposure
+    val baseScale = effectiveContrast * overallScale
+    val baseTranslate = ((1.0f - effectiveContrast) * 0.5f + (overallScale - 1.0f)) * 255f
 
     // Nonlinear mapping approximation
     val scale = if (effectiveGamma > 0f) Math.pow(baseScale.toDouble(), 1.0 / effectiveGamma.toDouble()).toFloat() else baseScale
@@ -3153,12 +3286,12 @@ fun getAdjustedColorMatrix(
     var finalTranslate = translate
 
     // Highlights correction (stretches or compresses the brighter end)
-    finalScale = finalScale * (1.0f + highlights * 0.12f)
-    finalTranslate = finalTranslate - highlights * 15f
+    finalScale = finalScale * (1.0f + effectiveHighlights * 0.12f)
+    finalTranslate = finalTranslate - effectiveHighlights * 15f
 
     // Shadows correction (lifts or crushes the darker end)
-    finalTranslate = finalTranslate + shadows * 35f
-    finalScale = finalScale * (1.0f - shadows * 0.08f)
+    finalTranslate = finalTranslate + effectiveShadows * 35f
+    finalScale = finalScale * (1.0f - effectiveShadows * 0.08f)
 
     if (mangaScanCrisper) {
         // High contrast and high brightness thresholding to wash out scan gray backgrounds to pure white
@@ -3166,7 +3299,7 @@ fun getAdjustedColorMatrix(
         finalTranslate = finalTranslate - 95f
     }
 
-    val baseMatrix = when (mode) {
+    val baseMatrix = when (effectiveMode) {
         ManhwaViewModel.ColorMode.GRAYSCALE -> {
             floatArrayOf(
                 0.299f * finalScale, 0.587f * finalScale, 0.114f * finalScale, 0f, finalTranslate,
