@@ -554,16 +554,18 @@ class ManhwaViewModel(private val application: Application, private val reposito
         return if (idx >= 0) idx else physicalPageIndex
     }
 
+    private var lastPageChangeTimestamp = System.currentTimeMillis()
+
     fun setCurrentVirtualPageAndOffset(virtualIndex: Int, offset: Int) {
         val list = _virtualPages.value
         val vp = list.getOrNull(virtualIndex)
         if (vp != null) {
             _currentVirtualPageIndex.value = virtualIndex
             // Since we updated current page, save/update active tab page
-            updateActiveTabCurrentPageAndOffset(vp.physicalPageIndex, offset)
+            updateActiveTabCurrentPageAndOffset(vp.physicalPageIndex, offset, virtualIndex)
         } else {
             _currentVirtualPageIndex.value = virtualIndex
-            updateActiveTabCurrentPageAndOffset(virtualIndex, offset)
+            updateActiveTabCurrentPageAndOffset(virtualIndex, offset, virtualIndex)
         }
     }
 
@@ -611,19 +613,27 @@ class ManhwaViewModel(private val application: Application, private val reposito
             }
         }
         viewModelScope.launch(Dispatchers.IO) {
-            combine(activeManhwa, _readingDirection) { manhwa, dir ->
-                manhwa to dir
-            }.collect { (manhwa, dir) ->
+            activeManhwa.collect { manhwa ->
+                if (manhwa == null) {
+                    _virtualPages.value = emptyList()
+                } else {
+                    // Update virtual pages for the new manhwa
+                    val dir = _readingDirection.value
+                    updateVirtualPagesForManhwa(manhwa, dir)
+                }
+            }
+        }
+        viewModelScope.launch(Dispatchers.IO) {
+            _readingDirection.collect { dir ->
+                val manhwa = activeManhwa.value
                 if (manhwa != null) {
                     updateVirtualPagesForManhwa(manhwa, dir)
-                } else {
-                    _virtualPages.value = emptyList()
                 }
             }
         }
     }
 
-    private fun updateVirtualPagesForManhwa(manhwa: Manhwa, direction: String) {
+    private suspend fun updateVirtualPagesForManhwa(manhwa: Manhwa, direction: String) {
         val file = File(manhwa.filePath)
         if (!file.exists()) {
             _virtualPages.value = (0 until manhwa.totalPages).map { VirtualPage(it, "NONE", it) }
@@ -648,7 +658,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val isRtl = direction == "Right-to-Left"
 
         for (i in 0 until manhwa.totalPages) {
-            val aspect = kotlinx.coroutines.runBlocking { renderer.getPageAspectRatio(i) }
+            val aspect = renderer.getPageAspectRatio(i)
             if (aspect < 1.0f) { // Landscape page spread!
                 if (isRtl) {
                     list.add(VirtualPage(i, "RIGHT_HALF", virtualIdx++))
@@ -919,19 +929,23 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     fun updateActiveTabCurrentPage(pageIndex: Int) {
-        updateActiveTabCurrentPageAndOffset(pageIndex, 0)
+        updateActiveTabCurrentPageAndOffset(pageIndex, 0, _currentVirtualPageIndex.value)
     }
 
-    fun updateActiveTabCurrentPageAndOffset(pageIndex: Int, offset: Int) {
+    fun updateActiveTabCurrentPageAndOffset(pageIndex: Int, offset: Int, virtualIndex: Int = -1) {
         val currentId = _activeTabId.value
+        val now = System.currentTimeMillis()
+        val duration = ((now - lastPageChangeTimestamp) / 1000).toInt().coerceIn(0, 3600) // cap at 1 hour per page
+        
         val existingList = _tabs.value.map { tab ->
             if (tab.id == currentId) {
                 if (tab.currentPage != pageIndex) {
                     tab.manhwa?.let { manhwa ->
                         viewModelScope.launch {
-                            repository.logReadingEvent(manhwa.id, pageIndex)
+                            repository.logReadingEvent(manhwa.id, pageIndex, virtualIndex, duration)
                         }
                     }
+                    lastPageChangeTimestamp = now
                 }
                 val updatedTab = tab.copy(currentPage = pageIndex)
                 tab.manhwa?.let { manhwa ->
@@ -1037,7 +1051,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
     fun setCurrentPageAndOffset(pageIndex: Int, offset: Int) {
         val pageCount = getPageCountForActiveManhwa()
         if (pageIndex >= 0 && pageIndex < pageCount) {
-            updateActiveTabCurrentPageAndOffset(pageIndex, offset)
+            updateActiveTabCurrentPageAndOffset(pageIndex, offset, getVirtualIndexForPhysicalPage(pageIndex))
         }
     }
 
@@ -1060,7 +1074,14 @@ class ManhwaViewModel(private val application: Application, private val reposito
         renderer.getPageAspectRatio(pageIndex)
     }
 
-    suspend fun renderPageSlice(pageIndex: Int, targetWidth: Int, sliceIndex: Int, sliceHeight: Int, landscapeSplitMode: String = "NONE"): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun renderPageSlice(
+        pageIndex: Int, 
+        targetWidth: Int, 
+        sliceIndex: Int, 
+        sliceHeight: Int, 
+        scaleFactor: Float,
+        landscapeSplitMode: String = "NONE"
+    ): Bitmap? = withContext(Dispatchers.IO) {
         val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext null
         val manhwa = tab.manhwa ?: return@withContext null
         val file = File(manhwa.filePath)
@@ -1078,13 +1099,19 @@ class ManhwaViewModel(private val application: Application, private val reposito
         } ?: return@withContext null
 
         val isCacheEnabled = _qualitySelectionEnabled.value
-        val scale = activeScaleFactor.value
         val qualityCompression = _webpQuality.value
         val maxStorage = _maxStorageAllocation.value
 
         val bitmap = renderer.renderPageSlice(
-            pageIndex, targetWidth, sliceIndex, sliceHeight, scale,
-            isCacheEnabled, _qualityLevel.value, qualityCompression, maxStorage,
+            pageIndex = pageIndex,
+            targetWidth = targetWidth,
+            sliceIndex = sliceIndex,
+            sliceHeight = sliceHeight,
+            scaleFactor = scaleFactor,
+            qualitySelectionEnabled = isCacheEnabled,
+            qualityLevel = _qualityLevel.value,
+            qualityCompression = qualityCompression,
+            maxStorageAllocationMb = maxStorage,
             bitmapConfig = _bitmapConfigSetting.value,
             landscapeSplitMode = landscapeSplitMode
         )

@@ -30,8 +30,8 @@ class ManhwaRepository(private val context: Context, private val dao: ManhwaDao)
 
     val allReadingEvents: Flow<List<ReadingEvent>> = dao.getAllReadingEvents()
 
-    suspend fun logReadingEvent(manhwaId: Long, pageIndex: Int) = withContext(Dispatchers.IO) {
-        dao.insertReadingEvent(ReadingEvent(manhwaId = manhwaId, pageIndex = pageIndex))
+    suspend fun logReadingEvent(manhwaId: Long, pageIndex: Int, virtualPageIndex: Int = -1, durationSeconds: Int = 0) = withContext(Dispatchers.IO) {
+        dao.insertReadingEvent(ReadingEvent(manhwaId = manhwaId, pageIndex = pageIndex, virtualPageIndex = virtualPageIndex, durationSeconds = durationSeconds))
     }
 
     suspend fun clearReadingStats() = withContext(Dispatchers.IO) {

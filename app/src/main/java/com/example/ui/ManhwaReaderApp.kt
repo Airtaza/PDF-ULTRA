@@ -1249,15 +1249,18 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
 
     // Chapter navigation position memory restorer (Index + Offset)
     val activeManhwaId = activeManhwa?.id ?: 0L
-    LaunchedEffect(activeManhwaId) {
-        val lastPage = activeManhwa?.lastReadPage ?: 0
-        val lastOffset = activeManhwa?.scrollOffset ?: 0
-        if (activeManhwaId > 0 && (lazyListState.firstVisibleItemIndex != lastPage || lazyListState.firstVisibleItemScrollOffset != lastOffset)) {
-            try {
-                val virtualLastPage = viewModel.getVirtualIndexForPhysicalPage(lastPage)
-                lazyListState.scrollToItem(virtualLastPage, lastOffset)
-            } catch (e: Exception) {
-                // Ignore any instant scroll conflicts
+    LaunchedEffect(activeManhwaId, virtualPages) {
+        if (activeManhwaId > 0 && virtualPages.isNotEmpty()) {
+            val lastPage = activeManhwa?.lastReadPage ?: 0
+            val lastOffset = activeManhwa?.scrollOffset ?: 0
+            val virtualLastPage = viewModel.getVirtualIndexForPhysicalPage(lastPage)
+            
+            if (lazyListState.firstVisibleItemIndex != virtualLastPage || lazyListState.firstVisibleItemScrollOffset != lastOffset) {
+                try {
+                    lazyListState.scrollToItem(virtualLastPage, lastOffset)
+                } catch (e: Exception) {
+                    // Ignore any instant scroll conflicts
+                }
             }
         }
     }
@@ -1736,8 +1739,9 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                     currentPage = currentPage,
                     totalPages = activeManhwa?.totalPages ?: 0,
                     onSelectPage = { pageIdx ->
+                        val virtualIdx = viewModel.getVirtualIndexForPhysicalPage(pageIdx)
                         coroutineScope.launch {
-                            lazyListState.scrollToItem(pageIdx)
+                            lazyListState.scrollToItem(virtualIdx)
                         }
                         viewModel.setOutlineDrawerOpen(false)
                     },
@@ -1838,13 +1842,26 @@ fun PdfPageSliceItem(
             // Stagger slice renders slightly even when stationary to prevent lock contention
             kotlinx.coroutines.delay(sliceIndex * staggerDelay)
         }
-        val bitmap = viewModel.renderPageSlice(pageIndex, targetWidth, sliceIndex, sliceHeight, landscapeSplitMode)
+        val bitmap = viewModel.renderPageSlice(
+            pageIndex = pageIndex,
+            targetWidth = targetWidth,
+            sliceIndex = sliceIndex,
+            sliceHeight = sliceHeight,
+            scaleFactor = scaleFactor,
+            landscapeSplitMode = landscapeSplitMode
+        )
         sliceBitmap = bitmap
         isRendering = false
     }
 
     val sliceY = sliceIndex * sliceHeight
     val actualSliceHeight = (totalHeight - sliceY).coerceAtMost(sliceHeight)
+    
+    if (actualSliceHeight <= 0 || totalWidth <= 0) {
+        Spacer(modifier = Modifier.height(1.dp))
+        return
+    }
+    
     val sliceWidthToHeightRatio = totalWidth.toFloat() / actualSliceHeight.toFloat()
 
     Box(
@@ -2403,8 +2420,10 @@ fun HUDBottomBar(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color.Black.copy(alpha = 0.95f))
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .heightIn(max = 280.dp)
+                        .background(Color.Black.copy(alpha = 0.92f))
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     Row(
                         modifier = Modifier.fillMaxWidth(),
@@ -2432,8 +2451,8 @@ fun HUDBottomBar(
                     Spacer(modifier = Modifier.height(10.dp))
 
                     // Brightness slider
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Brightness", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
+                        Text("Brightness", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
                         Slider(
                             value = brightness,
                             onValueChange = onBrightnessChange,
@@ -2441,12 +2460,12 @@ fun HUDBottomBar(
                             modifier = Modifier.weight(1f),
                             colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
                         )
-                        Text(String.format("%.1fx", brightness), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                        Text(String.format("%.1f", brightness), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
                     }
 
                     // Contrast slider
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Contrast", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
+                        Text("Contrast", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
                         Slider(
                             value = contrast,
                             onValueChange = onContrastChange,
@@ -2454,12 +2473,12 @@ fun HUDBottomBar(
                             modifier = Modifier.weight(1f),
                             colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
                         )
-                        Text(String.format("%.1fx", contrast), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                        Text(String.format("%.1f", contrast), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
                     }
 
                     // Exposure slider
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Exposure", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
+                        Text("Exposure", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
                         Slider(
                             value = exposure,
                             onValueChange = onExposureChange,
@@ -2467,12 +2486,12 @@ fun HUDBottomBar(
                             modifier = Modifier.weight(1f),
                             colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
                         )
-                        Text(String.format("%.1fx", exposure), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                        Text(String.format("%.1f", exposure), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
                     }
 
                     // Highlights slider
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Highlights", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
+                        Text("Highlights", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
                         Slider(
                             value = highlights,
                             onValueChange = onHighlightsChange,
@@ -2480,12 +2499,12 @@ fun HUDBottomBar(
                             modifier = Modifier.weight(1f),
                             colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
                         )
-                        Text(String.format("%+.1f", highlights), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                        Text(String.format("%+.1f", highlights), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
                     }
 
                     // Shadows slider
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Shadows", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
+                        Text("Shadows", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
                         Slider(
                             value = shadows,
                             onValueChange = onShadowsChange,
@@ -2493,12 +2512,12 @@ fun HUDBottomBar(
                             modifier = Modifier.weight(1f),
                             colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
                         )
-                        Text(String.format("%+.1f", shadows), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                        Text(String.format("%+.1f", shadows), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
                     }
 
                     // Saturation slider
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Saturation", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
+                        Text("Saturation", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
                         Slider(
                             value = saturation,
                             onValueChange = onSaturationChange,
@@ -2506,12 +2525,12 @@ fun HUDBottomBar(
                             modifier = Modifier.weight(1f),
                             colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
                         )
-                        Text(String.format("%.1fx", saturation), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                        Text(String.format("%.1f", saturation), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
                     }
 
                     // Warmth slider
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Eye Warmth", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
+                        Text("Warmth", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
                         Slider(
                             value = warmth,
                             onValueChange = onWarmthChange,
@@ -2519,12 +2538,12 @@ fun HUDBottomBar(
                             modifier = Modifier.weight(1f),
                             colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
                         )
-                        Text(String.format("%.1f", warmth), fontSize = 11.sp, modifier = Modifier.width(30.dp), textAlign = TextAlign.End)
+                        Text(String.format("%.1f", warmth), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
                     }
 
                     // Gamma slider
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Text("Gamma", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.width(70.dp))
+                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
+                        Text("Gamma", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
                         Slider(
                             value = gamma,
                             onValueChange = onGammaChange,
@@ -2538,9 +2557,9 @@ fun HUDBottomBar(
                             )
                         )
                         Text(
-                            text = if (autoGammaEnabled) "Auto" else String.format("%.1fx", gamma),
-                            fontSize = 11.sp,
-                            modifier = Modifier.width(30.dp),
+                            text = if (autoGammaEnabled) "Auto" else String.format("%.1f", gamma),
+                            fontSize = 10.sp,
+                            modifier = Modifier.width(25.dp),
                             textAlign = TextAlign.End,
                             color = if (autoGammaEnabled) MaterialTheme.colorScheme.primary else Color.White
                         )
@@ -2717,8 +2736,10 @@ fun HUDBottomBar(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color.Black.copy(alpha = 0.95f))
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .heightIn(max = 280.dp)
+                        .background(Color.Black.copy(alpha = 0.92f))
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     Text(
                         "ZOOM & FOCUS ENGINE",
@@ -2862,8 +2883,10 @@ fun HUDBottomBar(
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
-                        .background(Color.Black.copy(alpha = 0.95f))
-                        .padding(horizontal = 16.dp, vertical = 12.dp)
+                        .heightIn(max = 280.dp)
+                        .background(Color.Black.copy(alpha = 0.92f))
+                        .verticalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
                 ) {
                     Text(
                         "HANDS-FREE AUTO-SCROLL MODE",

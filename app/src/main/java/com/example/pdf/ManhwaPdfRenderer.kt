@@ -166,6 +166,7 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                     val isSplit = landscapeSplitMode != "NONE"
                     val halfPageAspectRatio = if (isSplit) 2f * pageAspectRatio else pageAspectRatio
 
+                    // Use targetWidth as base for all calculations to maintain consistency between slices
                     val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
                     val totalHeight = (totalWidth * halfPageAspectRatio).toInt().coerceAtLeast(400)
 
@@ -186,8 +187,10 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                     val canvas = android.graphics.Canvas(bmp)
                     canvas.drawColor(android.graphics.Color.WHITE)
 
-                    val scaleX = if (isSplit) totalWidth.toFloat() / (widthPt / 2f) else totalWidth.toFloat() / widthPt
-                    val scaleY = if (isSplit) totalHeight.toFloat() / heightPt else totalHeight.toFloat() / heightPt
+                    // Calculate scale factors precisely
+                    val pdfRenderWidth = if (isSplit) widthPt / 2f else widthPt.toFloat()
+                    val scaleX = totalWidth.toFloat() / pdfRenderWidth
+                    val scaleY = totalHeight.toFloat() / heightPt.toFloat()
 
                     val matrix = Matrix()
                     matrix.postScale(scaleX, scaleY)
