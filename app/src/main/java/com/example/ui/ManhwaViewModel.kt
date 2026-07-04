@@ -681,6 +681,22 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _activeStrokeWidth = MutableStateFlow(8f)
     val activeStrokeWidth: StateFlow<Float> = _activeStrokeWidth.asStateFlow()
 
+    private val _hdTextModeEnabled = MutableStateFlow(sharedPrefs.getBoolean("hd_text_mode_enabled", false))
+    val hdTextModeEnabled: StateFlow<Boolean> = _hdTextModeEnabled.asStateFlow()
+
+    fun setHdTextModeEnabled(enabled: Boolean) {
+        _hdTextModeEnabled.value = enabled
+        sharedPrefs.edit().putBoolean("hd_text_mode_enabled", enabled).apply()
+    }
+
+    fun clearMemoryCache() {
+        synchronized(renderers) {
+            renderers.values.forEach { 
+                it.clearMemoryCache()
+            }
+        }
+    }
+
     private val _isUserScrolling = MutableStateFlow(false)
     val isUserScrolling: StateFlow<Boolean> = _isUserScrolling.asStateFlow()
 
@@ -1146,13 +1162,16 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val isCacheEnabled = _qualitySelectionEnabled.value
         val qualityCompression = _webpQuality.value
         val maxStorage = _maxStorageAllocation.value
+        
+        // Apply HD Text Mode multiplier
+        val actualScaleFactor = if (_hdTextModeEnabled.value) scaleFactor * 1.5f else scaleFactor
 
         val bitmap = renderer.renderPageSlice(
             pageIndex = pageIndex,
             targetWidth = targetWidth,
             sliceIndex = sliceIndex,
             sliceHeight = sliceHeight,
-            scaleFactor = scaleFactor,
+            scaleFactor = actualScaleFactor,
             qualitySelectionEnabled = isCacheEnabled,
             qualityLevel = _qualityLevel.value,
             qualityCompression = qualityCompression,
@@ -1657,12 +1676,6 @@ class ManhwaViewModel(private val application: Application, private val reposito
         }
         val mb = totalBytes.toDouble() / (1024 * 1024)
         return String.format(java.util.Locale.US, "%.2f MB", mb)
-    }
-
-    fun clearMemoryCache() {
-        synchronized(renderers) {
-            renderers.values.forEach { it.clearCache() }
-        }
     }
 
     // --- Auto-Scroll Control ---

@@ -1841,14 +1841,19 @@ fun PdfPageSliceItem(
     var isRendering by remember { mutableStateOf(true) }
 
     LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, isScrollInProgress, hdScrollDelay, staggerDelay, viewModel, landscapeSplitMode) {
-        isRendering = true
         if (isScrollInProgress) {
-            // Under fast scroll, delay HD render to let low-res placeholder render first
-            val baseDelay = hdScrollDelay
-            if (baseDelay > 0) {
-                kotlinx.coroutines.delay(if (sliceIndex == 0) baseDelay else baseDelay * 2)
+            // During scroll, don't even start high-res render to save CPU/Memory
+            // Only render if we've been stationary for a moment
+            kotlinx.coroutines.delay(200)
+            if (isScrollInProgress) {
+                sliceBitmap = null // Ensure we don't hold old bitmaps
+                isRendering = false
+                return@LaunchedEffect 
             }
-        } else if (sliceIndex > 0 && staggerDelay > 0) {
+        }
+        
+        isRendering = true
+        if (sliceIndex > 0 && staggerDelay > 0) {
             // Stagger slice renders slightly even when stationary to prevent lock contention
             kotlinx.coroutines.delay(sliceIndex * staggerDelay)
         }
@@ -1876,12 +1881,11 @@ fun PdfPageSliceItem(
         return
     }
     
-    val sliceWidthToHeightRatio = totalWidth.toFloat() / pixelRenderHeight.toFloat()
-
+    val density = LocalDensity.current
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .aspectRatio(sliceWidthToHeightRatio)
+            .height(with(density) { pixelRenderHeight.toDp() })
     ) {
         val bitmap = sliceBitmap
         if (bitmap != null) {
@@ -3501,6 +3505,7 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
     val volumeScrollEnabled by viewModel.volumeScrollEnabled.collectAsStateWithLifecycle()
     val bitmapConfigSetting by viewModel.bitmapConfigSetting.collectAsStateWithLifecycle()
     val webpQuality by viewModel.webpQuality.collectAsStateWithLifecycle()
+    val hdTextModeEnabled by viewModel.hdTextModeEnabled.collectAsStateWithLifecycle()
     val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsStateWithLifecycle()
     val doubleTapResetEnabled by viewModel.doubleTapResetEnabled.collectAsStateWithLifecycle()
     val aggressiveGcEnabled by viewModel.aggressiveGcEnabled.collectAsStateWithLifecycle()
@@ -3731,6 +3736,67 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
                         )
                     }
                 }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        // --- SECTION 1.2: TEXT CLARITY & CACHE ---
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Build, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("TEXT & MEMORY OPTIMIZATION", fontWeight = FontWeight.Bold, fontSize = 14.sp)
+                }
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Text("Super-Res Text Mode", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                        Text("Increases rendering scale by 1.5x specifically for fine text documents. Uses more RAM.", fontSize = 11.sp, color = Color.Gray)
+                    }
+                    Switch(
+                        checked = hdTextModeEnabled,
+                        onCheckedChange = { viewModel.setHdTextModeEnabled(it) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
+                HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
+                Spacer(modifier = Modifier.height(16.dp))
+
+                Button(
+                    onClick = { 
+                        viewModel.clearMemoryCache()
+                        cacheSizeText = "0.00 MB"
+                    },
+                    modifier = Modifier.fillMaxWidth(),
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("Clear In-Memory Cache", fontSize = 12.sp)
+                }
+                
+                Text(
+                    text = "Current RAM Cache Usage: $cacheSizeText",
+                    modifier = Modifier.padding(top = 8.dp),
+                    fontSize = 10.sp,
+                    color = Color.Gray,
+                    textAlign = TextAlign.Center
+                )
             }
         }
 

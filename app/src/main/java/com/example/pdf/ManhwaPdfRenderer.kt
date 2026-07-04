@@ -57,6 +57,11 @@ class ManhwaPdfRenderer(
         memoryCache.resize(newCacheSize)
     }
 
+    fun clearMemoryCache() {
+        memoryCache.evictAll()
+        webPCacheManager.clearMemoryCache()
+    }
+
     val pageCount: Int
         get() = synchronized(this) { pdfRenderer?.pageCount ?: 0 }
 

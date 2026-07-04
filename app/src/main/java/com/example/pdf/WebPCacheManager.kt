@@ -3,6 +3,7 @@ package com.example.pdf
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.BitmapFactory
+import android.util.LruCache
 import java.io.File
 import java.io.FileOutputStream
 import java.util.Collections
@@ -17,6 +18,19 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
 
     // Bitmap Pool for zero-allocation fast decoding
     private val bitmapPool = Collections.synchronizedList(LinkedList<Bitmap>())
+
+    // Memory Cache for recently viewed pages (15% of available memory or 20MB)
+    private val memoryCache = object : LruCache<String, Bitmap>(20 * 1024 * 1024) {
+        override fun sizeOf(key: String, value: Bitmap): Int {
+            return value.byteCount
+        }
+
+        override fun entryRemoved(evicted: Boolean, key: String, oldValue: Bitmap, newValue: Bitmap?) {
+            if (evicted) {
+                releaseBitmap(oldValue)
+            }
+        }
+    }
 
     fun releaseBitmap(bitmap: Bitmap) {
         if (!bitmap.isRecycled) {
@@ -57,6 +71,9 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
     }
 
     suspend fun saveToCache(key: String, bitmap: Bitmap, quality: Int = 80) = withContext(Dispatchers.IO) {
+        // Also put in memory cache for immediate access
+        memoryCache.put(key, bitmap)
+        
         try {
             val file = File(cacheDir, "$key.webp")
             if (!file.exists()) {
@@ -77,6 +94,9 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
     }
 
     suspend fun getFromCache(key: String, bitmapConfig: String = "ARGB_8888"): Bitmap? = withContext(Dispatchers.IO) {
+        // Check memory cache first
+        memoryCache.get(key)?.let { return@withContext it }
+        
         try {
             val file = File(cacheDir, "$key.webp")
             if (file.exists()) {
@@ -94,13 +114,18 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
                     options.inBitmap = reusable
                 }
                 
-                try {
+                val bitmap = try {
                     BitmapFactory.decodeFile(file.absolutePath, options)
                 } catch (e: IllegalArgumentException) {
                     // Fallback if inBitmap fails
                     options.inBitmap = null
                     BitmapFactory.decodeFile(file.absolutePath, options)
                 }
+                
+                if (bitmap != null) {
+                    memoryCache.put(key, bitmap)
+                }
+                bitmap
             } else {
                 null
             }
@@ -110,7 +135,12 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
         }
     }
 
+    fun clearMemoryCache() {
+        memoryCache.evictAll()
+    }
+
     suspend fun clearCache() = withContext(Dispatchers.IO) {
+        memoryCache.evictAll()
         cacheDir.deleteRecursively()
         cacheDir.mkdirs()
     }
