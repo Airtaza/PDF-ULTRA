@@ -113,6 +113,11 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
         PaywallDialog(viewModel = viewModel, targetPlugin = targetPlugin)
     }
 
+    val memoryPressure by viewModel.memoryPressureEvent.collectAsStateWithLifecycle()
+    if (memoryPressure) {
+        MemoryPressureDialog(viewModel = viewModel)
+    }
+
     if (showAboutDialog) {
         AlertDialog(
             onDismissRequest = { showAboutDialog = false },
@@ -1183,6 +1188,10 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
         initialFirstVisibleItemIndex = activeManhwa?.lastReadPage ?: 0,
         initialFirstVisibleItemScrollOffset = activeManhwa?.scrollOffset ?: 0
     )
+
+    LaunchedEffect(lazyListState.isScrollInProgress) {
+        viewModel.setUserScrolling(lazyListState.isScrollInProgress)
+    }
     val coroutineScope = rememberCoroutineScope()
     var componentWidth by remember { mutableStateOf(1080) }
     var areControlsVisible by remember { mutableStateOf(true) }
@@ -1817,7 +1826,8 @@ fun PdfPageSliceItem(
     autoNightShift: Boolean,
     mangaScanCrisper: Boolean,
     colorMode: ManhwaViewModel.ColorMode,
-    landscapeSplitMode: String = "NONE"
+    landscapeSplitMode: String = "NONE",
+    numSlices: Int = 1
 ) {
     val hdScrollDelay by viewModel.hdScrollDelay.collectAsStateWithLifecycle()
     val staggerDelay by viewModel.staggerDelay.collectAsStateWithLifecycle()
@@ -1855,7 +1865,11 @@ fun PdfPageSliceItem(
     }
 
     val pixelSliceY = (sliceIndex * sliceHeight * scaleFactor).toInt()
-    val pixelRenderHeight = (totalHeight - pixelSliceY).coerceAtMost((sliceHeight * scaleFactor).toInt()).coerceAtLeast(0)
+    val pixelRenderHeight = if (sliceIndex == numSlices - 1) {
+        totalHeight - pixelSliceY
+    } else {
+        ((sliceIndex + 1) * sliceHeight * scaleFactor).toInt() - pixelSliceY
+    }
     
     if (pixelRenderHeight <= 0 || totalWidth <= 0) {
         Spacer(modifier = Modifier.height(1.dp))
@@ -2080,7 +2094,8 @@ fun PdfPageItem(
                             autoNightShift = autoNightShift,
                             mangaScanCrisper = mangaScanCrisper,
                             colorMode = colorMode,
-                            landscapeSplitMode = landscapeSplitMode
+                            landscapeSplitMode = landscapeSplitMode,
+                            numSlices = numSlices
                         )
                     }
                 }
@@ -5278,6 +5293,86 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
             }
         }
     }
+}
+
+@Composable
+fun MemoryPressureDialog(viewModel: ManhwaViewModel) {
+    val maxStorageAllocation by viewModel.maxStorageAllocation.collectAsStateWithLifecycle()
+    val qualityLevel by viewModel.qualityLevel.collectAsStateWithLifecycle()
+    
+    AlertDialog(
+        onDismissRequest = { viewModel.dismissMemoryPressure() },
+        icon = {
+            Icon(
+                imageVector = Icons.Default.Warning,
+                contentDescription = null,
+                tint = MaterialTheme.colorScheme.error,
+                modifier = Modifier.size(48.dp)
+            )
+        },
+        title = {
+            Text(
+                text = "Memory Limit Reached",
+                style = MaterialTheme.typography.headlineSmall,
+                fontWeight = FontWeight.Bold
+            )
+        },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                Text(
+                    text = "The PDF rendering engine has run out of memory. This can happen with very high-quality scans or large document batches.",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+                
+                Surface(
+                    color = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.3f),
+                    shape = RoundedCornerShape(8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(12.dp)) {
+                        Text(
+                            text = "Current Status:",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.error
+                        )
+                        Text(
+                            text = "• Cache: ${maxStorageAllocation}MB\n• Quality: $qualityLevel",
+                            style = MaterialTheme.typography.bodySmall,
+                            lineHeight = 16.sp
+                        )
+                    }
+                }
+                
+                Text(
+                    text = "Would you like to increase the memory limit or drop the rendering quality to continue?",
+                    style = MaterialTheme.typography.bodyMedium
+                )
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = {
+                    viewModel.increaseStorageAllocation()
+                    viewModel.dismissMemoryPressure()
+                },
+                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+            ) {
+                Text("Increase RAM")
+            }
+        },
+        dismissButton = {
+            TextButton(
+                onClick = {
+                    viewModel.lowerQuality()
+                    viewModel.dismissMemoryPressure()
+                }
+            ) {
+                Text("Drop Quality", color = MaterialTheme.colorScheme.error)
+            }
+        },
+        containerColor = MaterialTheme.colorScheme.surface,
+        tonalElevation = 6.dp
+    )
 }
 
 @Composable

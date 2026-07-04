@@ -13,7 +13,13 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
-class ManhwaPdfRenderer(private val context: Context, private val file: File, private val maxCacheSizeMb: Int = 100) {
+class ManhwaPdfRenderer(
+    private val context: Context, 
+    private val file: File, 
+    private val maxCacheSizeMb: Int = 100,
+    private val isScrolling: () -> Boolean = { false },
+    private val onOOM: () -> Unit = {}
+) {
 
     private var parcelFileDescriptor: ParcelFileDescriptor? = null
     private var pdfRenderer: PdfRenderer? = null
@@ -188,9 +194,12 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
 
                     // PdfRenderer strictly requires ARGB_8888 format
                     val config = Bitmap.Config.ARGB_8888
-                    var bmp = webPCacheManager.getReusableBitmap(totalWidth, pixelRenderHeight, config)
-                    if (bmp == null) {
-                        bmp = Bitmap.createBitmap(totalWidth, pixelRenderHeight, config)
+                    var bmp = try {
+                        webPCacheManager.getReusableBitmap(totalWidth, pixelRenderHeight, config)
+                            ?: Bitmap.createBitmap(totalWidth, pixelRenderHeight, config)
+                    } catch (e: OutOfMemoryError) {
+                        onOOM()
+                        return@synchronized null
                     }
                     
                     // Fill with white background, as PdfRenderer draws on top and many PDFs have transparent backgrounds
@@ -234,6 +243,11 @@ class ManhwaPdfRenderer(private val context: Context, private val file: File, pr
                 val quality = if (isLowResPlaceholder) 60 else qualityCompression
                 // Launch in a new coroutine so we don't block the return of the bitmap
                 CoroutineScope(Dispatchers.IO).launch {
+                    // If scrolling, wait a bit or skip to prioritize UI smoothness and current page load
+                    if (isScrolling()) {
+                        kotlinx.coroutines.delay(1000) 
+                        if (isScrolling()) return@launch // Skip if still scrolling to save IO/CPU
+                    }
                     webPCacheManager.saveToCache(cacheKey, bitmap, quality)
                 }
             }

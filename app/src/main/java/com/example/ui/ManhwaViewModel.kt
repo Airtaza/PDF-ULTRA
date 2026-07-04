@@ -642,7 +642,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val renderer = try {
             synchronized(renderers) {
                 renderers.getOrPut(manhwa.id) {
-                    ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
+                    createRenderer(file)
                 }
             }
         } catch (e: Throwable) {
@@ -680,6 +680,51 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     private val _activeStrokeWidth = MutableStateFlow(8f)
     val activeStrokeWidth: StateFlow<Float> = _activeStrokeWidth.asStateFlow()
+
+    private val _isUserScrolling = MutableStateFlow(false)
+    val isUserScrolling: StateFlow<Boolean> = _isUserScrolling.asStateFlow()
+
+    private val _memoryPressureEvent = MutableStateFlow<Boolean>(false)
+    val memoryPressureEvent: StateFlow<Boolean> = _memoryPressureEvent.asStateFlow()
+
+    fun setUserScrolling(scrolling: Boolean) {
+        _isUserScrolling.value = scrolling
+    }
+
+    fun triggerMemoryPressure() {
+        _memoryPressureEvent.value = true
+    }
+
+    fun dismissMemoryPressure() {
+        _memoryPressureEvent.value = false
+    }
+
+    fun increaseStorageAllocation() {
+        val current = _maxStorageAllocation.value
+        _maxStorageAllocation.value = current + 100
+        sharedPrefs.edit().putInt("max_storage_allocation", _maxStorageAllocation.value).apply()
+        // Notify renderers
+        synchronized(renderers) {
+            renderers.values.forEach { it.resizeCache(_maxStorageAllocation.value) }
+        }
+    }
+
+    fun lowerQuality() {
+        _qualityLevel.value = "LOW"
+        sharedPrefs.edit().putString("quality_level", "LOW").apply()
+        _webpQuality.value = 60
+        sharedPrefs.edit().putInt("webp_quality", 60).apply()
+    }
+
+    private fun createRenderer(file: File): ManhwaPdfRenderer {
+        return ManhwaPdfRenderer(
+            application,
+            file,
+            _maxStorageAllocation.value,
+            isScrolling = { _isUserScrolling.value },
+            onOOM = { triggerMemoryPressure() }
+        )
+    }
 
     // Page-indexed map of drawing sketches
     private val _sketches = MutableStateFlow<Map<Int, List<DrawPath>>>(emptyMap())
@@ -784,7 +829,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 try {
                     val r = synchronized(renderers) {
                         renderers.getOrPut(manhwa.id) {
-                            ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
+                            createRenderer(file)
                         }
                     }
                     // Prefetch aspect ratios for the first few pages to make page layout calculation instant
@@ -1033,7 +1078,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
             renderers[manhwa.id] ?: try {
                 val file = File(manhwa.filePath)
                 if (file.exists()) {
-                    val r = ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
+                    val r = createRenderer(file)
                     renderers[manhwa.id] = r
                     r
                 } else null
@@ -1064,7 +1109,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val renderer = try {
             synchronized(renderers) {
                 renderers.getOrPut(manhwa.id) {
-                    ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
+                    createRenderer(file)
                 }
             }
         } catch (e: Throwable) {
@@ -1090,7 +1135,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val renderer = try {
             synchronized(renderers) {
                 renderers.getOrPut(manhwa.id) {
-                    ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
+                    createRenderer(file)
                 }
             }
         } catch (e: Throwable) {
@@ -1130,7 +1175,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val renderer = try {
             synchronized(renderers) {
                 renderers.getOrPut(manhwa.id) {
-                    ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
+                    createRenderer(file)
                 }
             }
         } catch (e: Throwable) {
@@ -1164,7 +1209,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val renderer = try {
             synchronized(renderers) {
                 renderers.getOrPut(manhwa.id) {
-                    ManhwaPdfRenderer(application, file, _maxStorageAllocation.value)
+                    createRenderer(file)
                 }
             }
         } catch (e: Throwable) {
