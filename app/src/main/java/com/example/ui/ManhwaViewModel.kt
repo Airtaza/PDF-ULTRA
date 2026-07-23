@@ -31,12 +31,15 @@ import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.collectLatest
 import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.async
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.withContext
 import java.io.File
+import org.json.JSONArray
+import org.json.JSONObject
 
 data class DrawPath(
     val points: List<Offset>,
@@ -342,15 +345,40 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _selectedTab = MutableStateFlow(ReaderTab.Library)
     val selectedTab: StateFlow<ReaderTab> = _selectedTab.asStateFlow()
 
-    // --- State: Chapter Sorting & History ---
+    // --- State: Chapter Sorting, Search, Filtering & Reader Themes ---
     enum class SortMode {
         RECENT, NATURAL
     }
-    
+
+    enum class LibraryFilter {
+        ALL, IN_PROGRESS, UNREAD, FINISHED
+    }
+
+    enum class ReaderTheme(val title: String, val colorHex: Long, val isDark: Boolean) {
+        DARK("Dark Canvas", 0xFF121212, true),
+        PITCH_BLACK("OLED Black", 0xFF000000, true),
+        SEPIA("Classic Sepia", 0xFFF5EFE6, false),
+        WARM("Warm Amber", 0xFF2B2622, true),
+        WHITE("Pure White", 0xFFFFFFFF, false)
+    }
+
     private val _sortMode = MutableStateFlow(SortMode.RECENT)
     val sortMode: StateFlow<SortMode> = _sortMode.asStateFlow()
 
-    private val _autoScrollSpeed = MutableStateFlow(0f) // 0 means stopped, 1-10 means scroll speed
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    private val _libraryFilter = MutableStateFlow(LibraryFilter.ALL)
+    val libraryFilter: StateFlow<LibraryFilter> = _libraryFilter.asStateFlow()
+
+    private val sharedPrefs = application.getSharedPreferences("manhwa_settings", Context.MODE_PRIVATE)
+
+    private val _readerTheme = MutableStateFlow(
+        ReaderTheme.entries.getOrNull(sharedPrefs.getInt("reader_theme_index", 0)) ?: ReaderTheme.DARK
+    )
+    val readerTheme: StateFlow<ReaderTheme> = _readerTheme.asStateFlow()
+
+    private val _autoScrollSpeed = MutableStateFlow(0f)
     val autoScrollSpeed: StateFlow<Float> = _autoScrollSpeed.asStateFlow()
 
     private val _chapterHistory = MutableStateFlow<List<Long>>(emptyList())
@@ -359,8 +387,18 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _historyIndex = MutableStateFlow(-1)
     val historyIndex: StateFlow<Int> = _historyIndex.asStateFlow()
 
-    // --- Core Fast-Render & WebP Caching Settings ---
-    private val sharedPrefs = application.getSharedPreferences("manhwa_settings", Context.MODE_PRIVATE)
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+    }
+
+    fun setLibraryFilter(filter: LibraryFilter) {
+        _libraryFilter.value = filter
+    }
+
+    fun setReaderTheme(theme: ReaderTheme) {
+        _readerTheme.value = theme
+        sharedPrefs.edit().putInt("reader_theme_index", theme.ordinal).apply()
+    }
 
     // --- State: View Enhancer Plugin Properties ---
     private val _brightness = MutableStateFlow(sharedPrefs.getFloat("view_brightness", 1.0f))
@@ -419,6 +457,30 @@ class ManhwaViewModel(private val application: Application, private val reposito
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
             initialValue = emptyList()
+        )
+
+    val readingStreak: StateFlow<Int> = allReadingEvents
+        .map { calculateStreak(it) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = 0
+        )
+
+    val todayReadingSeconds: StateFlow<Long> = allReadingEvents
+        .map { calculateTodayReadingSeconds(it) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = 0L
+        )
+
+    val weeklyReadingStats: StateFlow<List<Int>> = allReadingEvents
+        .map { calculateWeeklyReadingStats(it) }
+        .stateIn(
+            scope = viewModelScope,
+            started = SharingStarted.WhileSubscribed(5000),
+            initialValue = List(7) { 0 }
         )
 
     private val _qualitySelectionEnabled = MutableStateFlow(sharedPrefs.getBoolean("quality_selection_enabled", true))
@@ -605,6 +667,10 @@ class ManhwaViewModel(private val application: Application, private val reposito
         initialValue = 1.6f
     )
 
+    // Page-indexed map of drawing sketches
+    private val _sketches = MutableStateFlow<Map<Int, List<DrawPath>>>(emptyMap())
+    val sketches: StateFlow<Map<Int, List<DrawPath>>> = _sketches.asStateFlow()
+
     init {
         viewModelScope.launch {
             _activeZoomScale.collectLatest { zoom ->
@@ -616,10 +682,12 @@ class ManhwaViewModel(private val application: Application, private val reposito
             activeManhwa.collect { manhwa ->
                 if (manhwa == null) {
                     _virtualPages.value = emptyList()
+                    _sketches.value = emptyMap()
                 } else {
                     // Update virtual pages for the new manhwa
                     val dir = _readingDirection.value
                     updateVirtualPagesForManhwa(manhwa, dir)
+                    loadSketchesFromDisk(manhwa.id)
                 }
             }
         }
@@ -681,6 +749,13 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _activeStrokeWidth = MutableStateFlow(8f)
     val activeStrokeWidth: StateFlow<Float> = _activeStrokeWidth.asStateFlow()
 
+    private val _activeDrawHighlighter = MutableStateFlow(false)
+    val activeDrawHighlighter: StateFlow<Boolean> = _activeDrawHighlighter.asStateFlow()
+
+    fun setDrawHighlighter(enabled: Boolean) {
+        _activeDrawHighlighter.value = enabled
+    }
+
     private val _hdTextModeEnabled = MutableStateFlow(sharedPrefs.getBoolean("hd_text_mode_enabled", false))
     val hdTextModeEnabled: StateFlow<Boolean> = _hdTextModeEnabled.asStateFlow()
 
@@ -741,10 +816,6 @@ class ManhwaViewModel(private val application: Application, private val reposito
             onOOM = { triggerMemoryPressure() }
         )
     }
-
-    // Page-indexed map of drawing sketches
-    private val _sketches = MutableStateFlow<Map<Int, List<DrawPath>>>(emptyMap())
-    val sketches: StateFlow<Map<Int, List<DrawPath>>> = _sketches.asStateFlow()
 
     // --- Helper Enums / Sealed Classes ---
     sealed class ImportState {
@@ -1644,6 +1715,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     // --- Sketch Editor Controls ---
+    private val undoStacks = mutableMapOf<Int, MutableList<List<DrawPath>>>()
+    private val redoStacks = mutableMapOf<Int, MutableList<List<DrawPath>>>()
+
     fun setDrawColor(color: Color) {
         _activeDrawColor.value = color
     }
@@ -1652,18 +1726,192 @@ class ManhwaViewModel(private val application: Application, private val reposito
         _activeStrokeWidth.value = width
     }
 
+    fun canUndo(pageIndex: Int): Boolean {
+        return !undoStacks[pageIndex].isNullOrEmpty()
+    }
+
+    fun canRedo(pageIndex: Int): Boolean {
+        return !redoStacks[pageIndex].isNullOrEmpty()
+    }
+
     fun addDrawPath(pageIndex: Int, path: DrawPath) {
         val currentSketches = _sketches.value.toMutableMap()
-        val paths = (currentSketches[pageIndex] ?: emptyList()).toMutableList()
-        paths.add(path)
-        currentSketches[pageIndex] = paths
+        val paths = currentSketches[pageIndex] ?: emptyList()
+        
+        // Save current state to undo stack
+        val undoStack = undoStacks.getOrPut(pageIndex) { mutableListOf() }
+        undoStack.add(paths.toList())
+        
+        // Clear redo stack for this page
+        redoStacks[pageIndex]?.clear()
+        
+        val newPaths = paths.toMutableList()
+        newPaths.add(path)
+        currentSketches[pageIndex] = newPaths
         _sketches.value = currentSketches
+        
+        activeManhwa.value?.let { saveSketchesToDisk(it.id) }
+    }
+
+    fun undoDrawPath(pageIndex: Int) {
+        val undoStack = undoStacks[pageIndex]
+        if (!undoStack.isNullOrEmpty()) {
+            val currentSketches = _sketches.value.toMutableMap()
+            val currentPaths = currentSketches[pageIndex] ?: emptyList()
+            
+            // Push current to redo stack
+            val redoStack = redoStacks.getOrPut(pageIndex) { mutableListOf() }
+            redoStack.add(currentPaths.toList())
+            
+            // Pop last state from undo stack
+            val previousPaths = undoStack.removeAt(undoStack.size - 1)
+            if (previousPaths.isEmpty()) {
+                currentSketches.remove(pageIndex)
+            } else {
+                currentSketches[pageIndex] = previousPaths
+            }
+            _sketches.value = currentSketches
+            
+            activeManhwa.value?.let { saveSketchesToDisk(it.id) }
+        }
+    }
+
+    fun redoDrawPath(pageIndex: Int) {
+        val redoStack = redoStacks[pageIndex]
+        if (!redoStack.isNullOrEmpty()) {
+            val currentSketches = _sketches.value.toMutableMap()
+            val currentPaths = currentSketches[pageIndex] ?: emptyList()
+            
+            // Push current to undo stack
+            val undoStack = undoStacks.getOrPut(pageIndex) { mutableListOf() }
+            undoStack.add(currentPaths.toList())
+            
+            // Pop last state from redo stack
+            val nextPaths = redoStack.removeAt(redoStack.size - 1)
+            currentSketches[pageIndex] = nextPaths
+            _sketches.value = currentSketches
+            
+            activeManhwa.value?.let { saveSketchesToDisk(it.id) }
+        }
     }
 
     fun clearDrawPaths(pageIndex: Int) {
         val currentSketches = _sketches.value.toMutableMap()
+        val paths = currentSketches[pageIndex] ?: emptyList()
+        if (paths.isNotEmpty()) {
+            val undoStack = undoStacks.getOrPut(pageIndex) { mutableListOf() }
+            undoStack.add(paths.toList())
+            redoStacks[pageIndex]?.clear()
+        }
         currentSketches.remove(pageIndex)
         _sketches.value = currentSketches
+        
+        activeManhwa.value?.let { saveSketchesToDisk(it.id) }
+    }
+
+    private fun saveSketchesToDisk(manhwaId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val sketchesMap = _sketches.value
+                val rootJson = JSONObject()
+                val pagesArray = JSONArray()
+                
+                sketchesMap.forEach { (pageIndex, paths) ->
+                    val pageJson = JSONObject()
+                    pageJson.put("pageIndex", pageIndex)
+                    
+                    val pathsArray = JSONArray()
+                    paths.forEach { path ->
+                        val pathJson = JSONObject()
+                        pathJson.put("color", path.color.value.toLong())
+                        pathJson.put("strokeWidth", path.strokeWidth.toDouble())
+                        
+                        val pointsArray = JSONArray()
+                        path.points.forEach { point ->
+                            val pointJson = JSONObject()
+                            pointJson.put("x", point.x.toDouble())
+                            pointJson.put("y", point.y.toDouble())
+                            pointsArray.put(pointJson)
+                        }
+                        pathJson.put("points", pointsArray)
+                        pathsArray.put(pathJson)
+                    }
+                    pageJson.put("paths", pathsArray)
+                    pagesArray.put(pageJson)
+                }
+                rootJson.put("pages", pagesArray)
+                
+                val sketchesDir = File(application.filesDir, "sketches")
+                if (!sketchesDir.exists()) {
+                    sketchesDir.mkdirs()
+                }
+                val file = File(sketchesDir, "manhwa_$manhwaId.json")
+                file.writeText(rootJson.toString())
+            } catch (e: Exception) {
+                android.util.Log.e("ManhwaViewModel", "Error saving sketches to disk", e)
+            }
+        }
+    }
+
+    private fun loadSketchesFromDisk(manhwaId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                // Clear undo/redo stacks when loading a new manhwa
+                undoStacks.clear()
+                redoStacks.clear()
+                
+                val sketchesDir = File(application.filesDir, "sketches")
+                val file = File(sketchesDir, "manhwa_$manhwaId.json")
+                if (!file.exists()) {
+                    _sketches.value = emptyMap()
+                    return@launch
+                }
+                
+                val text = file.readText()
+                val rootJson = JSONObject(text)
+                val pagesArray = rootJson.optJSONArray("pages") ?: JSONArray()
+                val newMap = mutableMapOf<Int, List<DrawPath>>()
+                
+                for (i in 0 until pagesArray.length()) {
+                    val pageJson = pagesArray.optJSONObject(i) ?: continue
+                    val pageIndex = pageJson.optInt("pageIndex", -1)
+                    if (pageIndex == -1) continue
+                    
+                    val pathsArray = pageJson.optJSONArray("paths") ?: JSONArray()
+                    val pathsList = mutableListOf<DrawPath>()
+                    
+                    for (j in 0 until pathsArray.length()) {
+                        val pathJson = pathsArray.optJSONObject(j) ?: continue
+                        val colorLong = pathJson.optLong("color", 0)
+                        val strokeWidth = pathJson.optDouble("strokeWidth", 8.0).toFloat()
+                        
+                        val pointsArray = pathJson.optJSONArray("points") ?: JSONArray()
+                        val pointsList = mutableListOf<Offset>()
+                        
+                        for (k in 0 until pointsArray.length()) {
+                            val pointJson = pointsArray.optJSONObject(k) ?: continue
+                            val x = pointJson.optDouble("x", 0.0).toFloat()
+                            val y = pointJson.optDouble("y", 0.0).toFloat()
+                            pointsList.add(Offset(x, y))
+                        }
+                        
+                        pathsList.add(
+                            DrawPath(
+                                points = pointsList,
+                                color = Color(colorLong.toULong()),
+                                strokeWidth = strokeWidth
+                            )
+                        )
+                    }
+                    newMap[pageIndex] = pathsList
+                }
+                
+                _sketches.value = newMap
+            } catch (e: Exception) {
+                android.util.Log.e("ManhwaViewModel", "Error loading sketches from disk", e)
+                _sketches.value = emptyMap()
+            }
+        }
     }
 
     // --- Memory Cache Monitoring & Clearing Utilities ---
@@ -1832,6 +2080,106 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 }
             }
         }
+    }
+
+    private fun calculateStreak(events: List<ReadingEvent>): Int {
+        if (events.isEmpty()) return 0
+        val cal = java.util.Calendar.getInstance()
+        
+        // Extract unique days when the user read
+        val readingDays = events.map { event ->
+            cal.timeInMillis = event.timestamp
+            val year = cal.get(java.util.Calendar.YEAR)
+            val dayOfYear = cal.get(java.util.Calendar.DAY_OF_YEAR)
+            "$year-$dayOfYear"
+        }.distinct()
+
+        if (readingDays.isEmpty()) return 0
+
+        cal.timeInMillis = System.currentTimeMillis()
+        var currentYear = cal.get(java.util.Calendar.YEAR)
+        var currentDay = cal.get(java.util.Calendar.DAY_OF_YEAR)
+        
+        var streak = 0
+        var checkDate = "$currentYear-$currentDay"
+        
+        // Check if the user read today or yesterday to continue/start the streak
+        if (!readingDays.contains(checkDate)) {
+            // Check if read yesterday
+            cal.add(java.util.Calendar.DAY_OF_YEAR, -1)
+            currentYear = cal.get(java.util.Calendar.YEAR)
+            currentDay = cal.get(java.util.Calendar.DAY_OF_YEAR)
+            checkDate = "$currentYear-$currentDay"
+            if (!readingDays.contains(checkDate)) {
+                return 0
+            }
+        }
+        
+        // Count backwards to calculate streak
+        while (true) {
+            if (readingDays.contains(checkDate)) {
+                streak++
+                // Move back 1 day
+                cal.add(java.util.Calendar.DAY_OF_YEAR, -1)
+                currentYear = cal.get(java.util.Calendar.YEAR)
+                currentDay = cal.get(java.util.Calendar.DAY_OF_YEAR)
+                checkDate = "$currentYear-$currentDay"
+            } else {
+                break
+            }
+        }
+        return streak
+    }
+
+    private fun calculateTodayReadingSeconds(events: List<ReadingEvent>): Long {
+        val cal = java.util.Calendar.getInstance()
+        cal.timeInMillis = System.currentTimeMillis()
+        val todayYear = cal.get(java.util.Calendar.YEAR)
+        val todayDay = cal.get(java.util.Calendar.DAY_OF_YEAR)
+        
+        return events.filter { event ->
+            cal.timeInMillis = event.timestamp
+            cal.get(java.util.Calendar.YEAR) == todayYear && cal.get(java.util.Calendar.DAY_OF_YEAR) == todayDay
+        }.sumOf { it.durationSeconds.toLong() }
+    }
+
+    private fun calculateWeeklyReadingStats(events: List<ReadingEvent>): List<Int> {
+        val cal = java.util.Calendar.getInstance()
+        val now = System.currentTimeMillis()
+        
+        // Days of the week index (0 = Monday, 6 = Sunday)
+        val stats = MutableList(7) { 0 }
+        
+        // Set Calendar to Monday of current week
+        cal.timeInMillis = now
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0)
+        cal.set(java.util.Calendar.MINUTE, 0)
+        cal.set(java.util.Calendar.SECOND, 0)
+        cal.set(java.util.Calendar.MILLISECOND, 0)
+        
+        // Get calendar day of week (Sunday is 1, Monday is 2, etc.)
+        val dayOfWeek = cal.get(java.util.Calendar.DAY_OF_WEEK)
+        // Shift calendar to Monday
+        val daysFromMonday = if (dayOfWeek == java.util.Calendar.SUNDAY) 6 else dayOfWeek - java.util.Calendar.MONDAY
+        cal.add(java.util.Calendar.DAY_OF_YEAR, -daysFromMonday)
+        val mondayStart = cal.timeInMillis
+        
+        // End of Sunday
+        cal.add(java.util.Calendar.DAY_OF_YEAR, 7)
+        val sundayEnd = cal.timeInMillis
+        
+        events.forEach { event ->
+            if (event.timestamp in mondayStart until sundayEnd) {
+                val eventCal = java.util.Calendar.getInstance()
+                eventCal.timeInMillis = event.timestamp
+                val day = eventCal.get(java.util.Calendar.DAY_OF_WEEK)
+                val index = if (day == java.util.Calendar.SUNDAY) 6 else day - java.util.Calendar.MONDAY
+                if (index in 0..6) {
+                    stats[index] += event.durationSeconds
+                }
+            }
+        }
+        return stats
     }
 
     override fun onCleared() {

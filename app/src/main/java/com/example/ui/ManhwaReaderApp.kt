@@ -70,6 +70,7 @@ import com.example.data.Bookmark
 import com.example.data.Manhwa
 import com.example.data.PluginConfig
 import com.example.data.ReadingEvent
+import com.example.ui.theme.*
 import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -324,6 +325,8 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
 fun LibraryScreen(viewModel: ManhwaViewModel) {
     val manhwas by viewModel.allManhwas.collectAsStateWithLifecycle()
     val sortMode by viewModel.sortMode.collectAsStateWithLifecycle()
+    val searchQuery by viewModel.searchQuery.collectAsStateWithLifecycle()
+    val libraryFilter by viewModel.libraryFilter.collectAsStateWithLifecycle()
 
     val filePickerLauncher = rememberLauncherForActivityResult(
         contract = ActivityResultContracts.OpenDocument()
@@ -331,6 +334,7 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
         uri?.let { viewModel.importPdfFile(it) }
     }
     var showDeleteConfirmDialog by remember { mutableStateOf<Manhwa?>(null) }
+    var showDetailsDialogForManhwa by remember { mutableStateOf<Manhwa?>(null) }
 
     val continueReadingList = remember(manhwas) {
         manhwas.filter { (it.lastReadPage > 0 || it.scrollOffset > 0) && it.lastReadPage < it.totalPages - 1 }
@@ -351,6 +355,23 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
                         .thenBy { viewModel.getChapterNumber(it) }
                 )
             }
+        }
+    }
+
+    val filteredManhwas = remember(sortedManhwas, searchQuery, libraryFilter) {
+        sortedManhwas.filter { item ->
+            val matchesSearch = searchQuery.isBlank() || 
+                item.title.contains(searchQuery, ignoreCase = true) || 
+                viewModel.getSeriesName(item).contains(searchQuery, ignoreCase = true)
+            
+            val matchesFilter = when (libraryFilter) {
+                ManhwaViewModel.LibraryFilter.ALL -> true
+                ManhwaViewModel.LibraryFilter.IN_PROGRESS -> item.lastReadPage > 0 && item.lastReadPage < item.totalPages - 1
+                ManhwaViewModel.LibraryFilter.UNREAD -> item.lastReadPage == 0
+                ManhwaViewModel.LibraryFilter.FINISHED -> item.totalPages > 0 && item.lastReadPage >= item.totalPages - 1
+            }
+            
+            matchesSearch && matchesFilter
         }
     }
     
@@ -480,6 +501,65 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
                 contentPadding = PaddingValues(16.dp),
                 verticalArrangement = Arrangement.spacedBy(14.dp)
             ) {
+                // Search Bar and Category Filter Chips
+                item {
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(bottom = 8.dp)
+                    ) {
+                        OutlinedTextField(
+                            value = searchQuery,
+                            onValueChange = { viewModel.setSearchQuery(it) },
+                            placeholder = { Text("Search by title or series...", fontSize = 13.sp) },
+                            leadingIcon = {
+                                Icon(Icons.Default.Search, contentDescription = "Search", tint = MaterialTheme.colorScheme.primary)
+                            },
+                            trailingIcon = {
+                                if (searchQuery.isNotEmpty()) {
+                                    IconButton(onClick = { viewModel.setSearchQuery("") }) {
+                                        Icon(Icons.Default.Clear, contentDescription = "Clear search", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    }
+                                }
+                            },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .testTag("library_search_input"),
+                            shape = RoundedCornerShape(12.dp),
+                            singleLine = true
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Filter Chips
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            listOf(
+                                ManhwaViewModel.LibraryFilter.ALL to "All (${manhwas.size})",
+                                ManhwaViewModel.LibraryFilter.IN_PROGRESS to "Reading (${manhwas.count { it.lastReadPage > 0 && it.lastReadPage < it.totalPages - 1 }})",
+                                ManhwaViewModel.LibraryFilter.UNREAD to "Unread (${manhwas.count { it.lastReadPage == 0 }})",
+                                ManhwaViewModel.LibraryFilter.FINISHED to "Completed (${manhwas.count { it.totalPages > 0 && it.lastReadPage >= it.totalPages - 1 }})"
+                            ).forEach { (filter, label) ->
+                                val isSelected = libraryFilter == filter
+                                FilterChip(
+                                    selected = isSelected,
+                                    onClick = { viewModel.setLibraryFilter(filter) },
+                                    label = { Text(label, fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                                    colors = FilterChipDefaults.filterChipColors(
+                                        selectedContainerColor = MaterialTheme.colorScheme.primary,
+                                        selectedLabelColor = MaterialTheme.colorScheme.onPrimary
+                                    ),
+                                    shape = RoundedCornerShape(20.dp)
+                                )
+                            }
+                        }
+                    }
+                }
+
                 // Smart sort Mode Selector
                 item {
                     Row(
@@ -682,7 +762,7 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         Text(
-                            text = "Offline Chapters (${sortedManhwas.size})",
+                            text = "Offline Chapters (${filteredManhwas.size})",
                             fontWeight = FontWeight.Bold,
                             fontSize = 14.sp,
                             color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
@@ -697,18 +777,41 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
                     }
                 }
 
-                items(sortedManhwas, key = { it.id }) { manhwa ->
-                    ManhwaCardItem(
-                        manhwa = manhwa,
-                        onOpen = { viewModel.openManhwa(manhwa) },
-                        onDelete = { showDeleteConfirmDialog = manhwa }
-                    )
+                if (filteredManhwas.isEmpty() && searchQuery.isNotBlank()) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(32.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = "No comics found matching '$searchQuery'",
+                                fontSize = 13.sp,
+                                color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f),
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
+                } else {
+                    items(filteredManhwas, key = { it.id }) { manhwa ->
+                        ManhwaCardItem(
+                            manhwa = manhwa,
+                            onOpen = { viewModel.openManhwa(manhwa) },
+                            onDelete = { showDeleteConfirmDialog = manhwa },
+                            onShowDetails = { showDetailsDialogForManhwa = manhwa }
+                        )
+                    }
                 }
             }
         }
         } else {
             // Reading Analysis Tab
             val readingEvents by viewModel.allReadingEvents.collectAsStateWithLifecycle()
+            val readingStreak by viewModel.readingStreak.collectAsStateWithLifecycle()
+            val todayReadingSeconds by viewModel.todayReadingSeconds.collectAsStateWithLifecycle()
+            val weeklyReadingStats by viewModel.weeklyReadingStats.collectAsStateWithLifecycle()
+            
             val totalManhwas = manhwas.size
             val manhwasStarted = manhwas.count { it.lastReadPage > 0 }
             
@@ -735,7 +838,221 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
                     fontSize = 12.sp,
                     color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
                 )
-                Spacer(modifier = Modifier.height(24.dp))
+                Spacer(modifier = Modifier.height(20.dp))
+
+                // Feature 1: Daily Reading Goal and Streak Tracker
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        // Left column: Progress Circular Arc
+                        Box(
+                            modifier = Modifier.size(80.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            val goalProgress = (todayReadingSeconds.toFloat() / 900f).coerceIn(0f, 1f) // 15-min daily goal
+                            Canvas(modifier = Modifier.fillMaxSize()) {
+                                // Background Track
+                                drawArc(
+                                    color = Color.White.copy(alpha = 0.05f),
+                                    startAngle = -220f,
+                                    sweepAngle = 260f,
+                                    useCenter = false,
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                        width = 16f,
+                                        cap = StrokeCap.Round
+                                    )
+                                )
+                                // Active Progress Track
+                                drawArc(
+                                    brush = androidx.compose.ui.graphics.Brush.sweepGradient(
+                                        colors = listOf(NeonOrange, ElectricCyan, NeonOrange)
+                                    ),
+                                    startAngle = -220f,
+                                    sweepAngle = 260f * goalProgress,
+                                    useCenter = false,
+                                    style = androidx.compose.ui.graphics.drawscope.Stroke(
+                                        width = 18f,
+                                        cap = StrokeCap.Round
+                                    )
+                                )
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    text = "${(goalProgress * 100).toInt()}%",
+                                    fontSize = 16.sp,
+                                    fontWeight = FontWeight.Black,
+                                    color = ElectricCyan
+                                )
+                                Text(
+                                    text = "Goal",
+                                    fontSize = 8.sp,
+                                    color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                                )
+                            }
+                        }
+                        
+                        Spacer(modifier = Modifier.width(20.dp))
+                        
+                        // Right Column: Streak and details
+                        Column(modifier = Modifier.weight(1f)) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(32.dp)
+                                        .background(NeonOrange.copy(alpha = 0.15f), CircleShape),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Default.Favorite,
+                                        contentDescription = "Streak",
+                                        tint = NeonOrange,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                                Spacer(modifier = Modifier.width(10.dp))
+                                Column {
+                                    Text(
+                                        text = "$readingStreak Days Streak",
+                                        fontSize = 14.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.onBackground
+                                    )
+                                    Text(
+                                        text = if (readingStreak > 0) "Keep the fire burning!" else "Start reading to start a streak",
+                                        fontSize = 10.sp,
+                                        color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f)
+                                    )
+                                }
+                            }
+                            
+                            Spacer(modifier = Modifier.height(12.dp))
+                            
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column {
+                                    Text("Today's Read Time", fontSize = 10.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f))
+                                    val todayMins = todayReadingSeconds / 60
+                                    val todaySecs = todayReadingSeconds % 60
+                                    Text("${todayMins}m ${todaySecs}s", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = ElectricCyan)
+                                }
+                                
+                                Column {
+                                    Text("Daily Target", fontSize = 10.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.4f))
+                                    Text("15 mins", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Feature 2: Weekly Reading Activity Chart
+                Card(
+                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                    shape = RoundedCornerShape(16.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(vertical = 8.dp)
+                ) {
+                    Column(modifier = Modifier.padding(16.dp)) {
+                        Text(
+                            text = "WEEKLY READING WORKLOAD",
+                            fontSize = 12.sp,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.primary,
+                            letterSpacing = 0.5.sp
+                        )
+                        Spacer(modifier = Modifier.height(16.dp))
+                        
+                        // Canvas for custom drawing
+                        val maxDuration = weeklyReadingStats.maxOrNull()?.toFloat()?.coerceAtLeast(60f) ?: 60f
+                        val days = listOf("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+                        
+                        Canvas(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(120.dp)
+                        ) {
+                            val width = size.width
+                            val height = size.height
+                            val paddingLeft = 30f
+                            val paddingBottom = 40f
+                            val chartWidth = width - paddingLeft
+                            val chartHeight = height - paddingBottom
+                            val barWidth = (chartWidth / 7f) * 0.5f
+                            val spacing = (chartWidth / 7f) * 0.5f
+                            
+                            // Draw grid line at 50% and 100%
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.05f),
+                                start = Offset(paddingLeft, chartHeight * 0.5f),
+                                end = Offset(width, chartHeight * 0.5f),
+                                strokeWidth = 2f
+                            )
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.1f),
+                                start = Offset(paddingLeft, 0f),
+                                end = Offset(width, 0f),
+                                strokeWidth = 2f
+                            )
+                            
+                            // Draw baseline
+                            drawLine(
+                                color = Color.White.copy(alpha = 0.2f),
+                                start = Offset(paddingLeft, chartHeight),
+                                end = Offset(width, chartHeight),
+                                strokeWidth = 4f
+                            )
+                            
+                            for (i in 0 until 7) {
+                                val duration = weeklyReadingStats[i].toFloat()
+                                val barHeight = (duration / maxDuration) * chartHeight
+                                val x = paddingLeft + i * (barWidth + spacing) + spacing * 0.5f
+                                val y = chartHeight - barHeight
+                                
+                                // Draw rounded bar
+                                drawRoundRect(
+                                    brush = androidx.compose.ui.graphics.Brush.verticalGradient(
+                                        colors = listOf(ElectricCyan, DarkCyan)
+                                    ),
+                                    topLeft = Offset(x, y),
+                                    size = androidx.compose.ui.geometry.Size(barWidth, barHeight),
+                                    cornerRadius = androidx.compose.ui.geometry.CornerRadius(10f, 10f)
+                                )
+                            }
+                        }
+                        
+                        // Composable Row for labels under the canvas
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 12.dp, top = 4.dp),
+                            horizontalArrangement = Arrangement.SpaceAround
+                        ) {
+                            days.forEachIndexed { idx, day ->
+                                val seconds = weeklyReadingStats[idx]
+                                val mins = seconds / 60
+                                Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    Text(day, fontSize = 10.sp, color = MaterialTheme.colorScheme.onBackground.copy(alpha = 0.5f))
+                                    Text("${mins}m", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = if (mins > 0) ElectricCyan else Color.Gray.copy(alpha = 0.4f))
+                                }
+                            }
+                        }
+                    }
+                }
+
+                Spacer(modifier = Modifier.height(16.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),
@@ -815,6 +1132,61 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
             shape = RoundedCornerShape(16.dp)
         )
     }
+
+    // PDF Details Metadata Dialog
+    showDetailsDialogForManhwa?.let { manhwa ->
+        val file = java.io.File(manhwa.filePath)
+        val sizeMb = if (file.exists()) String.format(java.util.Locale.US, "%.2f MB", file.length().toDouble() / (1024 * 1024)) else "Unknown"
+        val progressPercent = if (manhwa.totalPages > 0) ((manhwa.lastReadPage + 1).toFloat() / manhwa.totalPages * 100).toInt() else 0
+
+        AlertDialog(
+            onDismissRequest = { showDetailsDialogForManhwa = null },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Info, contentDescription = null, tint = MaterialTheme.colorScheme.primary)
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text("PDF Comic Details", fontWeight = FontWeight.Bold, fontSize = 18.sp)
+                }
+            },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(text = manhwa.title, fontWeight = FontWeight.Bold, fontSize = 15.sp, color = MaterialTheme.colorScheme.primary)
+                    HorizontalDivider(modifier = Modifier.padding(vertical = 2.dp))
+                    Text("Total Pages: ${manhwa.totalPages}", fontSize = 13.sp)
+                    Text("Current Progress: Page ${manhwa.lastReadPage + 1} ($progressPercent%)", fontSize = 13.sp)
+                    Text("File Size: $sizeMb", fontSize = 13.sp)
+                    Text("Series Group: ${viewModel.getSeriesName(manhwa)}", fontSize = 13.sp)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    Text("File Location:", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                    Text(
+                        text = manhwa.filePath,
+                        fontSize = 10.sp,
+                        fontFamily = FontFamily.Monospace,
+                        color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        viewModel.openManhwa(manhwa)
+                        showDetailsDialogForManhwa = null
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                    shape = RoundedCornerShape(10.dp)
+                ) {
+                    Text("Read Comic", fontWeight = FontWeight.Bold)
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showDetailsDialogForManhwa = null }) {
+                    Text("Close")
+                }
+            },
+            containerColor = MaterialTheme.colorScheme.surface,
+            shape = RoundedCornerShape(16.dp)
+        )
+    }
 }
 
 @Composable
@@ -849,7 +1221,8 @@ fun AnalysisCard(title: String, value: String, modifier: Modifier = Modifier) {
 fun ManhwaCardItem(
     manhwa: Manhwa,
     onOpen: () -> Unit,
-    onDelete: () -> Unit
+    onDelete: () -> Unit,
+    onShowDetails: (() -> Unit)? = null
 ) {
     val progress = if (manhwa.totalPages > 0) {
         (manhwa.lastReadPage + 1).toFloat() / manhwa.totalPages.toFloat()
@@ -956,15 +1329,30 @@ fun ManhwaCardItem(
                 )
             }
 
-            IconButton(
-                onClick = onDelete,
-                modifier = Modifier.testTag("delete_button_${manhwa.id}")
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Delete,
-                    contentDescription = "Delete from offline",
-                    tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
-                )
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                if (onShowDetails != null) {
+                    IconButton(
+                        onClick = onShowDetails,
+                        modifier = Modifier.testTag("details_button_${manhwa.id}")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Info,
+                            contentDescription = "Comic Details",
+                            tint = MaterialTheme.colorScheme.primary.copy(alpha = 0.8f)
+                        )
+                    }
+                }
+
+                IconButton(
+                    onClick = onDelete,
+                    modifier = Modifier.testTag("delete_button_${manhwa.id}")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Delete,
+                        contentDescription = "Delete from offline",
+                        tint = MaterialTheme.colorScheme.error.copy(alpha = 0.7f)
+                    )
+                }
             }
         }
     }
@@ -1138,6 +1526,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     val plugins by viewModel.allPlugins.collectAsStateWithLifecycle()
     val activeBookmarks by viewModel.activeBookmarks.collectAsStateWithLifecycle()
     val currentPage by viewModel.currentPage.collectAsStateWithLifecycle()
+    val readerTheme by viewModel.readerTheme.collectAsStateWithLifecycle()
 
     val isOutlineOpen by viewModel.isOutlineDrawerOpen.collectAsStateWithLifecycle()
 
@@ -1164,6 +1553,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
     val drawColor by viewModel.activeDrawColor.collectAsStateWithLifecycle()
     val strokeWidth by viewModel.activeStrokeWidth.collectAsStateWithLifecycle()
     val sketches by viewModel.sketches.collectAsStateWithLifecycle()
+    val drawHighlighter by viewModel.activeDrawHighlighter.collectAsStateWithLifecycle()
 
     val showEditFeatures by viewModel.showEditFeatures.collectAsStateWithLifecycle()
     val virtualPages by viewModel.virtualPages.collectAsStateWithLifecycle()
@@ -1341,7 +1731,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
         lastScrollOffset = lazyListState.firstVisibleItemScrollOffset
     }
 
-    val backgroundBrushModifier = Modifier.background(Color.Black)
+    val backgroundBrushModifier = Modifier.background(Color(readerTheme.colorHex))
 
     Box(
         modifier = Modifier
@@ -1497,7 +1887,7 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                                 pageIndex = vp.physicalPageIndex,
                                 sketches = sketches[vp.physicalPageIndex] ?: emptyList(),
                                 isDrawModeOn = isDrawModeOn,
-                                drawColor = drawColor,
+                                drawColor = if (drawHighlighter) drawColor.copy(alpha = 0.35f) else drawColor,
                                 strokeWidth = strokeWidth,
                                 onDrawFinished = { path ->
                                     viewModel.addDrawPath(vp.physicalPageIndex, path)
@@ -1641,11 +2031,20 @@ fun ComicReaderScreen(viewModel: ManhwaViewModel) {
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
         ) {
+            val canUndo = viewModel.canUndo(currentPage)
+            val canRedo = viewModel.canRedo(currentPage)
+            val drawHighlighter by viewModel.activeDrawHighlighter.collectAsStateWithLifecycle()
             DrawingControlsBar(
                 currentColor = drawColor,
                 currentStroke = strokeWidth,
+                canUndo = canUndo,
+                canRedo = canRedo,
+                drawHighlighter = drawHighlighter,
+                onHighlighterToggle = { viewModel.setDrawHighlighter(it) },
                 onColorSelect = { viewModel.setDrawColor(it) },
                 onStrokeSelect = { viewModel.setStrokeWidth(it) },
+                onUndo = { viewModel.undoDrawPath(currentPage) },
+                onRedo = { viewModel.redoDrawPath(currentPage) },
                 onClearPage = { viewModel.clearDrawPaths(currentPage) },
                 onDone = { isDrawModeOn = false }
             )
@@ -2259,8 +2658,14 @@ fun HUDTopBar(
 fun DrawingControlsBar(
     currentColor: Color,
     currentStroke: Float,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    drawHighlighter: Boolean,
+    onHighlighterToggle: (Boolean) -> Unit,
     onColorSelect: (Color) -> Unit,
     onStrokeSelect: (Float) -> Unit,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
     onClearPage: () -> Unit,
     onDone: () -> Unit
 ) {
@@ -2279,22 +2684,82 @@ fun DrawingControlsBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    "SKETCH SESSION",
-                    fontSize = 12.sp,
-                    fontWeight = FontWeight.Black,
-                    letterSpacing = 1.sp,
-                    color = MaterialTheme.colorScheme.primary
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "SKETCH SESSION",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 1.sp,
+                        color = MaterialTheme.colorScheme.primary
+                    )
+                    Spacer(modifier = Modifier.width(12.dp))
+                    
+                    // Brush Preview
+                    Box(
+                        modifier = Modifier
+                            .size(24.dp)
+                            .background(Color.White.copy(alpha = 0.15f), CircleShape),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .size((currentStroke / 1.5f).toInt().coerceIn(3, 18).dp)
+                                .background(
+                                    if (drawHighlighter) currentColor.copy(alpha = 0.35f) else currentColor,
+                                    CircleShape
+                                )
+                        )
+                    }
+                }
 
-                Row {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    // Undo Button
+                    TextButton(
+                        onClick = onUndo,
+                        enabled = canUndo,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.primary,
+                            disabledContentColor = Color.Gray.copy(alpha = 0.5f)
+                        )
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.ArrowBack,
+                            contentDescription = "Undo",
+                            modifier = Modifier.size(16.dp)
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Text("Undo", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    }
+
+                    Spacer(modifier = Modifier.width(4.dp))
+
+                    // Redo Button
+                    TextButton(
+                        onClick = onRedo,
+                        enabled = canRedo,
+                        colors = ButtonDefaults.textButtonColors(
+                            contentColor = MaterialTheme.colorScheme.primary,
+                            disabledContentColor = Color.Gray.copy(alpha = 0.5f)
+                        )
+                    ) {
+                        Text("Redo", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(
+                            imageVector = Icons.Default.ArrowForward,
+                            contentDescription = "Redo",
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(12.dp))
+
                     TextButton(
                         onClick = onClearPage,
                         colors = ButtonDefaults.textButtonColors(contentColor = Color.Red.copy(alpha = 0.8f))
                     ) {
                         Icon(Icons.Default.Refresh, contentDescription = "Clear", modifier = Modifier.size(16.dp))
                         Spacer(modifier = Modifier.width(4.dp))
-                        Text("Clear Drawing", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                        Text("Clear Page", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     }
 
                     Spacer(modifier = Modifier.width(12.dp))
@@ -2334,6 +2799,41 @@ fun DrawingControlsBar(
                                 shape = CircleShape
                             )
                             .clickable { onColorSelect(color) }
+                    )
+                }
+
+                Spacer(modifier = Modifier.width(20.dp))
+
+                // Highlighter mode toggle
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier
+                        .clickable { onHighlighterToggle(!drawHighlighter) }
+                        .padding(horizontal = 8.dp, vertical = 4.dp)
+                        .background(
+                            if (drawHighlighter) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f)
+                            else Color.Transparent,
+                            RoundedCornerShape(6.dp)
+                        )
+                        .border(
+                            width = 1.dp,
+                            color = if (drawHighlighter) MaterialTheme.colorScheme.primary else Color.DarkGray,
+                            shape = RoundedCornerShape(6.dp)
+                        )
+                        .padding(horizontal = 8.dp, vertical = 2.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Edit,
+                        contentDescription = null,
+                        tint = if (drawHighlighter) MaterialTheme.colorScheme.primary else Color.LightGray,
+                        modifier = Modifier.size(14.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Highlighter",
+                        fontSize = 11.sp,
+                        color = if (drawHighlighter) MaterialTheme.colorScheme.primary else Color.LightGray,
+                        fontWeight = if (drawHighlighter) FontWeight.Bold else FontWeight.Normal
                     )
                 }
 
@@ -3499,6 +3999,7 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
     val qualitySelectionEnabled by viewModel.qualitySelectionEnabled.collectAsStateWithLifecycle()
     val qualityLevel by viewModel.qualityLevel.collectAsStateWithLifecycle()
     val maxStorageAllocation by viewModel.maxStorageAllocation.collectAsStateWithLifecycle()
+    val currentReaderTheme by viewModel.readerTheme.collectAsStateWithLifecycle()
 
     val pageSpacing by viewModel.pageSpacing.collectAsStateWithLifecycle()
     val doubleTapZoomScale by viewModel.doubleTapZoomScale.collectAsStateWithLifecycle()
@@ -3543,6 +4044,72 @@ fun SettingsScreen(viewModel: ManhwaViewModel) {
         )
 
         Spacer(modifier = Modifier.height(20.dp))
+
+        // --- READER CANVAS THEME CARD ---
+        Card(
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            shape = RoundedCornerShape(16.dp),
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(bottom = 16.dp)
+                .shadow(4.dp, RoundedCornerShape(16.dp))
+        ) {
+            Column(modifier = Modifier.padding(16.dp)) {
+                Text(
+                    text = "Reader Canvas Theme",
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "Select background color when viewing comics in continuous vertical layout.",
+                    fontSize = 11.sp,
+                    color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+                )
+                Spacer(modifier = Modifier.height(12.dp))
+
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState()),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    ManhwaViewModel.ReaderTheme.entries.forEach { theme ->
+                        val isSelected = currentReaderTheme == theme
+                        val themeColor = Color(theme.colorHex)
+                        val borderColor = if (isSelected) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.3f)
+
+                        Box(
+                            modifier = Modifier
+                                .background(themeColor, RoundedCornerShape(12.dp))
+                                .border(if (isSelected) 2.dp else 1.dp, borderColor, RoundedCornerShape(12.dp))
+                                .clickable { viewModel.setReaderTheme(theme) }
+                                .padding(horizontal = 14.dp, vertical = 10.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                Box(
+                                    modifier = Modifier
+                                        .size(12.dp)
+                                        .background(
+                                            if (theme.isDark) Color.White else Color.Black,
+                                            CircleShape
+                                        )
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text(
+                                    text = theme.title,
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = if (theme.isDark) Color.White else Color.Black
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // --- PRESETS ---
         Row(
