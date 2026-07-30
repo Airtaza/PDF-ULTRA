@@ -220,11 +220,10 @@ class ManhwaPdfRenderer(
 
                     // Calculate scale factors precisely
                     val pdfRenderWidth = if (isSplit) widthPt / 2f else widthPt.toFloat()
-                    val scaleX = totalWidth.toFloat() / pdfRenderWidth
-                    val scaleY = totalHeight.toFloat() / heightPt.toFloat()
+                    val scale = totalWidth.toFloat() / pdfRenderWidth
 
                     val matrix = Matrix()
-                    matrix.postScale(scaleX, scaleY)
+                    matrix.postScale(scale, scale)
                     
                     val translateX = if (landscapeSplitMode == "RIGHT_HALF") -totalWidth.toFloat() else 0f
                     matrix.postTranslate(translateX, -pixelSliceY.toFloat())

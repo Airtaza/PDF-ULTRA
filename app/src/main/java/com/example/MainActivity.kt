@@ -12,6 +12,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
 import androidx.compose.ui.Modifier
+import androidx.core.content.IntentCompat
 import com.example.ui.ManhwaReaderApp
 import com.example.ui.ManhwaViewModel
 import com.example.ui.ManhwaViewModelFactory
@@ -56,7 +57,7 @@ class MainActivity : ComponentActivity() {
                 viewModel.importPdfFile(uri)
             }
         } else if (Intent.ACTION_SEND == action && type == "application/pdf") {
-            (intent.getParcelableExtra<Parcelable>(Intent.EXTRA_STREAM) as? Uri)?.let { uri ->
+            IntentCompat.getParcelableExtra(intent, Intent.EXTRA_STREAM, Uri::class.java)?.let { uri ->
                 viewModel.importPdfFile(uri)
             }
         } else if (Intent.ACTION_VIEW == action) {

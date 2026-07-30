@@ -1,0 +1,29 @@
+====================================================================
+CODEBASE AUDIT & ERROR / ANOMALY REPORT (UPDATED)
+Generated for: Manhwa Reader App
+====================================================================
+
+1. BUILD & COMPILER DEPRECATIONS - RESOLVED
+--------------------------------------------------------------------
+- [FIXED] Deprecated API Usage in MainActivity.kt:
+  * Migrated `getParcelableExtra` to `IntentCompat.getParcelableExtra(intent, key, class)`.
+- [FIXED] Room Database Configuration in ManhwaDatabase.kt:
+  * Updated `fallbackToDestructiveMigration()` to `fallbackToDestructiveMigration(dropAllTables = true)`.
+- [FIXED] Material Icons Deprecations in ManhwaReaderApp.kt:
+  * Migrated directional icons (`ArrowBack`, `ArrowForward`, `List`) to `Icons.AutoMirrored.Filled.*`.
+- [FIXED] PDF Page Slices Misalignment & Crash Root Causes:
+  * Resolved `numSlices` mismatch bug in `ManhwaViewModel.kt` prefetch routines where scaled `totalHeight` was divided by unscaled `sliceHeight`.
+  * Updated `ManhwaPdfRenderer.kt` matrix transformation to use uniform scaling (`scale = totalWidth / pdfRenderWidth`), eliminating Y-axis aspect ratio distortion.
+  * Synchronized slice boundaries and `basePageHeight` calculations across `ManhwaPdfRenderer.kt`, `ManhwaViewModel.kt`, and `ManhwaReaderApp.kt`.
+
+2. ARCHITECTURAL OBSERVATIONS & POTENTIAL REFACTORS
+--------------------------------------------------------------------
+- Monolithic Component Files:
+  * `ManhwaReaderApp.kt` (~6,500 lines) contains main reader navigation, composables, dialogs, and tools.
+  * `ManhwaViewModel.kt` (~2,100 lines) manages state across rendering, database, downloads, and preferences.
+- Memory & Resource Management:
+  * High-res multi-page PDF rendering is managed via `Dispatchers.IO` with thread synchronization and `LruCache` memory bounds.
+
+====================================================================
+END OF REPORT
+====================================================================

@@ -960,10 +960,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
                     val aspect = renderer.getPageAspectRatio(i)
                     val scaleFactor = getQualityScaleFactor(_qualityLevel.value)
-                    val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
-                    val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
                     val sliceHeight = _sliceHeight.value
-                    val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
+                    val basePageHeight = targetWidth * aspect
+                    val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
                     
                     // Pre-render actual slices sequentially to avoid high peak memory allocation and thread contention
                     for (slice in 0 until numSlices) {
@@ -2038,10 +2037,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
                         // This uses renderPageSlice which saves to WebP Cache
                         val aspect = renderer.getPageAspectRatio(pageToLoad)
                         val scaleFactor = getQualityScaleFactor(_qualityLevel.value)
-                        val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
-                        val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
                         val sliceHeight = _sliceHeight.value
-                        val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
+                        val basePageHeight = targetWidth * aspect
+                        val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
                         
                         // Just preload the first 3 slices to save memory and CPU
                         val slicesToPreload = minOf(numSlices, 3)

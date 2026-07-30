@@ -36,6 +36,7 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
+import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
@@ -1452,7 +1453,7 @@ fun PluginConfigRow(
                     imageVector = when (plugin.id) {
                         "view_enhancer" -> Icons.Default.Settings
                         "manhwa_editor" -> Icons.Default.Edit
-                        "metadata_bookmark" -> Icons.Default.List
+                        "metadata_bookmark" -> Icons.AutoMirrored.Filled.List
                         else -> Icons.Default.Settings
                     },
                     contentDescription = plugin.name,
@@ -2609,7 +2610,7 @@ fun HUDTopBar(
             verticalAlignment = Alignment.CenterVertically
         ) {
             IconButton(onClick = onBack, modifier = Modifier.testTag("reader_back_button")) {
-                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = Color.White)
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
 
             Column(
@@ -2727,7 +2728,7 @@ fun DrawingControlsBar(
                         )
                     ) {
                         Icon(
-                            imageVector = Icons.Default.ArrowBack,
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Undo",
                             modifier = Modifier.size(16.dp)
                         )
@@ -2749,7 +2750,7 @@ fun DrawingControlsBar(
                         Text("Redo", fontSize = 12.sp, fontWeight = FontWeight.Bold)
                         Spacer(modifier = Modifier.width(4.dp))
                         Icon(
-                            imageVector = Icons.Default.ArrowForward,
+                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = "Redo",
                             modifier = Modifier.size(16.dp)
                         )
@@ -3532,7 +3533,7 @@ fun HUDBottomBar(
                         enabled = canNavigateBack
                     ) {
                         Icon(
-                            imageVector = Icons.Default.ArrowBack,
+                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Prev Chapter History",
                             tint = if (canNavigateBack) Color.White else Color.DarkGray
                         )
@@ -3550,7 +3551,7 @@ fun HUDBottomBar(
                         enabled = canNavigateForward
                     ) {
                         Icon(
-                            imageVector = Icons.Default.ArrowForward,
+                            imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = "Next Chapter History",
                             tint = if (canNavigateForward) Color.White else Color.DarkGray
                         )
