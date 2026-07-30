@@ -40,12 +40,6 @@ class ManhwaPdfRenderer(
             override fun sizeOf(key: String, value: Bitmap): Int {
                 return value.byteCount
             }
-            override fun entryRemoved(evicted: Boolean, key: String, oldValue: Bitmap, newValue: Bitmap?) {
-                super.entryRemoved(evicted, key, oldValue, newValue)
-                if (evicted && oldValue !== newValue) {
-                    webPCacheManager.releaseBitmap(oldValue)
-                }
-            }
         }
     }
 
@@ -213,9 +207,8 @@ class ManhwaPdfRenderer(
 
                     // PdfRenderer strictly requires ARGB_8888 format
                     val config = Bitmap.Config.ARGB_8888
-                    var bmp = try {
-                        webPCacheManager.getReusableBitmap(totalWidth, pixelRenderHeight, config)
-                            ?: Bitmap.createBitmap(totalWidth, pixelRenderHeight, config)
+                    val bmp = try {
+                        Bitmap.createBitmap(totalWidth, pixelRenderHeight, config)
                     } catch (e: OutOfMemoryError) {
                         onOOM()
                         return@synchronized null

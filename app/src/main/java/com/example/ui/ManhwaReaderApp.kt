@@ -2313,7 +2313,7 @@ fun PdfPageSliceItem(
             Image(
                 bitmap = bitmap.asImageBitmap(),
                 contentDescription = "Page ${pageIndex + 1} Slice ${sliceIndex + 1}",
-                contentScale = ContentScale.FillWidth,
+                contentScale = ContentScale.FillBounds,
                 colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
                 filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
                 modifier = Modifier.fillMaxSize()
