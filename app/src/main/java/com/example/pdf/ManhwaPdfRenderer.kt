@@ -23,6 +23,7 @@ class ManhwaPdfRenderer(
 
     private var parcelFileDescriptor: ParcelFileDescriptor? = null
     private var pdfRenderer: PdfRenderer? = null
+    @Volatile private var isClosed = false
     private val aspectRatios = java.util.concurrent.ConcurrentHashMap<Int, Float>()
     
     private val webPCacheManager = WebPCacheManager(context, file.nameWithoutExtension)
@@ -77,13 +78,15 @@ class ManhwaPdfRenderer(
                 CoroutineScope(Dispatchers.IO).launch {
                     try {
                         for (i in 0 until count) {
-                            if (pdfRenderer == null) break
+                            if (isClosed || pdfRenderer == null) break
                             synchronized(this@ManhwaPdfRenderer) {
-                                if (pdfRenderer == null) return@synchronized
-                                val page = renderer.openPage(i)
-                                val ratio = page.height.toFloat() / page.width.toFloat()
-                                page.close()
-                                aspectRatios[i] = ratio
+                                if (isClosed || pdfRenderer == null) return@synchronized
+                                val page = try { renderer.openPage(i) } catch (e: Throwable) { null }
+                                if (page != null) {
+                                    val ratio = page.height.toFloat() / page.width.toFloat()
+                                    page.close()
+                                    aspectRatios[i] = ratio
+                                }
                             }
                             // Yield CPU and allow render requests to acquire lock
                             kotlinx.coroutines.delay(30)
@@ -102,16 +105,19 @@ class ManhwaPdfRenderer(
         val cached = aspectRatios[pageIndex]
         if (cached != null) return@withContext cached
 
+        if (isClosed || pdfRenderer == null) return@withContext 1.414f
         val renderer = pdfRenderer ?: return@withContext 1.414f
-        if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withContext 1.414f
+        val count = try { renderer.pageCount } catch (e: Throwable) { 0 }
+        if (pageIndex < 0 || pageIndex >= count) return@withContext 1.414f
 
         try {
             synchronized(this@ManhwaPdfRenderer) {
+                if (isClosed || pdfRenderer == null) return@synchronized 1.414f
                 // Double check after acquiring lock
                 val cached2 = aspectRatios[pageIndex]
                 if (cached2 != null) return@synchronized cached2
 
-                val page = renderer.openPage(pageIndex)
+                val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null } ?: return@synchronized 1.414f
                 val ratio = page.height.toFloat() / page.width.toFloat()
                 page.close()
                 aspectRatios[pageIndex] = ratio
@@ -154,12 +160,15 @@ class ManhwaPdfRenderer(
         }
 
         // Fallback or Normal PDF Render
+        if (isClosed || pdfRenderer == null) return@withContext null
         val renderer = pdfRenderer ?: return@withContext null
-        if (pageIndex < 0 || pageIndex >= renderer.pageCount) return@withContext null
+        val count = try { renderer.pageCount } catch (e: Throwable) { 0 }
+        if (pageIndex < 0 || pageIndex >= count) return@withContext null
 
         var renderDurationMs = 0L
         try {
             val bitmap = synchronized(this@ManhwaPdfRenderer) {
+                if (isClosed || pdfRenderer == null) return@synchronized null
                 if (!this@withContext.isActive) return@synchronized null
 
                 // Double check cache after lock
@@ -168,7 +177,12 @@ class ManhwaPdfRenderer(
                     return@synchronized cached2
                 }
 
-                val page = renderer.openPage(pageIndex)
+                val page = try {
+                    renderer.openPage(pageIndex)
+                } catch (e: Throwable) {
+                    e.printStackTrace()
+                    return@synchronized null
+                }
                 try {
                     val widthPt = page.width
                     val heightPt = page.height
@@ -327,6 +341,7 @@ class ManhwaPdfRenderer(
     }
 
     fun close() {
+        isClosed = true
         clearCache()
         try {
             synchronized(this) {

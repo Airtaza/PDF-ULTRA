@@ -53,10 +53,14 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
             val iterator = bitmapPool.iterator()
             while (iterator.hasNext()) {
                 val item = iterator.next()
-                if (item.allocationByteCount >= targetBytes && item.isMutable) {
+                if (!item.isRecycled && item.allocationByteCount >= targetBytes && item.isMutable) {
                     iterator.remove()
-                    item.reconfigure(width, height, config)
-                    return item
+                    try {
+                        item.reconfigure(width, height, config)
+                        return item
+                    } catch (e: Throwable) {
+                        e.printStackTrace()
+                    }
                 }
             }
         }
@@ -137,10 +141,20 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
 
     fun clearMemoryCache() {
         memoryCache.evictAll()
+        synchronized(bitmapPool) {
+            bitmapPool.forEach { 
+                try {
+                    if (!it.isRecycled) it.recycle()
+                } catch (e: Throwable) {
+                    e.printStackTrace()
+                }
+            }
+            bitmapPool.clear()
+        }
     }
 
     suspend fun clearCache() = withContext(Dispatchers.IO) {
-        memoryCache.evictAll()
+        clearMemoryCache()
         cacheDir.deleteRecursively()
         cacheDir.mkdirs()
     }

@@ -945,9 +945,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
             val totalPages = renderer.pageCount
             val targetWidth = 1080 // Assumption for standard screens. A real target width is dynamically passed in renderPageSlice, but for AOT, 1080 is a safe baseline.
             
-            // Loop through pages radiating outwards from current page
-            // Or simply forward from the current page to the end
-            for (i in startPage until totalPages) {
+            // Limit background preload to 3 pages ahead to prevent memory exhaustion and thread contention
+            val endPage = (startPage + 3).coerceAtMost(totalPages)
+            for (i in startPage until endPage) {
                 if (!isActive) break
                 try {
                     // Pre-generate the low-res placeholder instantly
@@ -965,29 +965,24 @@ class ManhwaViewModel(private val application: Application, private val reposito
                     val sliceHeight = _sliceHeight.value
                     val numSlices = Math.ceil(totalHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
                     
-                    // Pre-render actual slices (WebP compression runs in background)
-                    kotlinx.coroutines.coroutineScope {
-                        val deferredSlices = (0 until numSlices).map { slice ->
-                            async(Dispatchers.IO) {
-                                if (isActive) {
-                                    renderer.renderPageSlice(
-                                        pageIndex = i,
-                                        targetWidth = targetWidth,
-                                        sliceIndex = slice,
-                                        sliceHeight = sliceHeight,
-                                        scaleFactor = scaleFactor,
-                                        qualitySelectionEnabled = _qualitySelectionEnabled.value,
-                                        qualityLevel = _qualityLevel.value,
-                                        qualityCompression = _webpQuality.value,
-                                        maxStorageAllocationMb = _maxStorageAllocation.value,
-                                        bitmapConfig = _bitmapConfigSetting.value
-                                    )
-                                }
-                            }
-                        }
-                        kotlinx.coroutines.awaitAll(*deferredSlices.toTypedArray())
+                    // Pre-render actual slices sequentially to avoid high peak memory allocation and thread contention
+                    for (slice in 0 until numSlices) {
+                        if (!isActive) break
+                        renderer.renderPageSlice(
+                            pageIndex = i,
+                            targetWidth = targetWidth,
+                            sliceIndex = slice,
+                            sliceHeight = sliceHeight,
+                            scaleFactor = scaleFactor,
+                            qualitySelectionEnabled = _qualitySelectionEnabled.value,
+                            qualityLevel = _qualityLevel.value,
+                            qualityCompression = _webpQuality.value,
+                            maxStorageAllocationMb = _maxStorageAllocation.value,
+                            bitmapConfig = _bitmapConfigSetting.value
+                        )
+                        kotlinx.coroutines.delay(30) // Yield CPU between slices
                     }
-                    kotlinx.coroutines.delay(50) // Yield CPU heavily between pages
+                    kotlinx.coroutines.delay(100) // Yield CPU heavily between pages
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
