@@ -34,10 +34,10 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
 
     fun releaseBitmap(bitmap: Bitmap) {
         if (!bitmap.isRecycled) {
-            if (bitmapPool.size < 10) { // Keep up to 10 bitmaps in the pool
-                bitmapPool.add(bitmap)
-            } else {
-                bitmap.recycle()
+            synchronized(bitmapPool) {
+                if (bitmapPool.size < 10) { // Keep up to 10 bitmaps in the pool
+                    bitmapPool.add(bitmap)
+                }
             }
         }
     }
@@ -142,13 +142,6 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
     fun clearMemoryCache() {
         memoryCache.evictAll()
         synchronized(bitmapPool) {
-            bitmapPool.forEach { 
-                try {
-                    if (!it.isRecycled) it.recycle()
-                } catch (e: Throwable) {
-                    e.printStackTrace()
-                }
-            }
             bitmapPool.clear()
         }
     }

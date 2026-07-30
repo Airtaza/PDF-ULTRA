@@ -237,7 +237,6 @@ class ManhwaPdfRenderer(
                     matrix.postTranslate(translateX, -pixelSliceY.toFloat())
 
                     if (!this@withContext.isActive) {
-                        bmp.recycle()
                         return@synchronized null
                     }
 

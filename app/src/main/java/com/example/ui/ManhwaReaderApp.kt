@@ -2213,6 +2213,7 @@ fun PdfPageSliceItem(
     totalHeight: Int,
     totalWidth: Int,
     scaleFactor: Float,
+    zoomScale: Float,
     isScrollInProgress: Boolean,
     viewModel: ManhwaViewModel,
     brightness: Float,
@@ -2268,14 +2269,16 @@ fun PdfPageSliceItem(
         isRendering = false
     }
 
-    val pixelSliceY = (sliceIndex * sliceHeight * scaleFactor).toInt()
-    val pixelRenderHeight = if (sliceIndex == numSlices - 1) {
-        totalHeight - pixelSliceY
+    val basePageHeight = targetWidth * (totalHeight.toFloat() / totalWidth.toFloat())
+    val baseSliceY = sliceIndex * sliceHeight
+    val baseSliceHeightPx = if (sliceIndex == numSlices - 1) {
+        basePageHeight - baseSliceY
     } else {
-        ((sliceIndex + 1) * sliceHeight * scaleFactor).toInt() - pixelSliceY
+        sliceHeight.toFloat()
     }
+    val displaySliceHeightPx = baseSliceHeightPx * zoomScale
     
-    if (pixelRenderHeight <= 0 || totalWidth <= 0) {
+    if (displaySliceHeightPx <= 0f || totalWidth <= 0) {
         Spacer(modifier = Modifier.height(1.dp))
         return
     }
@@ -2284,7 +2287,7 @@ fun PdfPageSliceItem(
     Box(
         modifier = Modifier
             .fillMaxWidth()
-            .height(with(density) { pixelRenderHeight.toDp() })
+            .height(with(density) { displaySliceHeightPx.toDp() })
     ) {
         val bitmap = sliceBitmap
         if (bitmap != null) {
@@ -2485,6 +2488,7 @@ fun PdfPageItem(
                             totalHeight = totalHeight,
                             totalWidth = totalWidth,
                             scaleFactor = scaleFactor,
+                            zoomScale = zoomScale,
                             isScrollInProgress = isScrollInProgress,
                             viewModel = viewModel,
                             brightness = brightness,
