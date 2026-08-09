@@ -277,11 +277,11 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     // --- State: Tab-Based Multi-Document System ---
     private val _tabs = MutableStateFlow<List<UltraTab>>(listOf(
-        UltraTab(id = "library", title = "Library", type = TabType.LIBRARY)
+        UltraTab(id = "settings", title = "Lobby", type = TabType.SETTINGS)
     ))
     val tabs: StateFlow<List<UltraTab>> = _tabs.asStateFlow()
 
-    private val _activeTabId = MutableStateFlow<String>("library")
+    private val _activeTabId = MutableStateFlow<String>("settings")
     val activeTabId: StateFlow<String> = _activeTabId.asStateFlow()
 
     val activeTab: StateFlow<UltraTab?> = _activeTabId
@@ -292,7 +292,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         .stateIn(
             scope = viewModelScope,
             started = SharingStarted.WhileSubscribed(5000),
-            initialValue = UltraTab(id = "library", title = "Library", type = TabType.LIBRARY)
+            initialValue = UltraTab(id = "settings", title = "Lobby", type = TabType.SETTINGS)
         )
 
     private val renderers = mutableMapOf<Long, ManhwaPdfRenderer>()
@@ -584,6 +584,14 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _shadows = MutableStateFlow(sharedPrefs.getFloat("view_shadows", 0.0f))
     val shadows: StateFlow<Float> = _shadows.asStateFlow()
 
+    private val _swipeSensitivity = MutableStateFlow(sharedPrefs.getFloat("swipe_sensitivity", 1.0f))
+    val swipeSensitivity: StateFlow<Float> = _swipeSensitivity.asStateFlow()
+
+    fun setSwipeSensitivity(value: Float) {
+        _swipeSensitivity.value = value
+        sharedPrefs.edit().putFloat("swipe_sensitivity", value).apply()
+    }
+
     fun setExposure(value: Float) {
         _exposure.value = value
         sharedPrefs.edit().putFloat("view_exposure", value).apply()
@@ -783,7 +791,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     fun triggerMemoryPressure() {
-        _memoryPressureEvent.value = true
+        clearMemoryCache()
+        increaseStorageAllocation()
+        System.gc()
     }
 
     fun dismissMemoryPressure() {
@@ -870,7 +880,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
             // If we have 3 tabs, replace the active one (if reader or plugins) or the oldest reader to respect 3-tab limit
             if (existingList.size >= 3) {
                 val activeTabObj = existingList.find { it.id == _activeTabId.value }
-                if (activeTabObj != null && activeTabObj.type != TabType.LIBRARY) {
+                if (activeTabObj != null && activeTabObj.type != TabType.SETTINGS) {
                     activeTabObj.manhwa?.let { oldM ->
                         synchronized(renderers) {
                             renderers.remove(oldM.id)?.close()
@@ -890,7 +900,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
                     } else {
                         // Fallback: remove last tab
                         val lastTab = existingList.last()
-                        if (lastTab.type != TabType.LIBRARY) {
+                        if (lastTab.type != TabType.SETTINGS) {
                             existingList.remove(lastTab)
                         }
                     }
@@ -994,8 +1004,8 @@ class ManhwaViewModel(private val application: Application, private val reposito
             val existingList = _tabs.value.toMutableList()
             val tabToClose = existingList.find { it.id == tabId } ?: return@launch
 
-            if (tabToClose.type == TabType.LIBRARY) {
-                // Cannot close library tab to ensure there is always a fallback
+            if (tabToClose.type == TabType.SETTINGS) {
+                // Cannot close settings (Lobby) tab to ensure there is always a fallback
                 return@launch
             }
 
@@ -1021,37 +1031,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     fun openPluginsTab() {
-        val existingList = _tabs.value.toMutableList()
-        val pluginsTabId = "plugins"
-        val existingTab = existingList.find { it.id == pluginsTabId }
-        
-        if (existingTab == null) {
-            if (existingList.size >= 3) {
-                // Remove active tab (if it's not library)
-                val activeTabObj = existingList.find { it.id == _activeTabId.value }
-                if (activeTabObj != null && activeTabObj.type != TabType.LIBRARY) {
-                    activeTabObj.manhwa?.let { oldM ->
-                        synchronized(renderers) {
-                            renderers.remove(oldM.id)?.close()
-                        }
-                    }
-                    existingList.remove(activeTabObj)
-                } else {
-                    val anyReader = existingList.find { it.type == TabType.READER }
-                    if (anyReader != null) {
-                        anyReader.manhwa?.let { oldM ->
-                            synchronized(renderers) {
-                                renderers.remove(oldM.id)?.close()
-                            }
-                        }
-                        existingList.remove(anyReader)
-                    }
-                }
-            }
-            existingList.add(UltraTab(id = pluginsTabId, title = "Plugins", type = TabType.PLUGINS))
-            _tabs.value = existingList
-        }
-        selectTabId(pluginsTabId)
+        openSettingsTab()
     }
 
     fun updateActiveTabCurrentPage(pageIndex: Int) {
@@ -1128,6 +1108,22 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 }
             } catch (e: Exception) {
                 _importingState.value = ImportState.Error(e.localizedMessage ?: "Failed to import PDF")
+            }
+        }
+    }
+
+    fun createDummyTestPdf() {
+        viewModelScope.launch {
+            _importingState.value = ImportState.Loading
+            try {
+                val id = repository.createDummyTestPdf()
+                _importingState.value = ImportState.Success("Dummy Test PDF Generated!")
+                val manhwa = repository.getManhwaById(id)
+                if (manhwa != null) {
+                    openManhwaInTab(manhwa)
+                }
+            } catch (e: Exception) {
+                _importingState.value = ImportState.Error(e.localizedMessage ?: "Failed to generate Dummy PDF")
             }
         }
     }
@@ -1681,9 +1677,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
         
         if (existingTab == null) {
             if (existingList.size >= 3) {
-                // Remove active tab (if it's not library)
+                // Remove active tab (if it's not settings)
                 val activeTabObj = existingList.find { it.id == _activeTabId.value }
-                if (activeTabObj != null && activeTabObj.type != TabType.LIBRARY) {
+                if (activeTabObj != null && activeTabObj.type != TabType.SETTINGS) {
                     activeTabObj.manhwa?.let { oldM ->
                         synchronized(renderers) {
                             renderers.remove(oldM.id)?.close()
@@ -1702,7 +1698,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
                     }
                 }
             }
-            existingList.add(UltraTab(id = settingsTabId, title = "Settings", type = TabType.SETTINGS))
+            existingList.add(UltraTab(id = settingsTabId, title = "Lobby", type = TabType.SETTINGS))
             _tabs.value = existingList
         }
         selectTabId(settingsTabId)

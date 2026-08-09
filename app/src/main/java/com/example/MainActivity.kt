@@ -88,7 +88,6 @@ class MainActivity : ComponentActivity() {
             level == android.content.ComponentCallbacks2.TRIM_MEMORY_MODERATE ||
             level == android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
             viewModel.clearMemoryCache()
-            viewModel.triggerMemoryPressure()
         }
     }
 }

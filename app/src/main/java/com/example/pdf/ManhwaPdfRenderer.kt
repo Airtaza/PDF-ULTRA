@@ -28,15 +28,9 @@ class ManhwaPdfRenderer(
     
     private val webPCacheManager = WebPCacheManager(context, file.nameWithoutExtension)
 
-    // Cache to hold rendered page bitmaps. Limit size in bytes to safe heap levels to prevent OOM/GC freezes.
+    // Cache to hold rendered page bitmaps. RAM cap removed.
     private val memoryCache: LruCache<String, Bitmap> = run {
-        val maxMemory = Runtime.getRuntime().maxMemory()
-        // Convert user setting in MB to bytes, capped safely at 25% of available JVM heap
-        val cacheSize = (maxCacheSizeMb * 1024L * 1024L)
-            .coerceAtMost(maxMemory / 4)
-            .toInt()
-            .coerceAtLeast(16 * 1024 * 1024)
-        object : LruCache<String, Bitmap>(cacheSize) {
+        object : LruCache<String, Bitmap>(Int.MAX_VALUE) {
             override fun sizeOf(key: String, value: Bitmap): Int {
                 return value.byteCount
             }
@@ -44,12 +38,7 @@ class ManhwaPdfRenderer(
     }
 
     fun resizeCache(newMaxCacheSizeMb: Int) {
-        val maxMemory = Runtime.getRuntime().maxMemory()
-        val newCacheSize = (newMaxCacheSizeMb * 1024L * 1024L)
-            .coerceAtMost(maxMemory / 4)
-            .toInt()
-            .coerceAtLeast(16 * 1024 * 1024)
-        memoryCache.resize(newCacheSize)
+        memoryCache.resize(Int.MAX_VALUE)
     }
 
     fun clearMemoryCache() {

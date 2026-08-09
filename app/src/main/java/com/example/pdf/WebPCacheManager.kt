@@ -14,8 +14,8 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
         if (!exists()) mkdirs()
     }
 
-    // Memory Cache for recently viewed pages (15% of available memory or 20MB)
-    private val memoryCache = object : LruCache<String, Bitmap>(20 * 1024 * 1024) {
+    // Memory Cache for recently viewed pages (no limit / RAM cap removed)
+    private val memoryCache = object : LruCache<String, Bitmap>(Int.MAX_VALUE) {
         override fun sizeOf(key: String, value: Bitmap): Int {
             return value.byteCount
         }
