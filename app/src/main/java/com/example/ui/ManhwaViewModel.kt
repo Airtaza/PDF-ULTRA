@@ -12,6 +12,7 @@ import androidx.lifecycle.viewModelScope
 import com.example.data.Bookmark
 import com.example.data.Manhwa
 import com.example.data.ManhwaRepository
+import com.example.data.PageNote
 import com.example.data.ReadingEvent
 import com.example.data.PluginConfig
 import com.example.data.SecurePreferencesManager
@@ -588,6 +589,187 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     private val _isMagnifierEnabled = MutableStateFlow(false)
     val isMagnifierEnabled: StateFlow<Boolean> = _isMagnifierEnabled.asStateFlow()
+
+    // --- Tap Zone Action Mapping ---
+    private val _leftTapAction = MutableStateFlow(sharedPrefs.getString("left_tap_action", "PREV_PAGE") ?: "PREV_PAGE")
+    val leftTapAction: StateFlow<String> = _leftTapAction.asStateFlow()
+
+    private val _rightTapAction = MutableStateFlow(sharedPrefs.getString("right_tap_action", "NEXT_PAGE") ?: "NEXT_PAGE")
+    val rightTapAction: StateFlow<String> = _rightTapAction.asStateFlow()
+
+    private val _centerTapAction = MutableStateFlow(sharedPrefs.getString("center_tap_action", "TOGGLE_BARS") ?: "TOGGLE_BARS")
+    val centerTapAction: StateFlow<String> = _centerTapAction.asStateFlow()
+
+    fun setTapZoneAction(zone: String, action: String) {
+        when (zone) {
+            "LEFT" -> {
+                _leftTapAction.value = action
+                sharedPrefs.edit().putString("left_tap_action", action).apply()
+            }
+            "RIGHT" -> {
+                _rightTapAction.value = action
+                sharedPrefs.edit().putString("right_tap_action", action).apply()
+            }
+            "CENTER" -> {
+                _centerTapAction.value = action
+                sharedPrefs.edit().putString("center_tap_action", action).apply()
+            }
+        }
+    }
+
+    // --- Library Category Shelves & Favorites ---
+    private val _selectedCategoryFilter = MutableStateFlow("All")
+    val selectedCategoryFilter: StateFlow<String> = _selectedCategoryFilter.asStateFlow()
+
+    fun setLibraryCategoryFilter(category: String) {
+        _selectedCategoryFilter.value = category
+    }
+
+    fun updateManhwaCategory(manhwaId: Long, category: String) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val m = repository.getManhwaById(manhwaId)
+            if (m != null) {
+                repository.updateManhwa(m.copy(category = category))
+            }
+        }
+    }
+
+    private val _favoriteHeaderIds = MutableStateFlow<Set<String>>(
+        sharedPrefs.getStringSet("favorite_header_ids", setOf("library_shelf", "perf_rendering", "display_theme")) ?: setOf("library_shelf", "perf_rendering", "display_theme")
+    )
+    val favoriteHeaderIds: StateFlow<Set<String>> = _favoriteHeaderIds.asStateFlow()
+
+    fun toggleHeaderFavorite(headerId: String) {
+        val current = _favoriteHeaderIds.value
+        val updated = if (current.contains(headerId)) current - headerId else current + headerId
+        _favoriteHeaderIds.value = updated
+        sharedPrefs.edit().putStringSet("favorite_header_ids", updated).apply()
+    }
+
+    fun toggleManhwaFavorite(manhwaId: Long) {
+        viewModelScope.launch(Dispatchers.IO) {
+            val m = repository.getManhwaById(manhwaId)
+            if (m != null) {
+                repository.updateManhwa(m.copy(isFavorite = !m.isFavorite))
+            }
+        }
+    }
+
+    // --- Page Notes ---
+    val activePageNotes: StateFlow<List<PageNote>> = activeManhwa
+        .flatMapLatest { m ->
+            if (m != null) repository.getPageNotesForManhwa(m.id) else flowOf(emptyList())
+        }
+        .stateIn(viewModelScope, SharingStarted.WhileSubscribed(5000), emptyList())
+
+    fun savePageNote(pageIndex: Int, noteText: String) {
+        val m = activeManhwa.value ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            if (noteText.isBlank()) {
+                repository.deletePageNoteByPage(m.id, pageIndex)
+            } else {
+                val existing = repository.getPageNoteByPage(m.id, pageIndex)
+                if (existing != null) {
+                    repository.savePageNote(existing.copy(noteText = noteText, timestamp = System.currentTimeMillis()))
+                } else {
+                    repository.savePageNote(PageNote(manhwaId = m.id, pageIndex = pageIndex, noteText = noteText))
+                }
+            }
+        }
+    }
+
+    fun deletePageNote(pageIndex: Int) {
+        val m = activeManhwa.value ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.deletePageNoteByPage(m.id, pageIndex)
+        }
+    }
+
+    // --- Border Trim & Eye Rest Timer & Text Mode ---
+    private val _borderTrimEnabled = MutableStateFlow(sharedPrefs.getBoolean("border_trim_enabled", false))
+    val borderTrimEnabled: StateFlow<Boolean> = _borderTrimEnabled.asStateFlow()
+
+    fun setBorderTrimEnabled(enabled: Boolean) {
+        _borderTrimEnabled.value = enabled
+        sharedPrefs.edit().putBoolean("border_trim_enabled", enabled).apply()
+    }
+
+    private val _eyeRestReminderEnabled = MutableStateFlow(sharedPrefs.getBoolean("eye_rest_reminder", false))
+    val eyeRestReminderEnabled: StateFlow<Boolean> = _eyeRestReminderEnabled.asStateFlow()
+
+    private val _eyeRestIntervalMinutes = MutableStateFlow(sharedPrefs.getInt("eye_rest_interval", 20))
+    val eyeRestIntervalMinutes: StateFlow<Int> = _eyeRestIntervalMinutes.asStateFlow()
+
+    fun setEyeRestSettings(enabled: Boolean, interval: Int) {
+        _eyeRestReminderEnabled.value = enabled
+        _eyeRestIntervalMinutes.value = interval
+        sharedPrefs.edit().putBoolean("eye_rest_reminder", enabled).putInt("eye_rest_interval", interval).apply()
+    }
+
+    private val _textModeFontSize = MutableStateFlow(sharedPrefs.getInt("text_mode_font_size", 16))
+    val textModeFontSize: StateFlow<Int> = _textModeFontSize.asStateFlow()
+
+    fun setTextModeFontSize(sizeSp: Int) {
+        _textModeFontSize.value = sizeSp
+        sharedPrefs.edit().putInt("text_mode_font_size", sizeSp).apply()
+    }
+
+    // --- Comprehensive Reader Display Presets Engine ---
+    fun applyDisplayPreset(presetKey: String) {
+        when (presetKey) {
+            "AMOLED_BLACK" -> {
+                setReaderTheme(ReaderTheme.PITCH_BLACK)
+                setBrightness(1.0f)
+                setContrast(1.25f)
+                setSaturation(1.0f)
+                setWarmth(0.0f)
+                setGamma(0.95f)
+                setCustomTint("None")
+                setMangaScanCrisper(true)
+                setColorMode(ColorMode.HIGH_CONTRAST)
+            }
+            "SEPIA_EYE_CARE" -> {
+                setReaderTheme(ReaderTheme.SEPIA)
+                setBrightness(0.95f)
+                setContrast(1.0f)
+                setWarmth(0.35f)
+                setCustomTint("Warm Sepia")
+                setColorMode(ColorMode.SEPIA)
+            }
+            "VINTAGE_PAPER" -> {
+                setReaderTheme(ReaderTheme.WHITE)
+                setBrightness(1.05f)
+                setContrast(1.1f)
+                setWarmth(0.2f)
+                setCustomTint("Parchment")
+                setColorMode(ColorMode.NORMAL)
+            }
+            "HIGH_CONTRAST_MANGA" -> {
+                setReaderTheme(ReaderTheme.DARK)
+                setBrightness(1.1f)
+                setContrast(1.4f)
+                setSaturation(0.0f)
+                setMangaScanCrisper(true)
+                setColorMode(ColorMode.GRAYSCALE)
+            }
+            "PASTEL_NIGHT" -> {
+                setReaderTheme(ReaderTheme.WARM)
+                setBrightness(0.85f)
+                setContrast(0.95f)
+                setWarmth(0.4f)
+                setCustomTint("Pastel Muted")
+                setAutoNightShift(true)
+            }
+            "SUNLIGHT_BOOST" -> {
+                setReaderTheme(ReaderTheme.WHITE)
+                setBrightness(1.3f)
+                setContrast(1.2f)
+                setSaturation(1.1f)
+                setWarmth(0.0f)
+                setCustomTint("None")
+            }
+        }
+    }
 
     // --- Lightroom-style View Settings (Exposure, Highlights, Shadows) ---
     private val _exposure = MutableStateFlow(sharedPrefs.getFloat("view_exposure", 1.0f))
@@ -1510,6 +1692,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
     fun setHdModeEnabled(enabled: Boolean) {
         _hdModeEnabled.value = enabled
         sharedPrefs.edit().putBoolean("hd_mode_enabled", enabled).apply()
+        clearMemoryCache()
     }
 
     fun setShowEditFeatures(enabled: Boolean) {
@@ -1521,11 +1704,13 @@ class ManhwaViewModel(private val application: Application, private val reposito
     fun setQualitySelectionEnabled(enabled: Boolean) {
         _qualitySelectionEnabled.value = enabled
         sharedPrefs.edit().putBoolean("quality_selection_enabled", enabled).apply()
+        clearMemoryCache()
     }
 
     fun setQualityLevel(level: String) {
         _qualityLevel.value = level
         sharedPrefs.edit().putString("quality_level", level).apply()
+        clearMemoryCache()
     }
 
     fun setMaxStorageAllocation(megabytes: Int) {
@@ -1565,6 +1750,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
     fun setSliceHeight(height: Int) {
         _sliceHeight.value = height
         sharedPrefs.edit().putInt("slice_height", height).apply()
+        clearMemoryCache()
     }
 
     fun setLowResScrollDelay(delay: Long) {
@@ -1600,6 +1786,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
     fun setBitmapConfigSetting(config: String) {
         _bitmapConfigSetting.value = config
         sharedPrefs.edit().putString("bitmap_config", config).apply()
+        clearMemoryCache()
     }
 
     fun setHapticFeedbackEnabled(enabled: Boolean) {

@@ -9,7 +9,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
-@Database(entities = [Manhwa::class, Bookmark::class, PluginConfig::class, ReadingEvent::class], version = 3, exportSchema = false)
+@Database(entities = [Manhwa::class, Bookmark::class, PageNote::class, PluginConfig::class, ReadingEvent::class], version = 4, exportSchema = false)
 abstract class ManhwaDatabase : RoomDatabase() {
     abstract fun manhwaDao(): ManhwaDao
 

@@ -26,6 +26,17 @@ class ManhwaRepository(private val context: Context, private val dao: ManhwaDao)
 
     suspend fun removeBookmark(bookmark: Bookmark) = dao.deleteBookmark(bookmark)
 
+    // Page Notes
+    fun getPageNotesForManhwa(manhwaId: Long): Flow<List<PageNote>> = dao.getPageNotesForManhwa(manhwaId)
+
+    suspend fun getPageNoteByPage(manhwaId: Long, pageIndex: Int): PageNote? = dao.getPageNoteByPage(manhwaId, pageIndex)
+
+    suspend fun savePageNote(note: PageNote) = dao.insertPageNote(note)
+
+    suspend fun deletePageNote(note: PageNote) = dao.deletePageNote(note)
+
+    suspend fun deletePageNoteByPage(manhwaId: Long, pageIndex: Int) = dao.deletePageNoteByPage(manhwaId, pageIndex)
+
     suspend fun updatePlugin(plugin: PluginConfig) = dao.insertPlugin(plugin)
 
     val allReadingEvents: Flow<List<ReadingEvent>> = dao.getAllReadingEvents()

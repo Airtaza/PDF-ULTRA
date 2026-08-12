@@ -153,7 +153,11 @@ class ManhwaPdfRenderer(
         if (!this@withContext.isActive) return@withContext null
 
         val scaleStr = String.format(java.util.Locale.US, "%.2f", scaleFactor)
-        val cacheKey = if (isLowResPlaceholder) "${pageIndex}_low_$landscapeSplitMode" else "${pageIndex}_${sliceIndex}_${scaleStr}_$landscapeSplitMode"
+        val cacheKey = if (isLowResPlaceholder) {
+            "${pageIndex}_low_${landscapeSplitMode}"
+        } else {
+            "${pageIndex}_s${sliceIndex}_h${sliceHeight}_sc${scaleStr}_q${qualityLevel}_${bitmapConfig}_${landscapeSplitMode}"
+        }
         val cached = memoryCache.get(cacheKey)
         if (cached != null && !cached.isRecycled) {
             return@withContext cached

@@ -38,6 +38,22 @@ interface ManhwaDao {
     @Delete
     suspend fun deleteBookmark(bookmark: Bookmark)
 
+    // Page Notes
+    @Query("SELECT * FROM page_notes WHERE manhwaId = :manhwaId ORDER BY pageIndex ASC")
+    fun getPageNotesForManhwa(manhwaId: Long): Flow<List<PageNote>>
+
+    @Query("SELECT * FROM page_notes WHERE manhwaId = :manhwaId AND pageIndex = :pageIndex LIMIT 1")
+    suspend fun getPageNoteByPage(manhwaId: Long, pageIndex: Int): PageNote?
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertPageNote(note: PageNote)
+
+    @Delete
+    suspend fun deletePageNote(note: PageNote)
+
+    @Query("DELETE FROM page_notes WHERE manhwaId = :manhwaId AND pageIndex = :pageIndex")
+    suspend fun deletePageNoteByPage(manhwaId: Long, pageIndex: Int)
+
     // Plugins configuration
     @Query("SELECT * FROM plugins")
     fun getAllPlugins(): Flow<List<PluginConfig>>

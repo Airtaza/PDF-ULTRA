@@ -801,7 +801,8 @@ fun LibraryScreen(viewModel: ManhwaViewModel) {
                             manhwa = manhwa,
                             onOpen = { viewModel.openManhwa(manhwa) },
                             onDelete = { showDeleteConfirmDialog = manhwa },
-                            onShowDetails = { showDetailsDialogForManhwa = manhwa }
+                            onShowDetails = { showDetailsDialogForManhwa = manhwa },
+                            onFavoriteToggle = { viewModel.toggleManhwaFavorite(manhwa.id) }
                         )
                     }
                 }
@@ -1224,7 +1225,8 @@ fun ManhwaCardItem(
     manhwa: Manhwa,
     onOpen: () -> Unit,
     onDelete: () -> Unit,
-    onShowDetails: (() -> Unit)? = null
+    onShowDetails: (() -> Unit)? = null,
+    onFavoriteToggle: (() -> Unit)? = null
 ) {
     val progress = if (manhwa.totalPages > 0) {
         (manhwa.lastReadPage + 1).toFloat() / manhwa.totalPages.toFloat()
@@ -1332,6 +1334,19 @@ fun ManhwaCardItem(
             }
 
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (onFavoriteToggle != null) {
+                    IconButton(
+                        onClick = onFavoriteToggle,
+                        modifier = Modifier.testTag("favorite_button_${manhwa.id}")
+                    ) {
+                        Icon(
+                            imageVector = if (manhwa.isFavorite) Icons.Filled.Favorite else Icons.Default.FavoriteBorder,
+                            contentDescription = "Favorite Comic",
+                            tint = if (manhwa.isFavorite) Color(0xFFE91E63) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.4f)
+                        )
+                    }
+                }
+
                 if (onShowDetails != null) {
                     IconButton(
                         onClick = onShowDetails,
@@ -1618,13 +1633,22 @@ fun ComicReaderScreen(
         }
     }
 
-    var zoomScaleTarget by remember { mutableStateOf(1.0f) }
+    var isTransforming by remember { mutableStateOf(false) }
+    var zoomScaleTarget by remember { mutableFloatStateOf(1.0f) }
+
     LaunchedEffect(activeZoomScale) {
-        zoomScaleTarget = activeZoomScale
+        if (!isTransforming) {
+            zoomScaleTarget = activeZoomScale
+        }
     }
+
     val animatedZoomScale by androidx.compose.animation.core.animateFloatAsState(
         targetValue = zoomScaleTarget,
-        animationSpec = androidx.compose.animation.core.tween(durationMillis = 350, easing = androidx.compose.animation.core.FastOutSlowInEasing),
+        animationSpec = if (isTransforming) {
+            androidx.compose.animation.core.snap()
+        } else {
+            androidx.compose.animation.core.tween(durationMillis = 250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
+        },
         label = "SmoothZoom"
     )
 
@@ -1648,10 +1672,24 @@ fun ComicReaderScreen(
         }
     } else Modifier
 
-    val transformableState = rememberTransformableState { zoomChange, _, _ ->
-        val newZoom = (zoomScaleTarget * zoomChange).coerceIn(0.5f, 3.0f)
+    val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
+        isTransforming = true
+        val newZoom = (zoomScaleTarget * zoomChange).coerceIn(1.0f, 4.0f)
         zoomScaleTarget = newZoom
-        viewModel.setActiveZoomScale(newZoom)
+        
+        if (newZoom > 1.0f && panChange.x != 0f) {
+            coroutineScope.launch {
+                horizScrollState.scrollBy(-panChange.x)
+            }
+        }
+    }
+
+    LaunchedEffect(isTransforming, zoomScaleTarget) {
+        if (isTransforming) {
+            kotlinx.coroutines.delay(120)
+            isTransforming = false
+            viewModel.setActiveZoomScale(zoomScaleTarget)
+        }
     }
 
     val zoomGestureModifier = if (!isMagnifierEnabled && !isDrawModeOn && !isScreenLocked) {
@@ -1903,31 +1941,27 @@ fun ComicReaderScreen(
                             val pageHeight = componentWidth * aspect
                             val targetOffsetY = (fractionY * pageHeight * doubleTapZoomScale) - (viewportHeight / 2f)
                             coroutineScope.launch {
-                                launch {
-                                    try {
-                                        lazyListState.animateScrollToItem(
-                                            index = virtualIdx,
-                                            scrollOffset = targetOffsetY.toInt().coerceAtLeast(0)
-                                        )
-                                    } catch (e: Exception) {
-                                        lazyListState.scrollToItem(
-                                            index = virtualIdx,
-                                            scrollOffset = targetOffsetY.toInt().coerceAtLeast(0)
-                                        )
-                                    }
-                                }
                                 try {
-                                    kotlinx.coroutines.withTimeout(500) {
-                                        androidx.compose.runtime.snapshotFlow { horizScrollState.maxValue }
-                                            .first { it > 0 }
-                                    }
+                                    lazyListState.animateScrollToItem(
+                                        index = virtualIdx,
+                                        scrollOffset = targetOffsetY.toInt().coerceAtLeast(0)
+                                    )
                                 } catch (e: Exception) {
-                                    // fallback delay
+                                    lazyListState.scrollToItem(
+                                        index = virtualIdx,
+                                        scrollOffset = targetOffsetY.toInt().coerceAtLeast(0)
+                                    )
                                 }
-                                val targetScrollX = (fractionX * componentWidth * doubleTapZoomScale) - (componentWidth / 2f)
-                                horizScrollState.animateScrollTo(
-                                    targetScrollX.toInt().coerceIn(0, horizScrollState.maxValue)
-                                )
+                            }
+                            coroutineScope.launch {
+                                kotlinx.coroutines.delay(120)
+                                val maxScrollX = horizScrollState.maxValue
+                                if (maxScrollX > 0) {
+                                    val targetScrollX = (fractionX * (componentWidth * doubleTapZoomScale)) - (componentWidth / 2f)
+                                    horizScrollState.animateScrollTo(
+                                        targetScrollX.toInt().coerceIn(0, maxScrollX)
+                                    )
+                                }
                             }
                         }
                     )
@@ -2366,6 +2400,8 @@ fun ComicReaderScreen(
                 title = activeManhwa?.title ?: "Reading",
                 currentPage = currentPage,
                 totalPages = activeManhwa?.totalPages ?: 0,
+                isFavorite = activeManhwa?.isFavorite ?: false,
+                onToggleFavorite = { activeManhwa?.let { viewModel.toggleManhwaFavorite(it.id) } },
                 isOutlineEnabled = isOutlineEnabled,
                 isDrawModeSupported = isSketchEditorEnabled,
                 isDrawModeOn = isDrawModeOn,
@@ -2585,6 +2621,7 @@ fun PdfPageSliceItem(
     totalHeight: Int,
     totalWidth: Int,
     scaleFactor: Float,
+    qualityLevel: String = "HIGH",
     zoomScale: Float,
     isScrollInProgress: Boolean,
     hasLowResPreview: Boolean,
@@ -2610,34 +2647,18 @@ fun PdfPageSliceItem(
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
     val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
 
-    var sliceBitmap by remember(pageIndex, sliceIndex, landscapeSplitMode, scaleFactor) { mutableStateOf<Bitmap?>(null) }
+    var sliceBitmap by remember(pageIndex, sliceIndex, sliceHeight, qualityLevel, scaleFactor, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
     var isRendering by remember { mutableStateOf(false) }
 
-    DisposableEffect(pageIndex, sliceIndex) {
+    DisposableEffect(pageIndex, sliceIndex, sliceHeight, qualityLevel, scaleFactor, landscapeSplitMode) {
         onDispose {
-            // Unload old slice data when scrolled out of view area to save RAM & CPU
             sliceBitmap = null
         }
     }
 
-    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, isScrollInProgress, hdScrollDelay, staggerDelay, viewModel, landscapeSplitMode, hasLowResPreview) {
-        // If HD slice bitmap is ALREADY rendered, NEVER discard or clear it!
-        // Keep showing HD continuously so there is zero quality drop or motion blur during scrolling.
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, qualityLevel, viewModel, landscapeSplitMode) {
         if (sliceBitmap != null) {
             return@LaunchedEffect
-        }
-
-        if (isScrollInProgress) {
-            // While scrolling and HD slice is not yet rendered, wait briefly for scroll to settle
-            kotlinx.coroutines.delay(120)
-            if (isScrollInProgress) {
-                return@LaunchedEffect
-            }
-        }
-
-        // Allow lowRes 480p preview to finish rendering first so user gets instant page view
-        if (!hasLowResPreview) {
-            kotlinx.coroutines.delay(30)
         }
 
         isRendering = true
@@ -2661,7 +2682,7 @@ fun PdfPageSliceItem(
     val basePageHeight = targetWidth * (totalHeight.toFloat() / totalWidth.toFloat())
     val baseSliceY = sliceIndex * sliceHeight
     val baseSliceHeightPx = if (sliceIndex == numSlices - 1) {
-        basePageHeight - baseSliceY
+        (basePageHeight - baseSliceY).coerceAtLeast(1f)
     } else {
         sliceHeight.toFloat()
     }
@@ -2704,7 +2725,7 @@ fun PdfPageSliceItem(
                 contentDescription = "Page ${pageIndex + 1} Slice ${sliceIndex + 1}",
                 contentScale = ContentScale.FillBounds,
                 colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
-                filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
+                filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                 modifier = Modifier.fillMaxSize()
             )
         }
@@ -2736,6 +2757,7 @@ fun PdfPageItem(
     onDoubleTap: (fractionX: Float, fractionY: Float, aspect: Float) -> Unit
 ) {
     val scaleFactor by viewModel.activeScaleFactor.collectAsStateWithLifecycle()
+    val qualityLevel by viewModel.qualityLevel.collectAsStateWithLifecycle()
     var aspectRatio by remember { mutableStateOf<Float?>(null) }
     var isLoadingAspect by remember { mutableStateOf(true) }
 
@@ -2823,22 +2845,40 @@ fun PdfPageItem(
             val pdfEngineSetting by viewModel.pdfEngineSetting.collectAsStateWithLifecycle()
 
             if (pdfEngineSetting == "NATIVE") {
-                var nativePageBitmap by remember(pageIndex, targetWidth, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
+                var nativePageBitmap by remember(pageIndex, targetWidth, scaleFactor, qualityLevel, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
 
-                LaunchedEffect(pageIndex, targetWidth, landscapeSplitMode) {
-                    if (nativePageBitmap == null) {
-                        val bmp = viewModel.renderPage(
-                            pageIndex = pageIndex,
-                            targetWidth = (targetWidth * 1.8f).toInt(),
-                            landscapeSplitMode = landscapeSplitMode
-                        )
-                        if (bmp != null) {
-                            nativePageBitmap = bmp
-                        }
+                val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
+                val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
+                    getAdjustedColorMatrix(
+                        brightness = brightness,
+                        contrast = contrast,
+                        saturation = saturation,
+                        warmth = warmth,
+                        gamma = gamma,
+                        autoGammaEnabled = autoGammaEnabled,
+                        customTint = customTint,
+                        autoNightShift = autoNightShift,
+                        mangaScanCrisper = mangaScanCrisper,
+                        mode = colorMode,
+                        exposure = exposure,
+                        highlights = highlights,
+                        shadows = shadows,
+                        presetFilter = presetFilter
+                    )
+                }
+
+                LaunchedEffect(pageIndex, targetWidth, scaleFactor, qualityLevel, landscapeSplitMode) {
+                    val bmp = viewModel.renderPage(
+                        pageIndex = pageIndex,
+                        targetWidth = targetWidth,
+                        landscapeSplitMode = landscapeSplitMode
+                    )
+                    if (bmp != null) {
+                        nativePageBitmap = bmp
                     }
                 }
 
-                DisposableEffect(pageIndex) {
+                DisposableEffect(pageIndex, targetWidth, scaleFactor, qualityLevel, landscapeSplitMode) {
                     onDispose {
                         // Directly unload page bitmap when scrolled off view in Native mode
                         nativePageBitmap = null
@@ -2855,7 +2895,8 @@ fun PdfPageItem(
                         Image(
                             bitmap = bmp.asImageBitmap(),
                             contentDescription = "Page ${pageIndex + 1} Native Quality",
-                            contentScale = ContentScale.FillBounds,
+                            contentScale = ContentScale.Fit,
+                            colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
                             filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
                             modifier = Modifier.fillMaxSize()
                         )
@@ -2882,9 +2923,8 @@ fun PdfPageItem(
                 val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
 
                 var lowResBitmap by remember(pageIndex, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
-                DisposableEffect(pageIndex) {
+                DisposableEffect(pageIndex, landscapeSplitMode) {
                     onDispose {
-                        // Unload low-res preview bitmap when scrolled off view area
                         lowResBitmap = null
                     }
                 }
@@ -2921,7 +2961,7 @@ fun PdfPageItem(
                         Image(
                             bitmap = bmp.asImageBitmap(),
                             contentDescription = "Page ${pageIndex + 1} Low-res Preview",
-                            contentScale = ContentScale.FillBounds,
+                            contentScale = ContentScale.Fit,
                             colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
                             filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
                             modifier = Modifier.fillMaxSize()
@@ -2940,6 +2980,7 @@ fun PdfPageItem(
                                 totalHeight = totalHeight,
                                 totalWidth = totalWidth,
                                 scaleFactor = scaleFactor,
+                                qualityLevel = qualityLevel,
                                 zoomScale = zoomScale,
                                 isScrollInProgress = isScrollInProgress,
                                 hasLowResPreview = (lowResBitmap != null),
@@ -3045,6 +3086,8 @@ fun HUDTopBar(
     title: String,
     currentPage: Int,
     totalPages: Int,
+    isFavorite: Boolean = false,
+    onToggleFavorite: (() -> Unit)? = null,
     isOutlineEnabled: Boolean,
     isDrawModeSupported: Boolean,
     isDrawModeOn: Boolean,
@@ -3156,6 +3199,20 @@ fun HUDTopBar(
                         .testTag("outline_drawer_toggle")
                 ) {
                     Icon(Icons.Default.FormatListNumbered, contentDescription = "Outline", tint = Color.White)
+                }
+            }
+
+            // Heart Favorite Toggle Button for Reader Top Bar
+            if (onToggleFavorite != null) {
+                IconButton(
+                    onClick = onToggleFavorite,
+                    modifier = Modifier.testTag("favorite_manhwa_hud_toggle")
+                ) {
+                    Icon(
+                        imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Default.FavoriteBorder,
+                        contentDescription = "Favorite Comic",
+                        tint = if (isFavorite) Color(0xFFE91E63) else Color.White
+                    )
                 }
             }
 
@@ -4746,13 +4803,23 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
     val mangaScanCrisper by viewModel.mangaScanCrisper.collectAsStateWithLifecycle()
     val showEditFeatures by viewModel.showEditFeatures.collectAsStateWithLifecycle()
     
+    val leftTapAction by viewModel.leftTapAction.collectAsStateWithLifecycle()
+    val rightTapAction by viewModel.rightTapAction.collectAsStateWithLifecycle()
+    val centerTapAction by viewModel.centerTapAction.collectAsStateWithLifecycle()
+    val eyeRestReminderEnabled by viewModel.eyeRestReminderEnabled.collectAsStateWithLifecycle()
+    val eyeRestIntervalMinutes by viewModel.eyeRestIntervalMinutes.collectAsStateWithLifecycle()
+    val borderTrimEnabled by viewModel.borderTrimEnabled.collectAsStateWithLifecycle()
+    val textModeFontSize by viewModel.textModeFontSize.collectAsStateWithLifecycle()
+    val todayReadingSeconds by viewModel.todayReadingSeconds.collectAsStateWithLifecycle()
+    val readingStreak by viewModel.readingStreak.collectAsStateWithLifecycle()
+    
     var cacheSizeText by remember { mutableStateOf("0.00 MB") }
     val context = LocalContext.current
     val specs = viewModel.getDeviceSpecs()
 
     var searchQuery by remember { mutableStateOf("") }
     var expandedHeaderId by remember { mutableStateOf<String?>("library_shelf") }
-    var favoriteHeaderIds by remember { mutableStateOf(setOf("library_shelf", "perf_rendering", "display_theme")) }
+    val favoriteHeaderIds by viewModel.favoriteHeaderIds.collectAsStateWithLifecycle()
     var showBackupDialog by remember { mutableStateOf(false) }
     var importJsonInput by remember { mutableStateOf("") }
 
@@ -5764,6 +5831,199 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                 }
             ),
             LobbyHeaderSection(
+                id = "display_presets",
+                title = "1-Tap Reader Display Presets Engine",
+                subtitle = "Instant thematic color profiles: OLED, Sepia, Vintage, High Contrast & Night",
+                icon = Icons.Default.Palette,
+                searchKeywords = "display presets oled amoled sepia vintage high contrast pastel night themes",
+                content = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("READER THEME PRESETS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        val presets = listOf(
+                            Pair("AMOLED_BLACK", "OLED Pitch Black"),
+                            Pair("SEPIA_EYE_CARE", "Classic Sepia"),
+                            Pair("VINTAGE_PAPER", "Vintage Paper"),
+                            Pair("HIGH_CONTRAST_MANGA", "High Contrast Manga"),
+                            Pair("PASTEL_NIGHT", "Pastel Twilight"),
+                            Pair("SUNLIGHT_BOOST", "Sunlight Boost")
+                        )
+
+                        LazyRow(
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                            modifier = Modifier.fillMaxWidth()
+                        ) {
+                            items(presets) { (key, label) ->
+                                Button(
+                                    onClick = {
+                                        viewModel.applyDisplayPreset(key)
+                                        Toast.makeText(context, "Applied $label Preset!", Toast.LENGTH_SHORT).show()
+                                    },
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                                    shape = RoundedCornerShape(12.dp)
+                                ) {
+                                    Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                            }
+                        }
+                    }
+                }
+            ),
+            LobbyHeaderSection(
+                id = "reading_analytics",
+                title = "Reading Progress & Analytics Dashboard",
+                subtitle = "Daily time spent reading, consecutive day streaks & activity log",
+                icon = Icons.Default.BarChart,
+                searchKeywords = "reading analytics stats progress streak time duration daily counter history",
+                content = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("READING METRICS & STREAKS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                                Text("${todayReadingSeconds / 60}m", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
+                                Text("Read Today", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            }
+                            Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
+                                Text("$readingStreak", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.tertiary)
+                                Text("Day Streak", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Button(
+                            onClick = {
+                                viewModel.clearReadingStats()
+                                Toast.makeText(context, "Reading statistics reset!", Toast.LENGTH_SHORT).show()
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                            shape = RoundedCornerShape(10.dp)
+                        ) {
+                            Text("Reset Reading Analytics", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer)
+                        }
+                    }
+                }
+            ),
+            LobbyHeaderSection(
+                id = "tap_zones_gestures",
+                title = "Tap Zone & Custom Gesture Mapping",
+                subtitle = "Configure left, right & center screen touch actions for page flipping and controls",
+                icon = Icons.Default.TouchApp,
+                searchKeywords = "tap zone gestures mapping touch controls flip flip page next prev toggle",
+                content = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("TAP ZONE ACTIONS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Left Screen Tap:", fontSize = 12.sp)
+                            Text(leftTapAction, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("PREV_PAGE", "NEXT_PAGE", "TOGGLE_BARS", "NONE").forEach { act ->
+                                FilterChip(
+                                    selected = (leftTapAction == act),
+                                    onClick = { viewModel.setTapZoneAction("LEFT", act) },
+                                    label = { Text(act, fontSize = 10.sp) }
+                                )
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Right Screen Tap:", fontSize = 12.sp)
+                            Text(rightTapAction, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("NEXT_PAGE", "PREV_PAGE", "TOGGLE_BARS", "NONE").forEach { act ->
+                                FilterChip(
+                                    selected = (rightTapAction == act),
+                                    onClick = { viewModel.setTapZoneAction("RIGHT", act) },
+                                    label = { Text(act, fontSize = 10.sp) }
+                                )
+                            }
+                        }
+                    }
+                }
+            ),
+            LobbyHeaderSection(
+                id = "eye_rest_reminders",
+                title = "Eye Rest & Reading Break Reminders",
+                subtitle = "20-20-20 rule timer & periodic rest alerts to prevent eye strain",
+                icon = Icons.Default.Visibility,
+                searchKeywords = "eye rest break reminder strain timer 20-20-20 alert health comfort",
+                content = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Column {
+                                Text("Eye Rest Alert", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("${eyeRestIntervalMinutes}m interval reminder", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            }
+                            Switch(
+                                checked = eyeRestReminderEnabled,
+                                onCheckedChange = { viewModel.setEyeRestSettings(it, eyeRestIntervalMinutes) }
+                            )
+                        }
+
+                        if (eyeRestReminderEnabled) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                listOf(15, 20, 30, 45).forEach { interval ->
+                                    FilterChip(
+                                        selected = (eyeRestIntervalMinutes == interval),
+                                        onClick = { viewModel.setEyeRestSettings(true, interval) },
+                                        label = { Text("${interval} min", fontSize = 11.sp) }
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            ),
+            LobbyHeaderSection(
+                id = "text_mode_border_trim",
+                title = "Smart Page Cropping & OCR Text Customizer",
+                subtitle = "Auto border margin trimming & custom font scaling for text mode view",
+                icon = Icons.Default.Crop,
+                searchKeywords = "crop trim margin border white black text font size reader ocr",
+                content = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text("Smart Auto Border Trim", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                            Switch(
+                                checked = borderTrimEnabled,
+                                onCheckedChange = { viewModel.setBorderTrimEnabled(it) }
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Text("Text Mode Font Size: ${textModeFontSize}sp", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                        Slider(
+                            value = textModeFontSize.toFloat(),
+                            onValueChange = { viewModel.setTextModeFontSize(it.toInt()) },
+                            valueRange = 12f..28f,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                }
+            ),
+            LobbyHeaderSection(
                 id = "diagnostics_analysis",
                 title = "System Analysis & Hardware Diagnostics",
                 subtitle = "Hardware fingerprint, JVM heap metrics, CPU cores & diagnostic test",
@@ -6010,11 +6270,7 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                             // Mini Heart Icon (Favoriting & Auto-Sorting button)
                             IconButton(
                                 onClick = {
-                                    favoriteHeaderIds = if (isFavorite) {
-                                        favoriteHeaderIds - header.id
-                                    } else {
-                                        favoriteHeaderIds + header.id
-                                    }
+                                    viewModel.toggleHeaderFavorite(header.id)
                                 },
                                 modifier = Modifier
                                     .size(32.dp)

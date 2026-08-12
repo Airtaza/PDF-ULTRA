@@ -11,7 +11,9 @@ data class Manhwa(
     val totalPages: Int,
     val lastReadPage: Int = 0,
     val scrollOffset: Int = 0,
-    val lastOpened: Long = System.currentTimeMillis()
+    val lastOpened: Long = System.currentTimeMillis(),
+    val category: String = "Reading",
+    val isFavorite: Boolean = false
 )
 
 @Entity(tableName = "bookmarks")
@@ -19,7 +21,18 @@ data class Bookmark(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,
     val manhwaId: Long,
     val pageIndex: Int,
-    val title: String
+    val title: String,
+    val tag: String = "General",
+    val note: String = ""
+)
+
+@Entity(tableName = "page_notes")
+data class PageNote(
+    @PrimaryKey(autoGenerate = true) val id: Long = 0,
+    val manhwaId: Long,
+    val pageIndex: Int,
+    val noteText: String,
+    val timestamp: Long = System.currentTimeMillis()
 )
 
 @Entity(tableName = "plugins")
@@ -39,4 +52,5 @@ data class ReadingEvent(
     val durationSeconds: Int = 0,
     val timestamp: Long = System.currentTimeMillis()
 )
+
 
