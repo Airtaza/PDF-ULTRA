@@ -52,7 +52,8 @@ data class UltraTab(
     val title: String,
     val type: TabType,
     val manhwa: Manhwa? = null,
-    val currentPage: Int = 0
+    val currentPage: Int = 0,
+    val scrollOffset: Int = 0
 )
 
 enum class TabType {
@@ -446,6 +447,20 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _presetFilter = MutableStateFlow(sharedPrefs.getString("preset_filter", "NONE") ?: "NONE")
     val presetFilter: StateFlow<String> = _presetFilter.asStateFlow()
 
+    private val _pdfEngineSetting = MutableStateFlow(sharedPrefs.getString("pdf_engine_setting", "PDFIUM") ?: "PDFIUM") // "PDFIUM" or "NATIVE"
+    val pdfEngineSetting: StateFlow<String> = _pdfEngineSetting.asStateFlow()
+
+    fun setPdfEngineSetting(engine: String) {
+        _pdfEngineSetting.value = engine
+        sharedPrefs.edit().putString("pdf_engine_setting", engine).apply()
+        clearMemoryCache()
+    }
+
+    fun togglePdfEngine() {
+        val nextEngine = if (_pdfEngineSetting.value == "NATIVE") "PDFIUM" else "NATIVE"
+        setPdfEngineSetting(nextEngine)
+    }
+
     private val _virtualPages = MutableStateFlow<List<VirtualPage>>(emptyList())
     val virtualPages: StateFlow<List<VirtualPage>> = _virtualPages.asStateFlow()
 
@@ -629,14 +644,10 @@ class ManhwaViewModel(private val application: Application, private val reposito
     fun setCurrentVirtualPageAndOffset(virtualIndex: Int, offset: Int) {
         val list = _virtualPages.value
         val vp = list.getOrNull(virtualIndex)
-        if (vp != null) {
-            _currentVirtualPageIndex.value = virtualIndex
-            // Since we updated current page, save/update active tab page
-            updateActiveTabCurrentPageAndOffset(vp.physicalPageIndex, offset, virtualIndex)
-        } else {
-            _currentVirtualPageIndex.value = virtualIndex
-            updateActiveTabCurrentPageAndOffset(virtualIndex, offset, virtualIndex)
-        }
+        val physicalPage = vp?.physicalPageIndex ?: virtualIndex
+        _currentVirtualPageIndex.value = virtualIndex
+        updateActiveTabCurrentPageAndOffset(physicalPage, offset, virtualIndex)
+        checkAndTrimMemoryIfNeeded(physicalPage)
     }
 
     fun resetViewEnhancerSettings() {
@@ -680,6 +691,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
     val sketches: StateFlow<Map<Int, List<DrawPath>>> = _sketches.asStateFlow()
 
     init {
+        restoreTabsStateFromPrefs()
         viewModelScope.launch {
             _activeZoomScale.collectLatest { zoom ->
                 kotlinx.coroutines.delay(50)
@@ -778,6 +790,30 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 it.clearMemoryCache()
             }
         }
+        System.gc()
+    }
+
+    fun freeRamExceptCurrentPage(targetPageIndex: Int? = null, keepAdjacent: Boolean = false) {
+        val tab = _tabs.value.find { it.id == _activeTabId.value }
+        val activePage = targetPageIndex ?: tab?.currentPage ?: 0
+        synchronized(renderers) {
+            renderers.values.forEach {
+                it.freeRamExceptCurrentPage(activePage, keepAdjacent)
+            }
+        }
+        System.gc()
+    }
+
+    fun checkAndTrimMemoryIfNeeded(physicalPageIndex: Int) {
+        val runtime = Runtime.getRuntime()
+        val maxMem = runtime.maxMemory()
+        val usedMem = runtime.totalMemory() - runtime.freeMemory()
+        val usageRatio = usedMem.toDouble() / maxMem.toDouble()
+        if (usageRatio > 0.65) {
+            freeRamExceptCurrentPage(physicalPageIndex, keepAdjacent = false)
+        } else if (usageRatio > 0.45) {
+            freeRamExceptCurrentPage(physicalPageIndex, keepAdjacent = true)
+        }
     }
 
     private val _isUserScrolling = MutableStateFlow(false)
@@ -843,6 +879,81 @@ class ManhwaViewModel(private val application: Application, private val reposito
         NORMAL, GRAYSCALE, SEPIA, INVERTED, PROTANOPIA, DEUTERANOPIA, TRITANOPIA, HIGH_CONTRAST
     }
 
+    // --- Persistent Tab Session Manager ---
+    private fun saveTabsStateToPrefs() {
+        try {
+            val rootArray = JSONArray()
+            _tabs.value.forEach { tab ->
+                val obj = JSONObject()
+                obj.put("id", tab.id)
+                obj.put("title", tab.title)
+                obj.put("type", tab.type.name)
+                obj.put("currentPage", tab.currentPage)
+                obj.put("scrollOffset", tab.scrollOffset)
+                tab.manhwa?.let { m ->
+                    obj.put("manhwaId", m.id)
+                }
+                rootArray.put(obj)
+            }
+            sharedPrefs.edit()
+                .putString("saved_tabs_json", rootArray.toString())
+                .putString("saved_active_tab_id", _activeTabId.value)
+                .apply()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun restoreTabsStateFromPrefs() {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val jsonStr = sharedPrefs.getString("saved_tabs_json", null) ?: return@launch
+                val savedActiveId = sharedPrefs.getString("saved_active_tab_id", "settings") ?: "settings"
+                val array = JSONArray(jsonStr)
+                val restoredTabs = mutableListOf<UltraTab>()
+
+                for (i in 0 until array.length()) {
+                    val obj = array.optJSONObject(i) ?: continue
+                    val id = obj.optString("id", "")
+                    val title = obj.optString("title", "")
+                    val typeName = obj.optString("type", TabType.SETTINGS.name)
+                    val currentPage = obj.optInt("currentPage", 0)
+                    val scrollOffset = obj.optInt("scrollOffset", 0)
+                    val type = try { TabType.valueOf(typeName) } catch (e: Exception) { TabType.SETTINGS }
+                    val manhwaId = obj.optLong("manhwaId", -1L)
+
+                    var manhwa: Manhwa? = null
+                    if (type == TabType.READER && manhwaId != -1L) {
+                        manhwa = repository.getManhwaById(manhwaId)
+                        if (manhwa == null) continue // Skip deleted manhwa
+                    }
+
+                    restoredTabs.add(
+                        UltraTab(
+                            id = id,
+                            title = if (manhwa != null) manhwa.title else title,
+                            type = type,
+                            manhwa = manhwa,
+                            currentPage = if (manhwa != null) (if (currentPage > 0) currentPage else manhwa.lastReadPage) else currentPage,
+                            scrollOffset = if (manhwa != null) (if (scrollOffset > 0) scrollOffset else manhwa.scrollOffset) else scrollOffset
+                        )
+                    )
+                }
+
+                if (restoredTabs.isNotEmpty()) {
+                    withContext(Dispatchers.Main) {
+                        _tabs.value = restoredTabs
+                        val activeExists = restoredTabs.any { it.id == savedActiveId }
+                        val activeIdToUse = if (activeExists) savedActiveId else restoredTabs.first().id
+                        selectTabId(activeIdToUse)
+                    }
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
+    }
+
     // --- Tab management operations ---
     fun selectTabId(tabId: String) {
         _activeTabId.value = tabId
@@ -855,6 +966,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 TabType.SETTINGS -> _selectedTab.value = ReaderTab.Settings
             }
         }
+        saveTabsStateToPrefs()
     }
 
     fun openManhwaInTab(manhwa: Manhwa) {
@@ -913,7 +1025,8 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 title = manhwa.title,
                 type = TabType.READER,
                 manhwa = manhwa,
-                currentPage = manhwa.lastReadPage
+                currentPage = manhwa.lastReadPage,
+                scrollOffset = manhwa.scrollOffset
             )
             existingList.add(newTab)
             _tabs.value = existingList
@@ -1026,6 +1139,8 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
             if (_activeTabId.value == tabId) {
                 selectTabId(existingList.first().id)
+            } else {
+                saveTabsStateToPrefs()
             }
         }
     }
@@ -1042,7 +1157,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val currentId = _activeTabId.value
         val now = System.currentTimeMillis()
         val duration = ((now - lastPageChangeTimestamp) / 1000).toInt().coerceIn(0, 3600) // cap at 1 hour per page
-        
+
         val existingList = _tabs.value.map { tab ->
             if (tab.id == currentId) {
                 if (tab.currentPage != pageIndex) {
@@ -1053,14 +1168,11 @@ class ManhwaViewModel(private val application: Application, private val reposito
                     }
                     lastPageChangeTimestamp = now
                 }
-                val updatedTab = tab.copy(currentPage = pageIndex)
+                val updatedTab = tab.copy(currentPage = pageIndex, scrollOffset = offset)
                 tab.manhwa?.let { manhwa ->
                     dbUpdateJob?.cancel()
-                    dbUpdateJob = viewModelScope.launch {
-                        kotlinx.coroutines.delay(1000)
-                        withContext(Dispatchers.IO) {
-                            repository.updateManhwa(manhwa.copy(lastReadPage = pageIndex, scrollOffset = offset))
-                        }
+                    dbUpdateJob = viewModelScope.launch(Dispatchers.IO) {
+                        repository.updateManhwa(manhwa.copy(lastReadPage = pageIndex, scrollOffset = offset, lastOpened = now))
                     }
                 }
                 updatedTab
@@ -1069,6 +1181,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
             }
         }
         _tabs.value = existingList
+        saveTabsStateToPrefs()
     }
 
     // --- Operations ---
@@ -1281,6 +1394,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     suspend fun renderPageLowRes(pageIndex: Int, targetWidth: Int, landscapeSplitMode: String = "NONE"): Bitmap? = withContext(Dispatchers.IO) {
+        if (_pdfEngineSetting.value == "NATIVE") {
+            return@withContext null // Native engine mode loads direct high resolution page
+        }
         val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext null
         val manhwa = tab.manhwa ?: return@withContext null
         val file = File(manhwa.filePath)
@@ -1646,6 +1762,146 @@ class ManhwaViewModel(private val application: Application, private val reposito
         setPresetFilter("NONE")
         
         applyRecommendedSettings(forceTier = "MEDIUM")
+    }
+
+    fun exportSettingsJson(): String {
+        val obj = JSONObject()
+        try {
+            obj.put("reader_theme_index", _readerTheme.value.ordinal)
+            obj.put("view_brightness", _brightness.value.toDouble())
+            obj.put("view_contrast", _contrast.value.toDouble())
+            obj.put("view_saturation", _saturation.value.toDouble())
+            obj.put("view_warmth", _warmth.value.toDouble())
+            obj.put("view_gamma", _gamma.value.toDouble())
+            obj.put("auto_gamma", _autoGammaEnabled.value)
+            obj.put("custom_tint", _customTint.value)
+            obj.put("auto_night_shift", _autoNightShift.value)
+            obj.put("manga_scan_crisper", _mangaScanCrisper.value)
+            obj.put("color_mode", _colorMode.value.name)
+            obj.put("hd_mode_enabled", _hdModeEnabled.value)
+            obj.put("show_edit_features", _showEditFeatures.value)
+            obj.put("preset_filter", _presetFilter.value)
+            obj.put("pdf_engine_setting", _pdfEngineSetting.value)
+            obj.put("quality_selection_enabled", _qualitySelectionEnabled.value)
+            obj.put("quality_level", _qualityLevel.value)
+            obj.put("max_storage_allocation", _maxStorageAllocation.value)
+            obj.put("slice_height", _sliceHeight.value)
+            obj.put("low_res_scroll_delay", _lowResScrollDelay.value)
+            obj.put("hd_scroll_delay", _hdScrollDelay.value)
+            obj.put("stagger_delay", _staggerDelay.value)
+            obj.put("page_spacing", _pageSpacing.value)
+            obj.put("double_tap_zoom_scale", _doubleTapZoomScale.value.toDouble())
+            obj.put("volume_scroll_enabled", _volumeScrollEnabled.value)
+            obj.put("bitmap_config", _bitmapConfigSetting.value)
+            obj.put("webp_quality", _webpQuality.value)
+            obj.put("haptic_feedback_enabled", _hapticFeedbackEnabled.value)
+            obj.put("double_tap_reset_enabled", _doubleTapResetEnabled.value)
+            obj.put("aggressive_gc_enabled", _aggressiveGcEnabled.value)
+            obj.put("keep_screen_on", _keepScreenOn.value)
+            obj.put("immersive_mode", _immersiveMode.value)
+            obj.put("volume_key_navigation", _volumeKeyNavigation.value)
+            obj.put("reading_direction", _readingDirection.value)
+            obj.put("preload_count", _preloadCount.value)
+            obj.put("auto_scroll_step", _autoScrollStep.value.toDouble())
+            obj.put("zoom_lock_enabled", _zoomLockEnabled.value)
+            obj.put("locked_zoom_level", _lockedZoomLevel.value.toDouble())
+            obj.put("view_exposure", _exposure.value.toDouble())
+            obj.put("view_highlights", _highlights.value.toDouble())
+            obj.put("view_shadows", _shadows.value.toDouble())
+            obj.put("swipe_sensitivity", _swipeSensitivity.value.toDouble())
+            obj.put("hd_text_mode_enabled", _hdTextModeEnabled.value)
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        return obj.toString(2)
+    }
+
+    fun importSettingsJson(jsonStr: String): Boolean {
+        return try {
+            val obj = JSONObject(jsonStr)
+            if (obj.has("reader_theme_index")) {
+                val idx = obj.optInt("reader_theme_index", 0)
+                setReaderTheme(ReaderTheme.entries.getOrNull(idx) ?: ReaderTheme.DARK)
+            }
+            if (obj.has("view_brightness")) setBrightness(obj.optDouble("view_brightness", 1.0).toFloat())
+            if (obj.has("view_contrast")) setContrast(obj.optDouble("view_contrast", 1.0).toFloat())
+            if (obj.has("view_saturation")) setSaturation(obj.optDouble("view_saturation", 1.0).toFloat())
+            if (obj.has("view_warmth")) setWarmth(obj.optDouble("view_warmth", 0.0).toFloat())
+            if (obj.has("view_gamma")) setGamma(obj.optDouble("view_gamma", 1.0).toFloat())
+            if (obj.has("auto_gamma")) setAutoGammaEnabled(obj.optBoolean("auto_gamma", false))
+            if (obj.has("custom_tint")) setCustomTint(obj.optString("custom_tint", "None"))
+            if (obj.has("auto_night_shift")) setAutoNightShift(obj.optBoolean("auto_night_shift", false))
+            if (obj.has("manga_scan_crisper")) setMangaScanCrisper(obj.optBoolean("manga_scan_crisper", false))
+            if (obj.has("color_mode")) {
+                try { setColorMode(ColorMode.valueOf(obj.optString("color_mode", "NORMAL"))) } catch (e: Exception) {}
+            }
+            if (obj.has("hd_mode_enabled")) setHdModeEnabled(obj.optBoolean("hd_mode_enabled", true))
+            if (obj.has("show_edit_features")) setShowEditFeatures(obj.optBoolean("show_edit_features", true))
+            if (obj.has("preset_filter")) setPresetFilter(obj.optString("preset_filter", "NONE"))
+            if (obj.has("pdf_engine_setting")) setPdfEngineSetting(obj.optString("pdf_engine_setting", "PDFIUM"))
+            if (obj.has("quality_selection_enabled")) setQualitySelectionEnabled(obj.optBoolean("quality_selection_enabled", true))
+            if (obj.has("quality_level")) setQualityLevel(obj.optString("quality_level", "HIGH"))
+            if (obj.has("max_storage_allocation")) setMaxStorageAllocation(obj.optInt("max_storage_allocation", 500))
+            if (obj.has("slice_height")) setSliceHeight(obj.optInt("slice_height", 1536))
+            if (obj.has("low_res_scroll_delay")) setLowResScrollDelay(obj.optLong("low_res_scroll_delay", 60L))
+            if (obj.has("hd_scroll_delay")) setHdScrollDelay(obj.optLong("hd_scroll_delay", 150L))
+            if (obj.has("stagger_delay")) setStaggerDelay(obj.optLong("stagger_delay", 80L))
+            if (obj.has("page_spacing")) setPageSpacing(obj.optInt("page_spacing", 0))
+            if (obj.has("double_tap_zoom_scale")) setDoubleTapZoomScale(obj.optDouble("double_tap_zoom_scale", 2.0).toFloat())
+            if (obj.has("volume_scroll_enabled")) setVolumeScrollEnabled(obj.optBoolean("volume_scroll_enabled", false))
+            if (obj.has("bitmap_config")) setBitmapConfigSetting(obj.optString("bitmap_config", "ARGB_8888"))
+            if (obj.has("webp_quality")) setWebpQuality(obj.optInt("webp_quality", 80))
+            if (obj.has("haptic_feedback_enabled")) setHapticFeedbackEnabled(obj.optBoolean("haptic_feedback_enabled", true))
+            if (obj.has("double_tap_reset_enabled")) setDoubleTapResetEnabled(obj.optBoolean("double_tap_reset_enabled", true))
+            if (obj.has("aggressive_gc_enabled")) setAggressiveGcEnabled(obj.optBoolean("aggressive_gc_enabled", false))
+            if (obj.has("keep_screen_on")) setKeepScreenOn(obj.optBoolean("keep_screen_on", true))
+            if (obj.has("immersive_mode")) setImmersiveMode(obj.optBoolean("immersive_mode", false))
+            if (obj.has("volume_key_navigation")) setVolumeKeyNavigation(obj.optBoolean("volume_key_navigation", true))
+            if (obj.has("reading_direction")) setReadingDirection(obj.optString("reading_direction", "Vertical"))
+            if (obj.has("preload_count")) setPreloadCount(obj.optInt("preload_count", 2))
+            if (obj.has("auto_scroll_step")) setAutoScrollStep(obj.optDouble("auto_scroll_step", 1.5).toFloat())
+            if (obj.has("zoom_lock_enabled")) setZoomLockEnabled(obj.optBoolean("zoom_lock_enabled", false))
+            if (obj.has("locked_zoom_level")) setLockedZoomLevel(obj.optDouble("locked_zoom_level", 1.0).toFloat())
+            if (obj.has("view_exposure")) setExposure(obj.optDouble("view_exposure", 1.0).toFloat())
+            if (obj.has("view_highlights")) setHighlights(obj.optDouble("view_highlights", 0.0).toFloat())
+            if (obj.has("view_shadows")) setShadows(obj.optDouble("view_shadows", 0.0).toFloat())
+            if (obj.has("swipe_sensitivity")) setSwipeSensitivity(obj.optDouble("swipe_sensitivity", 1.0).toFloat())
+            if (obj.has("hd_text_mode_enabled")) setHdTextModeEnabled(obj.optBoolean("hd_text_mode_enabled", false))
+            true
+        } catch (e: Exception) {
+            e.printStackTrace()
+            false
+        }
+    }
+
+    fun clearDiskCache() {
+        viewModelScope.launch(Dispatchers.IO) {
+            synchronized(renderers) {
+                renderers.values.forEach {
+                    viewModelScope.launch(Dispatchers.IO) {
+                        it.clearDiskCache()
+                    }
+                }
+            }
+            val webpDir = File(application.cacheDir, "webp_cache")
+            if (webpDir.exists()) {
+                webpDir.deleteRecursively()
+                webpDir.mkdirs()
+            }
+        }
+    }
+
+    fun clearAllSketches() {
+        viewModelScope.launch(Dispatchers.IO) {
+            _sketches.value = emptyMap()
+            undoStacks.clear()
+            redoStacks.clear()
+            val sketchesDir = File(application.filesDir, "sketches")
+            if (sketchesDir.exists()) {
+                sketchesDir.deleteRecursively()
+                sketchesDir.mkdirs()
+            }
+        }
     }
 
     fun getQualityScaleFactor(level: String): Float {

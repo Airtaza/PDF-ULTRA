@@ -1,5 +1,8 @@
 package com.example.ui
 
+import android.content.Context
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
@@ -38,6 +41,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material.icons.automirrored.filled.*
 import androidx.compose.material3.*
+import androidx.compose.ui.draw.alpha
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -70,6 +74,7 @@ import androidx.compose.foundation.magnifier
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import kotlinx.coroutines.flow.first
 import com.example.data.Bookmark
 import com.example.data.Manhwa
 import com.example.data.PluginConfig
@@ -174,9 +179,6 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
                         )
                     },
                     actions = {
-                        IconButton(onClick = { filePickerLauncher.launch(arrayOf("application/pdf")) }) {
-                            Icon(Icons.Default.Add, contentDescription = "Open PDF", tint = MaterialTheme.colorScheme.primary)
-                        }
                         IconButton(onClick = { showAboutDialog = true }) {
                             Icon(Icons.Default.Info, contentDescription = "About", tint = MaterialTheme.colorScheme.primary)
                         }
@@ -258,6 +260,27 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
                                             fontSize = 12.sp,
                                             fontWeight = if (isActive) FontWeight.Bold else FontWeight.Normal,
                                             color = if (isActive) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant
+                                        )
+                                    }
+                                }
+                            }
+                            item {
+                                Surface(
+                                    onClick = { filePickerLauncher.launch(arrayOf("application/pdf")) },
+                                    modifier = Modifier
+                                        .size(36.dp)
+                                        .clip(CircleShape)
+                                        .testTag("tab_add_button"),
+                                    shape = CircleShape,
+                                    color = MaterialTheme.colorScheme.primaryContainer,
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary)
+                                ) {
+                                    Box(contentAlignment = Alignment.Center) {
+                                        Icon(
+                                            imageVector = Icons.Default.Add,
+                                            contentDescription = "Open PDF Tab",
+                                            tint = MaterialTheme.colorScheme.onPrimaryContainer,
+                                            modifier = Modifier.size(20.dp)
                                         )
                                     }
                                 }
@@ -1530,6 +1553,7 @@ fun ComicReaderScreen(
     val exposure by viewModel.exposure.collectAsStateWithLifecycle()
     val highlights by viewModel.highlights.collectAsStateWithLifecycle()
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
+    val pdfEngineSetting by viewModel.pdfEngineSetting.collectAsStateWithLifecycle()
 
     // Sketch editor
     val drawColor by viewModel.activeDrawColor.collectAsStateWithLifecycle()
@@ -1630,7 +1654,7 @@ fun ComicReaderScreen(
         viewModel.setActiveZoomScale(newZoom)
     }
 
-    val zoomGestureModifier = if (!isMagnifierEnabled && !isDrawModeOn) {
+    val zoomGestureModifier = if (!isMagnifierEnabled && !isDrawModeOn && !isScreenLocked) {
         Modifier.transformable(state = transformableState)
     } else Modifier
 
@@ -1667,10 +1691,10 @@ fun ComicReaderScreen(
         }
     }
 
-    val nestedScrollConnection = remember(swipeSensitivity, isScreenLocked) {
+    val nestedScrollConnection = remember(swipeSensitivity) {
         object : NestedScrollConnection {
             override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
-                if (source == NestedScrollSource.Drag && swipeSensitivity != 1.0f && !isDrawModeOn && !isScreenLocked) {
+                if (source == NestedScrollSource.Drag && swipeSensitivity != 1.0f && !isDrawModeOn) {
                     val extraY = available.y * (swipeSensitivity - 1.0f)
                     lazyListState.dispatchRawDelta(-extraY)
                 }
@@ -1776,7 +1800,7 @@ fun ComicReaderScreen(
 
         LazyColumn(
             state = lazyListState,
-            userScrollEnabled = !isDrawModeOn && !isScreenLocked, // LOCK scrolling during drawing sessions or screen lock!
+            userScrollEnabled = !isDrawModeOn, // Scrolling remains enabled when screen lock is active
             modifier = Modifier
                 .width(with(LocalDensity.current) { (componentWidth * animatedZoomScale).toDp() })
                 .fillMaxHeight()
@@ -1858,6 +1882,12 @@ fun ComicReaderScreen(
                         mangaScanCrisper = mangaScanCrisper,
                         colorMode = colorMode,
                         landscapeSplitMode = vp.splitMode,
+                        isScreenLocked = isScreenLocked,
+                        onResetZoom = {
+                            coroutineScope.launch {
+                                horizScrollState.animateScrollTo(0)
+                            }
+                        },
                         onPdfClick = {
                             if (!isScreenLocked) {
                                 val currentTime = System.currentTimeMillis()
@@ -1868,17 +1898,11 @@ fun ComicReaderScreen(
                             }
                         },
                         onDoubleTap = { fractionX, fractionY, aspect ->
+                            if (isScreenLocked) return@PdfPageItem
                             val viewportHeight = lazyListState.layoutInfo.viewportSize.height
-                            val targetScrollX = (fractionX * componentWidth * doubleTapZoomScale) - (componentWidth / 2f)
                             val pageHeight = componentWidth * aspect
                             val targetOffsetY = (fractionY * pageHeight * doubleTapZoomScale) - (viewportHeight / 2f)
                             coroutineScope.launch {
-                                kotlinx.coroutines.delay(80)
-                                launch {
-                                    horizScrollState.animateScrollTo(
-                                        targetScrollX.toInt().coerceIn(0, horizScrollState.maxValue)
-                                    )
-                                }
                                 launch {
                                     try {
                                         lazyListState.animateScrollToItem(
@@ -1892,6 +1916,18 @@ fun ComicReaderScreen(
                                         )
                                     }
                                 }
+                                try {
+                                    kotlinx.coroutines.withTimeout(500) {
+                                        androidx.compose.runtime.snapshotFlow { horizScrollState.maxValue }
+                                            .first { it > 0 }
+                                    }
+                                } catch (e: Exception) {
+                                    // fallback delay
+                                }
+                                val targetScrollX = (fractionX * componentWidth * doubleTapZoomScale) - (componentWidth / 2f)
+                                horizScrollState.animateScrollTo(
+                                    targetScrollX.toInt().coerceIn(0, horizScrollState.maxValue)
+                                )
                             }
                         }
                     )
@@ -2159,13 +2195,23 @@ fun ComicReaderScreen(
         ) {
             IconButton(
                 onClick = { isScreenLocked = !isScreenLocked },
-                modifier = Modifier.testTag("fullscreen_lock_button")
+                modifier = Modifier
+                    .background(
+                        if (isScreenLocked) Color.Black.copy(alpha = 0.75f) else Color.Black.copy(alpha = 0.35f),
+                        CircleShape
+                    )
+                    .border(
+                        width = 1.dp,
+                        color = if (isScreenLocked) Color(0xFFFFD700) else Color.White.copy(alpha = 0.3f),
+                        shape = CircleShape
+                    )
+                    .testTag("fullscreen_lock_button")
             ) {
                 Icon(
                     imageVector = if (isScreenLocked) Icons.Default.Lock else Icons.Default.LockOpen,
                     contentDescription = if (isScreenLocked) "Screen Locked" else "Screen Unlocked",
-                    tint = if (isScreenLocked) Color.Black else Color.White,
-                    modifier = Modifier.size(28.dp)
+                    tint = if (isScreenLocked) Color(0xFFFFD700) else Color.White,
+                    modifier = Modifier.size(24.dp)
                 )
             }
         }
@@ -2326,6 +2372,8 @@ fun ComicReaderScreen(
                 isReadingRulerEnabled = isReadingRulerEnabled,
                 isMagnifierEnabled = isMagnifierEnabled,
                 hdMode = hdMode,
+                pdfEngineSetting = pdfEngineSetting,
+                onTogglePdfEngine = { viewModel.togglePdfEngine() },
                 onBack = { viewModel.closeManhwa() },
                 onToggleOutline = { viewModel.toggleOutlineDrawer() },
                 onToggleDrawMode = { isDrawModeOn = !isDrawModeOn },
@@ -2397,6 +2445,8 @@ fun ComicReaderScreen(
                 viewModel = viewModel,
                 isOutlineEnabled = isOutlineEnabled,
                 isMagnifierEnabled = isMagnifierEnabled,
+                pdfEngineSetting = pdfEngineSetting,
+                onTogglePdfEngine = { viewModel.togglePdfEngine() },
                 onMagnifierToggle = { viewModel.setMagnifierEnabled(it) },
                 zoomScaleTarget = zoomScaleTarget,
                 onZoomScaleChange = { 
@@ -2537,6 +2587,7 @@ fun PdfPageSliceItem(
     scaleFactor: Float,
     zoomScale: Float,
     isScrollInProgress: Boolean,
+    hasLowResPreview: Boolean,
     viewModel: ManhwaViewModel,
     brightness: Float,
     contrast: Float,
@@ -2559,24 +2610,38 @@ fun PdfPageSliceItem(
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
     val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
 
-    var sliceBitmap by remember { mutableStateOf<Bitmap?>(null) }
-    var isRendering by remember { mutableStateOf(true) }
+    var sliceBitmap by remember(pageIndex, sliceIndex, landscapeSplitMode, scaleFactor) { mutableStateOf<Bitmap?>(null) }
+    var isRendering by remember { mutableStateOf(false) }
 
-    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, isScrollInProgress, hdScrollDelay, staggerDelay, viewModel, landscapeSplitMode) {
+    DisposableEffect(pageIndex, sliceIndex) {
+        onDispose {
+            // Unload old slice data when scrolled out of view area to save RAM & CPU
+            sliceBitmap = null
+        }
+    }
+
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, isScrollInProgress, hdScrollDelay, staggerDelay, viewModel, landscapeSplitMode, hasLowResPreview) {
+        // If HD slice bitmap is ALREADY rendered, NEVER discard or clear it!
+        // Keep showing HD continuously so there is zero quality drop or motion blur during scrolling.
+        if (sliceBitmap != null) {
+            return@LaunchedEffect
+        }
+
         if (isScrollInProgress) {
-            // During scroll, don't even start high-res render to save CPU/Memory
-            // Only render if we've been stationary for a moment
-            kotlinx.coroutines.delay(200)
+            // While scrolling and HD slice is not yet rendered, wait briefly for scroll to settle
+            kotlinx.coroutines.delay(120)
             if (isScrollInProgress) {
-                sliceBitmap = null // Ensure we don't hold old bitmaps
-                isRendering = false
-                return@LaunchedEffect 
+                return@LaunchedEffect
             }
         }
-        
+
+        // Allow lowRes 480p preview to finish rendering first so user gets instant page view
+        if (!hasLowResPreview) {
+            kotlinx.coroutines.delay(30)
+        }
+
         isRendering = true
         if (sliceIndex > 0 && staggerDelay > 0) {
-            // Stagger slice renders slightly even when stationary to prevent lock contention
             kotlinx.coroutines.delay(sliceIndex * staggerDelay)
         }
         val bitmap = viewModel.renderPageSlice(
@@ -2587,7 +2652,9 @@ fun PdfPageSliceItem(
             scaleFactor = scaleFactor,
             landscapeSplitMode = landscapeSplitMode
         )
-        sliceBitmap = bitmap
+        if (bitmap != null) {
+            sliceBitmap = bitmap
+        }
         isRendering = false
     }
 
@@ -2663,6 +2730,8 @@ fun PdfPageItem(
     mangaScanCrisper: Boolean,
     colorMode: ManhwaViewModel.ColorMode,
     landscapeSplitMode: String = "NONE",
+    isScreenLocked: Boolean = false,
+    onResetZoom: (() -> Unit)? = null,
     onPdfClick: () -> Unit,
     onDoubleTap: (fractionX: Float, fractionY: Float, aspect: Float) -> Unit
 ) {
@@ -2692,12 +2761,15 @@ fun PdfPageItem(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.White)
-            .pointerInput(Unit) {
+            .pointerInput(isScreenLocked, doubleTapZoomScale, doubleTapResetEnabled, hapticFeedbackEnabled) {
                 detectTapGestures(
                     onTap = {
-                        onPdfClick()
+                        if (!isScreenLocked) {
+                            onPdfClick()
+                        }
                     },
                     onDoubleTap = { tapOffset ->
+                        if (isScreenLocked) return@detectTapGestures
                         if (hapticFeedbackEnabled) {
                             try {
                                 hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
@@ -2705,9 +2777,11 @@ fun PdfPageItem(
                                 // Fallback if not supported
                             }
                         }
-                        if (zoomScale > 1.05f) {
+                        val currentActiveZoom = viewModel.activeZoomScale.value
+                        if (currentActiveZoom > 1.05f) {
                             if (doubleTapResetEnabled) {
                                 viewModel.setActiveZoomScale(1.0f)
+                                onResetZoom?.invoke()
                             }
                         } else {
                             viewModel.setActiveZoomScale(doubleTapZoomScale)
@@ -2746,86 +2820,144 @@ fun PdfPageItem(
                 }
             }
         } else {
-            val sliceHeight by viewModel.sliceHeight.collectAsStateWithLifecycle()
-            val lowResScrollDelay by viewModel.lowResScrollDelay.collectAsStateWithLifecycle()
-            val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
+            val pdfEngineSetting by viewModel.pdfEngineSetting.collectAsStateWithLifecycle()
 
-            val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
-            val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
-            val basePageHeight = targetWidth * aspect
-            val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
+            if (pdfEngineSetting == "NATIVE") {
+                var nativePageBitmap by remember(pageIndex, targetWidth, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
 
-            var lowResBitmap by remember { mutableStateOf<Bitmap?>(null) }
-            LaunchedEffect(pageIndex, targetWidth, isScrollInProgress, lowResScrollDelay, viewModel, landscapeSplitMode) {
-                if (isScrollInProgress && lowResScrollDelay > 0) {
-                    // Under fast scroll, delay preview render slightly to skip pages swiped past
-                    kotlinx.coroutines.delay(lowResScrollDelay)
+                LaunchedEffect(pageIndex, targetWidth, landscapeSplitMode) {
+                    if (nativePageBitmap == null) {
+                        val bmp = viewModel.renderPage(
+                            pageIndex = pageIndex,
+                            targetWidth = (targetWidth * 1.8f).toInt(),
+                            landscapeSplitMode = landscapeSplitMode
+                        )
+                        if (bmp != null) {
+                            nativePageBitmap = bmp
+                        }
+                    }
                 }
-                lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth, landscapeSplitMode)
-            }
 
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f / aspect)
-            ) {
-                lowResBitmap?.let { bmp ->
-                    val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
-                        getAdjustedColorMatrix(
-                            brightness = brightness,
-                            contrast = contrast,
-                            saturation = saturation,
-                            warmth = warmth,
-                            gamma = gamma,
-                            autoGammaEnabled = autoGammaEnabled,
-                            customTint = customTint,
-                            autoNightShift = autoNightShift,
-                            mangaScanCrisper = mangaScanCrisper,
-                            mode = colorMode,
-                            exposure = exposure,
-                            highlights = highlights,
-                            shadows = shadows,
-                            presetFilter = presetFilter
+                DisposableEffect(pageIndex) {
+                    onDispose {
+                        // Directly unload page bitmap when scrolled off view in Native mode
+                        nativePageBitmap = null
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f / aspect)
+                        .background(Color.White)
+                ) {
+                    nativePageBitmap?.let { bmp ->
+                        Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = "Page ${pageIndex + 1} Native Quality",
+                            contentScale = ContentScale.FillBounds,
+                            filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
+                            modifier = Modifier.fillMaxSize()
+                        )
+                    } ?: run {
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                color = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(28.dp)
+                            )
+                        }
+                    }
+                }
+            } else {
+                val sliceHeight by viewModel.sliceHeight.collectAsStateWithLifecycle()
+                val lowResScrollDelay by viewModel.lowResScrollDelay.collectAsStateWithLifecycle()
+                val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
+
+                val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
+                val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
+                val basePageHeight = targetWidth * aspect
+                val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
+
+                var lowResBitmap by remember(pageIndex, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
+                DisposableEffect(pageIndex) {
+                    onDispose {
+                        // Unload low-res preview bitmap when scrolled off view area
+                        lowResBitmap = null
+                    }
+                }
+                LaunchedEffect(pageIndex, targetWidth, viewModel, landscapeSplitMode) {
+                    if (lowResBitmap == null) {
+                        lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth, landscapeSplitMode)
+                    }
+                }
+
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .aspectRatio(1f / aspect)
+                ) {
+                    lowResBitmap?.let { bmp ->
+                        val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
+                            getAdjustedColorMatrix(
+                                brightness = brightness,
+                                contrast = contrast,
+                                saturation = saturation,
+                                warmth = warmth,
+                                gamma = gamma,
+                                autoGammaEnabled = autoGammaEnabled,
+                                customTint = customTint,
+                                autoNightShift = autoNightShift,
+                                mangaScanCrisper = mangaScanCrisper,
+                                mode = colorMode,
+                                exposure = exposure,
+                                highlights = highlights,
+                                shadows = shadows,
+                                presetFilter = presetFilter
+                            )
+                        }
+                        Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = "Page ${pageIndex + 1} Low-res Preview",
+                            contentScale = ContentScale.FillBounds,
+                            colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
+                            filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
+                            modifier = Modifier.fillMaxSize()
                         )
                     }
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = "Page ${pageIndex + 1} Low-res Preview",
-                        contentScale = ContentScale.FillBounds,
-                        colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
-                        filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
 
-                Column(
-                    modifier = Modifier.fillMaxSize()
-                ) {
-                    for (sliceIndex in 0 until numSlices) {
-                        PdfPageSliceItem(
-                            pageIndex = pageIndex,
-                            targetWidth = targetWidth,
-                            sliceIndex = sliceIndex,
-                            sliceHeight = sliceHeight,
-                            totalHeight = totalHeight,
-                            totalWidth = totalWidth,
-                            scaleFactor = scaleFactor,
-                            zoomScale = zoomScale,
-                            isScrollInProgress = isScrollInProgress,
-                            viewModel = viewModel,
-                            brightness = brightness,
-                            contrast = contrast,
-                            saturation = saturation,
-                            warmth = warmth,
-                            gamma = gamma,
-                            autoGammaEnabled = autoGammaEnabled,
-                            customTint = customTint,
-                            autoNightShift = autoNightShift,
-                            mangaScanCrisper = mangaScanCrisper,
-                            colorMode = colorMode,
-                            landscapeSplitMode = landscapeSplitMode,
-                            numSlices = numSlices
-                        )
+                    Column(
+                        modifier = Modifier.fillMaxSize()
+                    ) {
+                        for (sliceIndex in 0 until numSlices) {
+                            PdfPageSliceItem(
+                                pageIndex = pageIndex,
+                                targetWidth = targetWidth,
+                                sliceIndex = sliceIndex,
+                                sliceHeight = sliceHeight,
+                                totalHeight = totalHeight,
+                                totalWidth = totalWidth,
+                                scaleFactor = scaleFactor,
+                                zoomScale = zoomScale,
+                                isScrollInProgress = isScrollInProgress,
+                                hasLowResPreview = (lowResBitmap != null),
+                                viewModel = viewModel,
+                                brightness = brightness,
+                                contrast = contrast,
+                                saturation = saturation,
+                                warmth = warmth,
+                                gamma = gamma,
+                                autoGammaEnabled = autoGammaEnabled,
+                                customTint = customTint,
+                                autoNightShift = autoNightShift,
+                                mangaScanCrisper = mangaScanCrisper,
+                                colorMode = colorMode,
+                                landscapeSplitMode = landscapeSplitMode,
+                                numSlices = numSlices
+                            )
+                        }
                     }
                 }
             }
@@ -2919,6 +3051,8 @@ fun HUDTopBar(
     isReadingRulerEnabled: Boolean = false,
     isMagnifierEnabled: Boolean = false,
     hdMode: Boolean = false,
+    pdfEngineSetting: String = "PDFIUM",
+    onTogglePdfEngine: () -> Unit = {},
     onBack: () -> Unit,
     onToggleOutline: () -> Unit,
     onToggleDrawMode: () -> Unit,
@@ -2964,11 +3098,43 @@ fun HUDTopBar(
                 )
             }
 
+            // PDF Engine Toggle Chip
+            Surface(
+                onClick = onTogglePdfEngine,
+                shape = RoundedCornerShape(12.dp),
+                color = if (pdfEngineSetting == "NATIVE") Color(0xFF4CAF50).copy(alpha = 0.25f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.2f),
+                border = BorderStroke(1.dp, if (pdfEngineSetting == "NATIVE") Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary),
+                modifier = Modifier
+                    .padding(horizontal = 4.dp)
+                    .testTag("pdf_engine_toggle_chip")
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 4.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Build,
+                        contentDescription = "PDF Engine",
+                        tint = if (pdfEngineSetting == "NATIVE") Color(0xFF4CAF50) else MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(13.dp)
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Text(
+                        text = if (pdfEngineSetting == "NATIVE") "Native" else "PDFium",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
+                    )
+                }
+            }
+
             // Sketch Mode button
             if (isDrawModeSupported) {
                 IconButton(
-                    onClick = onToggleDrawMode,
+                    onClick = { if (pdfEngineSetting != "NATIVE") onToggleDrawMode() },
+                    enabled = pdfEngineSetting != "NATIVE",
                     modifier = Modifier
+                        .alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
                         .background(
                             if (isDrawModeOn) MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
                             else Color.Transparent,
@@ -2982,7 +3148,13 @@ fun HUDTopBar(
 
             // Outline / Chapters button
             if (isOutlineEnabled) {
-                IconButton(onClick = onToggleOutline, modifier = Modifier.testTag("outline_drawer_toggle")) {
+                IconButton(
+                    onClick = { if (pdfEngineSetting != "NATIVE") onToggleOutline() },
+                    enabled = pdfEngineSetting != "NATIVE",
+                    modifier = Modifier
+                        .alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
+                        .testTag("outline_drawer_toggle")
+                ) {
                     Icon(Icons.Default.FormatListNumbered, contentDescription = "Outline", tint = Color.White)
                 }
             }
@@ -3342,6 +3514,8 @@ fun HUDBottomBar(
     viewModel: ManhwaViewModel,
     isOutlineEnabled: Boolean,
     isMagnifierEnabled: Boolean,
+    pdfEngineSetting: String = "PDFIUM",
+    onTogglePdfEngine: () -> Unit = {},
     onMagnifierToggle: (Boolean) -> Unit,
     zoomScaleTarget: Float,
     onZoomScaleChange: (Float) -> Unit,
@@ -3980,15 +4154,21 @@ fun HUDBottomBar(
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
                 // View enhancer, zoom, and scroll toggles
-                Row {
+                Row(verticalAlignment = Alignment.CenterVertically) {
                     if (isViewEnhancerEnabled) {
-                        IconButton(onClick = { 
-                            showEnhancerControls = !showEnhancerControls 
-                            if (showEnhancerControls) {
-                                showZoomControls = false
-                                showScrollControls = false
-                            }
-                        }) {
+                        IconButton(
+                            onClick = { 
+                                if (pdfEngineSetting != "NATIVE") {
+                                    showEnhancerControls = !showEnhancerControls 
+                                    if (showEnhancerControls) {
+                                        showZoomControls = false
+                                        showScrollControls = false
+                                    }
+                                }
+                            },
+                            enabled = pdfEngineSetting != "NATIVE",
+                            modifier = Modifier.alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
+                        ) {
                             Icon(
                                 Icons.Default.Settings,
                                 contentDescription = "Enhance",
@@ -3997,13 +4177,19 @@ fun HUDBottomBar(
                         }
                     }
                     
-                    IconButton(onClick = { 
-                        showZoomControls = !showZoomControls 
-                        if (showZoomControls) {
-                            showEnhancerControls = false
-                            showScrollControls = false
-                        }
-                    }) {
+                    IconButton(
+                        onClick = { 
+                            if (pdfEngineSetting != "NATIVE") {
+                                showZoomControls = !showZoomControls 
+                                if (showZoomControls) {
+                                    showEnhancerControls = false
+                                    showScrollControls = false
+                                }
+                            }
+                        },
+                        enabled = pdfEngineSetting != "NATIVE",
+                        modifier = Modifier.alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
+                    ) {
                         Icon(
                             Icons.Default.Search,
                             contentDescription = "Zoom & Focus",
@@ -4011,6 +4197,7 @@ fun HUDBottomBar(
                         )
                     }
 
+                    // Auto-scroll toggle (ACTIVE in both Native and PDFium mode)
                     IconButton(onClick = { 
                         showScrollControls = !showScrollControls 
                         if (showScrollControls) {
@@ -4022,6 +4209,18 @@ fun HUDBottomBar(
                             imageVector = Icons.Default.PlayArrow,
                             contentDescription = "Auto-Scroll",
                             tint = if (showScrollControls) MaterialTheme.colorScheme.primary else if (autoScrollSpeed > 0f) MaterialTheme.colorScheme.secondary else Color.White
+                        )
+                    }
+
+                    // Engine switch toggle button (ACTIVE in both modes)
+                    IconButton(
+                        onClick = onTogglePdfEngine,
+                        modifier = Modifier.testTag("engine_toggle_bottom_bar_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Build,
+                            contentDescription = "Switch Engine",
+                            tint = if (pdfEngineSetting == "NATIVE") Color(0xFF4CAF50) else Color.LightGray
                         )
                     }
                 }
@@ -4501,6 +4700,7 @@ fun getAdjustedColorMatrix(
 // --- SCREEN: Lobby Tab (Centralized Options, Analysis, Settings & Presets) ---
 @Composable
 fun LobbyScreen(viewModel: ManhwaViewModel) {
+    val pdfEngineSetting by viewModel.pdfEngineSetting.collectAsStateWithLifecycle()
     val qualitySelectionEnabled by viewModel.qualitySelectionEnabled.collectAsStateWithLifecycle()
     val qualityLevel by viewModel.qualityLevel.collectAsStateWithLifecycle()
     val maxStorageAllocation by viewModel.maxStorageAllocation.collectAsStateWithLifecycle()
@@ -4553,6 +4753,8 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
     var searchQuery by remember { mutableStateOf("") }
     var expandedHeaderId by remember { mutableStateOf<String?>("library_shelf") }
     var favoriteHeaderIds by remember { mutableStateOf(setOf("library_shelf", "perf_rendering", "display_theme")) }
+    var showBackupDialog by remember { mutableStateOf(false) }
+    var importJsonInput by remember { mutableStateOf("") }
 
     LaunchedEffect(Unit, qualityLevel, qualitySelectionEnabled) {
         cacheSizeText = viewModel.getMemoryCacheSizeText()
@@ -4714,6 +4916,60 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                 searchKeywords = "pdf quality resolution scale memory cache ram rendering bitmap gc text mode",
                 content = {
                     Column(modifier = Modifier.fillMaxWidth()) {
+                        // ACTIVE PDF RENDER ENGINE CARD
+                        Card(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(bottom = 12.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(
+                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                            ),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                        ) {
+                            Column(modifier = Modifier.padding(12.dp)) {
+                                Text("ACTIVE PDF RENDER ENGINE", fontWeight = FontWeight.Black, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = if (pdfEngineSetting == "NATIVE") "Native Android Engine Active: Renders 100% direct high resolution native pages with zero memory overhead. Other features are disabled for maximum speed."
+                                           else "PDFium Engine Active: Supports full image enhancements, preset filters, sketch mode, and custom color adjustments.",
+                                    fontSize = 11.sp,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                )
+                                Spacer(modifier = Modifier.height(10.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { viewModel.setPdfEngineSetting("PDFIUM") },
+                                        modifier = Modifier.weight(1f).testTag("engine_pdfium_button"),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.outlinedButtonColors(
+                                            containerColor = if (pdfEngineSetting == "PDFIUM") MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
+                                            contentColor = if (pdfEngineSetting == "PDFIUM") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
+                                        ),
+                                        border = BorderStroke(1.5.dp, if (pdfEngineSetting == "PDFIUM") MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.3f))
+                                    ) {
+                                        Text("PDFium Engine", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+
+                                    OutlinedButton(
+                                        onClick = { viewModel.setPdfEngineSetting("NATIVE") },
+                                        modifier = Modifier.weight(1f).testTag("engine_native_button"),
+                                        shape = RoundedCornerShape(8.dp),
+                                        colors = ButtonDefaults.outlinedButtonColors(
+                                            containerColor = if (pdfEngineSetting == "NATIVE") Color(0xFF4CAF50).copy(alpha = 0.2f) else Color.Transparent,
+                                            contentColor = if (pdfEngineSetting == "NATIVE") Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurface
+                                        ),
+                                        border = BorderStroke(1.5.dp, if (pdfEngineSetting == "NATIVE") Color(0xFF4CAF50) else Color.Gray.copy(alpha = 0.3f))
+                                    ) {
+                                        Text("Native Engine", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                                    }
+                                }
+                            }
+                        }
+
                         // PDF Quality Switch
                         Row(
                             modifier = Modifier.fillMaxWidth(),
@@ -5419,6 +5675,7 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                             }
                             Button(
                                 onClick = {
+                                    viewModel.clearDiskCache()
                                     Toast.makeText(context, "Disk cache cleared!", Toast.LENGTH_SHORT).show()
                                 },
                                 modifier = Modifier.weight(1f),
@@ -5426,6 +5683,81 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                                 shape = RoundedCornerShape(10.dp)
                             ) {
                                 Text("Clear Disk Cache", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer)
+                            }
+                        }
+                    }
+                }
+            ),
+            LobbyHeaderSection(
+                id = "data_backup_settings",
+                title = "Data Backup & Settings Manager",
+                subtitle = "Export / import settings JSON, save reading progress & clear sketches",
+                icon = Icons.Default.Save,
+                searchKeywords = "data backup settings export import save restore json clear sketches history",
+                content = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("BACKUP & SETTINGS PERSISTENCE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    val json = viewModel.exportSettingsJson()
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = ClipData.newPlainText("Manhwa Reader Settings", json)
+                                    clipboard.setPrimaryClip(clip)
+                                    Toast.makeText(context, "Settings JSON copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Export Settings", fontSize = 11.sp)
+                            }
+
+                            Button(
+                                onClick = {
+                                    showBackupDialog = true
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Import Settings", fontSize = 11.sp)
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                        ) {
+                            Button(
+                                onClick = {
+                                    viewModel.clearAllSketches()
+                                    Toast.makeText(context, "Drawing sketches & annotations cleared!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Clear Sketches", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer)
+                            }
+
+                            Button(
+                                onClick = {
+                                    viewModel.clearMemoryCache()
+                                    Toast.makeText(context, "RAM cache purged!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
+                                shape = RoundedCornerShape(10.dp)
+                            ) {
+                                Text("Purge Memory", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer)
                             }
                         }
                     }
@@ -5777,6 +6109,50 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                     }
                 }
             }
+        }
+
+        if (showBackupDialog) {
+            AlertDialog(
+                onDismissRequest = { showBackupDialog = false },
+                title = { Text("Import Settings Backup", fontWeight = FontWeight.Bold) },
+                text = {
+                    Column {
+                        Text("Paste your exported settings JSON string below to restore all app preferences:", fontSize = 12.sp)
+                        Spacer(modifier = Modifier.height(8.dp))
+                        OutlinedTextField(
+                            value = importJsonInput,
+                            onValueChange = { importJsonInput = it },
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(150.dp),
+                            placeholder = { Text("Paste JSON here...", fontSize = 12.sp) }
+                        )
+                    }
+                },
+                confirmButton = {
+                    TextButton(
+                        onClick = {
+                            if (importJsonInput.isNotBlank()) {
+                                val success = viewModel.importSettingsJson(importJsonInput)
+                                if (success) {
+                                    Toast.makeText(context, "Settings restored successfully!", Toast.LENGTH_SHORT).show()
+                                    showBackupDialog = false
+                                    importJsonInput = ""
+                                } else {
+                                    Toast.makeText(context, "Invalid JSON format!", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    ) {
+                        Text("Restore")
+                    }
+                },
+                dismissButton = {
+                    TextButton(onClick = { showBackupDialog = false }) {
+                        Text("Cancel")
+                    }
+                }
+            )
         }
     }
 }

@@ -14,10 +14,25 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
         if (!exists()) mkdirs()
     }
 
-    // Memory Cache for recently viewed pages (no limit / RAM cap removed)
-    private val memoryCache = object : LruCache<String, Bitmap>(Int.MAX_VALUE) {
+    // Memory Cache for recently viewed pages (capped to ~30MB)
+    private val memoryCache = object : LruCache<String, Bitmap>(30 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int {
             return value.byteCount
+        }
+    }
+
+    fun freeRamExceptCurrentPage(currentPageIndex: Int, keepAdjacent: Boolean = false) {
+        val snapshot = memoryCache.snapshot()
+        val pagesToKeep = if (keepAdjacent) {
+            setOf(currentPageIndex - 1, currentPageIndex, currentPageIndex + 1)
+        } else {
+            setOf(currentPageIndex)
+        }
+        for ((key, _) in snapshot) {
+            val pageNum = key.substringBefore("_").toIntOrNull()
+            if (pageNum != null && pageNum !in pagesToKeep) {
+                memoryCache.remove(key)
+            }
         }
     }
 

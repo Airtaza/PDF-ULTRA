@@ -28,9 +28,10 @@ class ManhwaPdfRenderer(
     
     private val webPCacheManager = WebPCacheManager(context, file.nameWithoutExtension)
 
-    // Cache to hold rendered page bitmaps. RAM cap removed.
+    // Cache to hold rendered page bitmaps (capped to max 50MB RAM)
     private val memoryCache: LruCache<String, Bitmap> = run {
-        object : LruCache<String, Bitmap>(Int.MAX_VALUE) {
+        val cacheSizeBytes = (maxCacheSizeMb.coerceIn(20, 50) * 1024 * 1024)
+        object : LruCache<String, Bitmap>(cacheSizeBytes) {
             override fun sizeOf(key: String, value: Bitmap): Int {
                 return value.byteCount
             }
@@ -38,12 +39,35 @@ class ManhwaPdfRenderer(
     }
 
     fun resizeCache(newMaxCacheSizeMb: Int) {
-        memoryCache.resize(Int.MAX_VALUE)
+        val cacheSizeBytes = (newMaxCacheSizeMb.coerceIn(20, 50) * 1024 * 1024)
+        memoryCache.resize(cacheSizeBytes)
     }
 
     fun clearMemoryCache() {
         memoryCache.evictAll()
         webPCacheManager.clearMemoryCache()
+    }
+
+    suspend fun clearDiskCache() {
+        memoryCache.evictAll()
+        webPCacheManager.clearCache()
+    }
+
+    fun freeRamExceptCurrentPage(currentPageIndex: Int, keepAdjacent: Boolean = false) {
+        val snapshot = memoryCache.snapshot()
+        val pagesToKeep = if (keepAdjacent) {
+            setOf(currentPageIndex - 1, currentPageIndex, currentPageIndex + 1)
+        } else {
+            setOf(currentPageIndex)
+        }
+        for ((key, _) in snapshot) {
+            val pageNum = key.substringBefore("_").toIntOrNull()
+            if (pageNum != null && pageNum !in pagesToKeep) {
+                memoryCache.remove(key)
+            }
+        }
+        webPCacheManager.freeRamExceptCurrentPage(currentPageIndex, keepAdjacent)
+        System.gc()
     }
 
     val pageCount: Int
@@ -194,13 +218,29 @@ class ManhwaPdfRenderer(
                     if (pixelRenderHeight <= 0) return@synchronized null
                     if (!this@withContext.isActive) return@synchronized null
 
+                    // Proactive RAM check before bitmap creation
+                    val runtime = Runtime.getRuntime()
+                    val maxMem = runtime.maxMemory()
+                    val usedMem = runtime.totalMemory() - runtime.freeMemory()
+                    if (usedMem > maxMem * 0.65) {
+                        freeRamExceptCurrentPage(pageIndex, keepAdjacent = false)
+                    }
+
                     // PdfRenderer strictly requires ARGB_8888 format
                     val config = Bitmap.Config.ARGB_8888
                     val bmp = try {
                         Bitmap.createBitmap(totalWidth, pixelRenderHeight, config)
                     } catch (e: OutOfMemoryError) {
                         onOOM()
-                        return@synchronized null
+                        freeRamExceptCurrentPage(pageIndex, keepAdjacent = false)
+                        System.gc()
+                        try {
+                            val lowerWidth = (totalWidth * 0.75f).toInt().coerceAtLeast(200)
+                            val lowerHeight = (pixelRenderHeight * 0.75f).toInt().coerceAtLeast(200)
+                            Bitmap.createBitmap(lowerWidth, lowerHeight, config)
+                        } catch (e2: OutOfMemoryError) {
+                            return@synchronized null
+                        }
                     }
                     
                     // Fill with white background, as PdfRenderer draws on top and many PDFs have transparent backgrounds

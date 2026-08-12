@@ -87,7 +87,14 @@ class MainActivity : ComponentActivity() {
         if (level >= android.content.ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW ||
             level == android.content.ComponentCallbacks2.TRIM_MEMORY_MODERATE ||
             level == android.content.ComponentCallbacks2.TRIM_MEMORY_COMPLETE) {
-            viewModel.clearMemoryCache()
+            viewModel.freeRamExceptCurrentPage(keepAdjacent = false)
+        } else {
+            viewModel.freeRamExceptCurrentPage(keepAdjacent = true)
         }
+    }
+
+    override fun onLowMemory() {
+        super.onLowMemory()
+        viewModel.freeRamExceptCurrentPage(keepAdjacent = false)
     }
 }
