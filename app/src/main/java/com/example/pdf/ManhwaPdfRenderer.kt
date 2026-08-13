@@ -152,7 +152,17 @@ class ManhwaPdfRenderer(
     ): Bitmap? = withContext(Dispatchers.IO) {
         if (!this@withContext.isActive) return@withContext null
 
-        val scaleStr = String.format(java.util.Locale.US, "%.2f", scaleFactor)
+        val aspect = getPageAspectRatio(pageIndex)
+        val halfPageAspectRatio = if (landscapeSplitMode != "NONE") 2 * aspect else aspect
+
+        var safeScaleFactor = scaleFactor
+        val basePixels = targetWidth * (targetWidth * halfPageAspectRatio)
+        val maxPixels = 4500000f
+        if (basePixels * safeScaleFactor * safeScaleFactor > maxPixels) {
+            safeScaleFactor = kotlin.math.sqrt(maxPixels / basePixels)
+        }
+
+        val scaleStr = String.format(java.util.Locale.US, "%.2f", safeScaleFactor)
         val cacheKey = if (isLowResPlaceholder) {
             "${pageIndex}_low_${landscapeSplitMode}"
         } else {
@@ -200,23 +210,22 @@ class ManhwaPdfRenderer(
                     val pageAspectRatio = heightPt.toFloat() / widthPt.toFloat()
 
                     val isSplit = landscapeSplitMode != "NONE"
-                    val halfPageAspectRatio = if (isSplit) 2f * pageAspectRatio else pageAspectRatio
 
                     // Use targetWidth as base for all calculations to maintain consistency between slices
-                    val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
+                    val totalWidth = (targetWidth * safeScaleFactor).toInt().coerceAtLeast(400)
                     val totalHeight = (totalWidth * halfPageAspectRatio).toInt().coerceAtLeast(400)
 
                     // Calculate slices based on the base page height (at scale 1.0) to keep numSlices stable
                     val basePageHeight = targetWidth * halfPageAspectRatio
                     val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
 
-                    val pixelSliceY = if (isLowResPlaceholder) 0 else (sliceIndex * sliceHeight * scaleFactor).toInt()
+                    val pixelSliceY = if (isLowResPlaceholder) 0 else (sliceIndex * sliceHeight * safeScaleFactor).toInt()
                     val pixelRenderHeight = if (isLowResPlaceholder) {
                         totalHeight 
                     } else if (sliceIndex == numSlices - 1) {
                         totalHeight - pixelSliceY
                     } else {
-                        ((sliceIndex + 1) * sliceHeight * scaleFactor).toInt() - pixelSliceY
+                        ((sliceIndex + 1) * sliceHeight * safeScaleFactor).toInt() - pixelSliceY
                     }
 
                     if (pixelRenderHeight <= 0) return@synchronized null
@@ -315,10 +324,18 @@ class ManhwaPdfRenderer(
     ): Bitmap? {
         val aspect = getPageAspectRatio(pageIndex)
         val halfAspect = if (landscapeSplitMode != "NONE") 2 * aspect else aspect
-        val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
+
+        var safeScaleFactor = scaleFactor
+        val basePixels = targetWidth * (targetWidth * halfAspect)
+        val maxPixels = 4500000f
+        if (basePixels * safeScaleFactor * safeScaleFactor > maxPixels) {
+            safeScaleFactor = kotlin.math.sqrt(maxPixels / basePixels)
+        }
+
+        val totalWidth = (targetWidth * safeScaleFactor).toInt().coerceAtLeast(400)
         val totalHeight = (totalWidth * halfAspect).toInt().coerceAtLeast(400)
         return renderPageSlice(
-            pageIndex, targetWidth, 0, totalHeight, scaleFactor,
+            pageIndex, targetWidth, 0, totalHeight, safeScaleFactor,
             qualitySelectionEnabled, qualityLevel, qualityCompression, maxStorageAllocationMb,
             bitmapConfig = bitmapConfig,
             landscapeSplitMode = landscapeSplitMode

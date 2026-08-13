@@ -1541,7 +1541,12 @@ class ManhwaViewModel(private val application: Application, private val reposito
         bitmap
     }
 
-    suspend fun renderPage(pageIndex: Int, targetWidth: Int, landscapeSplitMode: String = "NONE"): Bitmap? = withContext(Dispatchers.IO) {
+    suspend fun renderPage(
+        pageIndex: Int, 
+        targetWidth: Int, 
+        scaleFactor: Float? = null,
+        landscapeSplitMode: String = "NONE"
+    ): Bitmap? = withContext(Dispatchers.IO) {
         val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext null
         val manhwa = tab.manhwa ?: return@withContext null
         val file = File(manhwa.filePath)
@@ -1559,7 +1564,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         } ?: return@withContext null
 
         val isCacheEnabled = _qualitySelectionEnabled.value
-        val scale = activeScaleFactor.value
+        val scale = scaleFactor ?: activeScaleFactor.value
         val qualityCompression = _webpQuality.value
         val maxStorage = _maxStorageAllocation.value
 

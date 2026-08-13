@@ -1677,9 +1677,16 @@ fun ComicReaderScreen(
         val newZoom = (zoomScaleTarget * zoomChange).coerceIn(1.0f, 4.0f)
         zoomScaleTarget = newZoom
         
-        if (newZoom > 1.0f && panChange.x != 0f) {
-            coroutineScope.launch {
-                horizScrollState.scrollBy(-panChange.x)
+        if (newZoom > 1.0f) {
+            if (panChange.x != 0f) {
+                coroutineScope.launch {
+                    horizScrollState.scrollBy(-panChange.x)
+                }
+            }
+            if (panChange.y != 0f) {
+                coroutineScope.launch {
+                    lazyListState.scrollBy(-panChange.y)
+                }
             }
         }
     }
@@ -1692,9 +1699,19 @@ fun ComicReaderScreen(
         }
     }
 
-    val zoomGestureModifier = if (!isMagnifierEnabled && !isDrawModeOn && !isScreenLocked) {
+    val zoomGestureModifier = if (!isMagnifierEnabled && !isDrawModeOn && !isScreenLocked && pdfEngineSetting != "NATIVE") {
         Modifier.transformable(state = transformableState)
     } else Modifier
+
+    LaunchedEffect(pdfEngineSetting) {
+        if (pdfEngineSetting == "NATIVE") {
+            zoomScaleTarget = 1.0f
+            viewModel.setActiveZoomScale(1.0f)
+            isDrawModeOn = false
+            viewModel.setAutoScrollSpeed(0f)
+            pausedAutoScrollSpeed = null
+        }
+    }
 
     // Chapter navigation position memory restorer (Index + Offset)
     val activeManhwaId = activeManhwa?.id ?: 0L
@@ -1838,7 +1855,7 @@ fun ComicReaderScreen(
 
         LazyColumn(
             state = lazyListState,
-            userScrollEnabled = !isDrawModeOn, // Scrolling remains enabled when screen lock is active
+            userScrollEnabled = !isDrawModeOn && (animatedZoomScale <= 1.0f), // Freeze standard scrolling when zooming to allow dedicated panning
             modifier = Modifier
                 .width(with(LocalDensity.current) { (componentWidth * animatedZoomScale).toDp() })
                 .fillMaxHeight()
@@ -1936,7 +1953,7 @@ fun ComicReaderScreen(
                             }
                         },
                         onDoubleTap = { fractionX, fractionY, aspect ->
-                            if (isScreenLocked) return@PdfPageItem
+                            if (isScreenLocked || pdfEngineSetting == "NATIVE") return@PdfPageItem
                             val viewportHeight = lazyListState.layoutInfo.viewportSize.height
                             val pageHeight = componentWidth * aspect
                             val targetOffsetY = (fractionY * pageHeight * doubleTapZoomScale) - (viewportHeight / 2f)
@@ -2230,15 +2247,6 @@ fun ComicReaderScreen(
             IconButton(
                 onClick = { isScreenLocked = !isScreenLocked },
                 modifier = Modifier
-                    .background(
-                        if (isScreenLocked) Color.Black.copy(alpha = 0.75f) else Color.Black.copy(alpha = 0.35f),
-                        CircleShape
-                    )
-                    .border(
-                        width = 1.dp,
-                        color = if (isScreenLocked) Color(0xFFFFD700) else Color.White.copy(alpha = 0.3f),
-                        shape = CircleShape
-                    )
                     .testTag("fullscreen_lock_button")
             ) {
                 Icon(
@@ -2251,7 +2259,7 @@ fun ComicReaderScreen(
         }
 
         // Floating Auto-Scroll Play/Pause Controller FAB at Bottom Right Corner
-        if (autoScrollSpeed > 0f || pausedAutoScrollSpeed != null) {
+        if ((autoScrollSpeed > 0f || pausedAutoScrollSpeed != null) && pdfEngineSetting != "NATIVE") {
             var showAutoScrollSpeedPopup by remember { mutableStateOf(false) }
 
             Box(
@@ -2647,16 +2655,25 @@ fun PdfPageSliceItem(
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
     val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
 
-    var sliceBitmap by remember(pageIndex, sliceIndex, sliceHeight, qualityLevel, scaleFactor, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
+    var isVisible by remember { mutableStateOf(true) }
+    val renderZoomStep = remember(zoomScale) {
+        (Math.round(zoomScale * 2f) / 2f).coerceIn(1.0f, 4.0f)
+    }
+
+    var sliceBitmap by remember(pageIndex, sliceIndex, sliceHeight, qualityLevel, scaleFactor, renderZoomStep, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
     var isRendering by remember { mutableStateOf(false) }
 
-    DisposableEffect(pageIndex, sliceIndex, sliceHeight, qualityLevel, scaleFactor, landscapeSplitMode) {
+    DisposableEffect(pageIndex, sliceIndex, sliceHeight, qualityLevel, scaleFactor, renderZoomStep, landscapeSplitMode) {
         onDispose {
             sliceBitmap = null
         }
     }
 
-    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, qualityLevel, viewModel, landscapeSplitMode) {
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, renderZoomStep, qualityLevel, viewModel, landscapeSplitMode, isVisible) {
+        if (!isVisible) {
+            sliceBitmap = null
+            return@LaunchedEffect
+        }
         if (sliceBitmap != null) {
             return@LaunchedEffect
         }
@@ -2670,7 +2687,7 @@ fun PdfPageSliceItem(
             targetWidth = targetWidth,
             sliceIndex = sliceIndex,
             sliceHeight = sliceHeight,
-            scaleFactor = scaleFactor,
+            scaleFactor = scaleFactor * renderZoomStep,
             landscapeSplitMode = landscapeSplitMode
         )
         if (bitmap != null) {
@@ -2698,6 +2715,12 @@ fun PdfPageSliceItem(
         modifier = Modifier
             .fillMaxWidth()
             .height(with(density) { displaySliceHeightPx.toDp() })
+            .onGloballyPositioned { coordinates ->
+                val positionY = coordinates.positionInWindow().y
+                val height = coordinates.size.height
+                val screenHeight = coordinates.parentLayoutCoordinates?.size?.height ?: 2400
+                isVisible = positionY + height >= 0 && positionY <= screenHeight
+            }
     ) {
         val bitmap = sliceBitmap
         if (bitmap != null) {
@@ -2761,6 +2784,11 @@ fun PdfPageItem(
     var aspectRatio by remember { mutableStateOf<Float?>(null) }
     var isLoadingAspect by remember { mutableStateOf(true) }
 
+    var isVisible by remember { mutableStateOf(true) }
+    val renderZoomStep = remember(zoomScale) {
+        (Math.round(zoomScale * 2f) / 2f).coerceIn(1.0f, 4.0f)
+    }
+
     val exposure by viewModel.exposure.collectAsStateWithLifecycle()
     val highlights by viewModel.highlights.collectAsStateWithLifecycle()
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
@@ -2816,7 +2844,12 @@ fun PdfPageItem(
                     }
                 )
             }
-            .onGloballyPositioned { }
+            .onGloballyPositioned { coordinates ->
+                val positionY = coordinates.positionInWindow().y
+                val height = coordinates.size.height
+                val screenHeight = coordinates.parentLayoutCoordinates?.size?.height ?: 2400
+                isVisible = positionY + height >= 0 && positionY <= screenHeight
+            }
     ) {
         val aspect = aspectRatio
         if (isLoadingAspect || aspect == null) {
@@ -2845,7 +2878,7 @@ fun PdfPageItem(
             val pdfEngineSetting by viewModel.pdfEngineSetting.collectAsStateWithLifecycle()
 
             if (pdfEngineSetting == "NATIVE") {
-                var nativePageBitmap by remember(pageIndex, targetWidth, scaleFactor, qualityLevel, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
+                var nativePageBitmap by remember(pageIndex, targetWidth, scaleFactor, renderZoomStep, qualityLevel, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
 
                 val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
                 val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
@@ -2867,10 +2900,18 @@ fun PdfPageItem(
                     )
                 }
 
-                LaunchedEffect(pageIndex, targetWidth, scaleFactor, qualityLevel, landscapeSplitMode) {
+                LaunchedEffect(pageIndex, targetWidth, scaleFactor, renderZoomStep, qualityLevel, landscapeSplitMode, isVisible) {
+                    if (!isVisible) {
+                        nativePageBitmap = null
+                        return@LaunchedEffect
+                    }
+                    if (nativePageBitmap != null) {
+                        return@LaunchedEffect
+                    }
                     val bmp = viewModel.renderPage(
                         pageIndex = pageIndex,
                         targetWidth = targetWidth,
+                        scaleFactor = scaleFactor * renderZoomStep,
                         landscapeSplitMode = landscapeSplitMode
                     )
                     if (bmp != null) {
@@ -2878,7 +2919,7 @@ fun PdfPageItem(
                     }
                 }
 
-                DisposableEffect(pageIndex, targetWidth, scaleFactor, qualityLevel, landscapeSplitMode) {
+                DisposableEffect(pageIndex, targetWidth, scaleFactor, renderZoomStep, qualityLevel, landscapeSplitMode) {
                     onDispose {
                         // Directly unload page bitmap when scrolled off view in Native mode
                         nativePageBitmap = null
@@ -3118,7 +3159,13 @@ fun HUDTopBar(
                 .padding(horizontal = 8.dp, vertical = 12.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = onBack, modifier = Modifier.testTag("reader_back_button")) {
+            IconButton(
+                onClick = onBack,
+                enabled = pdfEngineSetting != "NATIVE",
+                modifier = Modifier
+                    .alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
+                    .testTag("reader_back_button")
+            ) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = Color.White)
             }
 
@@ -3218,7 +3265,13 @@ fun HUDTopBar(
 
             // Main Reader Menu Bar Button
             Box {
-                IconButton(onClick = { showTopMenu = true }, modifier = Modifier.testTag("top_menu_bar_button")) {
+                IconButton(
+                    onClick = { showTopMenu = true },
+                    enabled = pdfEngineSetting != "NATIVE",
+                    modifier = Modifier
+                        .alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
+                        .testTag("top_menu_bar_button")
+                ) {
                     Icon(Icons.Default.Menu, contentDescription = "Reader Menu", tint = Color.White)
                 }
 
@@ -4254,14 +4307,20 @@ fun HUDBottomBar(
                         )
                     }
 
-                    // Auto-scroll toggle (ACTIVE in both Native and PDFium mode)
-                    IconButton(onClick = { 
-                        showScrollControls = !showScrollControls 
-                        if (showScrollControls) {
-                            showEnhancerControls = false
-                            showZoomControls = false
-                        }
-                    }) {
+                    // Auto-scroll toggle (DISABLED in Native mode)
+                    IconButton(
+                        onClick = { 
+                            if (pdfEngineSetting != "NATIVE") {
+                                showScrollControls = !showScrollControls 
+                                if (showScrollControls) {
+                                    showEnhancerControls = false
+                                    showZoomControls = false
+                                }
+                            }
+                        },
+                        enabled = pdfEngineSetting != "NATIVE",
+                        modifier = Modifier.alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
+                    ) {
                         Icon(
                             imageVector = Icons.Default.PlayArrow,
                             contentDescription = "Auto-Scroll",
@@ -4286,12 +4345,13 @@ fun HUDBottomBar(
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(
                         onClick = onNavigateBack,
-                        enabled = canNavigateBack
+                        enabled = canNavigateBack && pdfEngineSetting != "NATIVE",
+                        modifier = Modifier.alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowBack,
                             contentDescription = "Prev Chapter History",
-                            tint = if (canNavigateBack) Color.White else Color.DarkGray
+                            tint = if (canNavigateBack && pdfEngineSetting != "NATIVE") Color.White else Color.DarkGray
                         )
                     }
 
@@ -4304,19 +4364,26 @@ fun HUDBottomBar(
 
                     IconButton(
                         onClick = onNavigateForward,
-                        enabled = canNavigateForward
+                        enabled = canNavigateForward && pdfEngineSetting != "NATIVE",
+                        modifier = Modifier.alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
                     ) {
                         Icon(
                             imageVector = Icons.AutoMirrored.Filled.ArrowForward,
                             contentDescription = "Next Chapter History",
-                            tint = if (canNavigateForward) Color.White else Color.DarkGray
+                            tint = if (canNavigateForward && pdfEngineSetting != "NATIVE") Color.White else Color.DarkGray
                         )
                     }
                 }
 
                 // Chapter Bookmarker button
                 if (isOutlineEnabled) {
-                    IconButton(onClick = onAddBookmarkClick, modifier = Modifier.testTag("add_bookmark_hud")) {
+                    IconButton(
+                        onClick = { if (pdfEngineSetting != "NATIVE") onAddBookmarkClick() },
+                        enabled = pdfEngineSetting != "NATIVE",
+                        modifier = Modifier
+                            .alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
+                            .testTag("add_bookmark_hud")
+                    ) {
                         Icon(Icons.Default.Add, contentDescription = "Add Chapter Mark", tint = Color.White)
                     }
                 } else {
