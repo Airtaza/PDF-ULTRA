@@ -24,6 +24,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.gestures.detectDragGestures
+import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.scrollBy
 import androidx.compose.foundation.gestures.animateScrollBy
 import androidx.compose.foundation.gestures.rememberTransformableState
@@ -73,6 +74,9 @@ import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.magnifier
 import androidx.compose.foundation.gestures.detectTransformGestures
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
+import kotlinx.coroutines.delay
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import kotlinx.coroutines.flow.first
 import com.example.data.Bookmark
@@ -1622,6 +1626,15 @@ fun ComicReaderScreen(
     val pageSpacing by viewModel.pageSpacing.collectAsStateWithLifecycle()
     val keepScreenOn by viewModel.keepScreenOn.collectAsStateWithLifecycle()
     val volumeScrollEnabled by viewModel.volumeScrollEnabled.collectAsStateWithLifecycle()
+    val canUndoViewSettings by viewModel.canUndoViewSettings.collectAsStateWithLifecycle()
+    val canRedoViewSettings by viewModel.canRedoViewSettings.collectAsStateWithLifecycle()
+    val drawUndoVersion by viewModel.drawUndoStateVersion.collectAsStateWithLifecycle()
+    val readingDirection by viewModel.readingDirection.collectAsStateWithLifecycle()
+    val borderTrimEnabled by viewModel.borderTrimEnabled.collectAsStateWithLifecycle()
+    val eyeRestReminderEnabled by viewModel.eyeRestReminderEnabled.collectAsStateWithLifecycle()
+    val eyeRestIntervalMinutes by viewModel.eyeRestIntervalMinutes.collectAsStateWithLifecycle()
+    val volumeKeyNavigation by viewModel.volumeKeyNavigation.collectAsStateWithLifecycle()
+    val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsStateWithLifecycle()
 
     val currentView = androidx.compose.ui.platform.LocalView.current
     DisposableEffect(keepScreenOn) {
@@ -1635,6 +1648,9 @@ fun ComicReaderScreen(
 
     var isTransforming by remember { mutableStateOf(false) }
     var zoomScaleTarget by remember { mutableFloatStateOf(1.0f) }
+    var isDraggingScrollbar by remember { mutableStateOf(false) }
+    var showDisplayThemePopup by remember { mutableStateOf(false) }
+    var displayPopupHeightDp by remember { mutableFloatStateOf(340f) }
 
     LaunchedEffect(activeZoomScale) {
         if (!isTransforming) {
@@ -1853,9 +1869,11 @@ fun ComicReaderScreen(
         // Chapter reach auto-load checking removed to prevent chaotic scroll jumping
         // Users must tap the Next/Prev chapter cards to navigate
 
+        val isZoomActive = isTransforming || zoomScaleTarget > 1.05f || animatedZoomScale > 1.05f
+
         LazyColumn(
             state = lazyListState,
-            userScrollEnabled = !isDrawModeOn && (animatedZoomScale <= 1.0f), // Freeze standard scrolling when zooming to allow dedicated panning
+            userScrollEnabled = !isDrawModeOn && !isZoomActive && !isDraggingScrollbar, // Freeze standard scrolling when zooming or dragging scrollbar
             modifier = Modifier
                 .width(with(LocalDensity.current) { (componentWidth * animatedZoomScale).toDp() })
                 .fillMaxHeight()
@@ -2105,7 +2123,6 @@ fun ComicReaderScreen(
         val totalVirtualPages = virtualPages.size
         if (totalVirtualPages > 1 && !isDrawModeOn) {
             val density = LocalDensity.current
-            var isDraggingScrollbar by remember { mutableStateOf(false) }
 
             val firstVisibleIndex = lazyListState.firstVisibleItemIndex
             val firstVisibleOffset = lazyListState.firstVisibleItemScrollOffset
@@ -2122,7 +2139,7 @@ fun ComicReaderScreen(
             }
 
             if (areControlsVisible) {
-                // --- NORMAL MODE SCROLLBAR (Starts below top bar, ends above bottom bar, 10% Right Screen Strip) ---
+                // --- NORMAL MODE SCROLLBAR (Starts below top bar, ends above bottom bar, dedicated Right Screen Strip) ---
                 val isScrollActive = lazyListState.isScrollInProgress || isDraggingScrollbar
                 val thumbScale by androidx.compose.animation.core.animateFloatAsState(
                     targetValue = if (isScrollActive) 1.5f else 1.0f,
@@ -2133,14 +2150,61 @@ fun ComicReaderScreen(
                     modifier = Modifier
                         .align(Alignment.CenterEnd)
                         .fillMaxHeight()
-                        .fillMaxWidth(0.10f) // 10% dedicated scrollbar interaction strip
-                        .padding(top = 68.dp, bottom = 96.dp, end = 4.dp) // Starts below top bar and ends above bottom bar
+                        .width(44.dp) // 44dp dedicated scrollbar interaction strip
+                        .padding(top = 68.dp, bottom = 96.dp, end = 2.dp) // Starts below top bar and ends above bottom bar
                 ) {
                     val trackHeight = maxHeight
                     val trackHeightPx = with(density) { trackHeight.toPx() }
                     val thumbHeightPx = (trackHeightPx * (1f / totalVirtualPages.coerceAtLeast(8))).coerceIn(with(density) { 40.dp.toPx() }, with(density) { 100.dp.toPx() })
                     val maxScrollYPx = (trackHeightPx - thumbHeightPx).coerceAtLeast(0f)
                     val thumbOffsetPx = maxScrollYPx * progress
+
+                    // Touch interaction area covering the entire 44dp strip
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .pointerInput(totalVirtualPages, trackHeightPx, thumbHeightPx, maxScrollYPx) {
+                                awaitEachGesture {
+                                    val down = awaitFirstDown(requireUnconsumed = false)
+                                    isDraggingScrollbar = true
+                                    down.consume()
+
+                                    fun scrollToPosition(touchY: Float) {
+                                        val targetThumbY = (touchY - (thumbHeightPx / 2f)).coerceIn(0f, maxScrollYPx)
+                                        val newProgress = if (maxScrollYPx > 0f) targetThumbY / maxScrollYPx else 0f
+                                        val floatIndex = newProgress * (totalVirtualPages - 1)
+                                        val targetIndex = floatIndex.toInt().coerceIn(0, totalVirtualPages - 1)
+                                        val remainderFraction = floatIndex - targetIndex
+                                        val approxItemSize = lazyListState.layoutInfo.visibleItemsInfo.firstOrNull { it.index == targetIndex }?.size
+                                            ?: (componentWidth * 1.4f).toInt()
+                                        val scrollOffsetPx = (remainderFraction * approxItemSize).toInt()
+                                        coroutineScope.launch {
+                                            try {
+                                                lazyListState.scrollToItem(targetIndex, scrollOffsetPx)
+                                            } catch (e: Exception) {}
+                                        }
+                                    }
+
+                                    scrollToPosition(down.position.y)
+
+                                    while (true) {
+                                        val event = awaitPointerEvent()
+                                        val change = event.changes.firstOrNull { it.id == down.id } ?: event.changes.firstOrNull()
+                                        if (change != null) {
+                                            change.consume()
+                                            if (change.pressed) {
+                                                scrollToPosition(change.position.y)
+                                            } else {
+                                                break
+                                            }
+                                        } else {
+                                            break
+                                        }
+                                    }
+                                    isDraggingScrollbar = false
+                                }
+                            }
+                    )
 
                     // Track background line
                     Box(
@@ -2175,28 +2239,6 @@ fun ComicReaderScreen(
                                 color = Color.White.copy(alpha = 0.6f),
                                 shape = RoundedCornerShape(4.dp)
                             )
-                            .pointerInput(totalVirtualPages) {
-                                detectDragGestures(
-                                    onDragStart = { isDraggingScrollbar = true },
-                                    onDragEnd = { isDraggingScrollbar = false },
-                                    onDragCancel = { isDraggingScrollbar = false },
-                                    onDrag = { change, dragAmount ->
-                                        change.consume()
-                                        val currentY = (thumbOffsetPx + dragAmount.y).coerceIn(0f, maxScrollYPx)
-                                        val newProgress = if (maxScrollYPx > 0) currentY / maxScrollYPx else 0f
-                                        val floatIndex = newProgress * (totalVirtualPages - 1)
-                                        val targetIndex = floatIndex.toInt().coerceIn(0, totalVirtualPages - 1)
-                                        val remainderFraction = floatIndex - targetIndex
-                                        val approxItemSize = visibleItems.firstOrNull { it.index == targetIndex }?.size ?: (componentWidth * 1.4f).toInt()
-                                        val scrollOffsetPx = (remainderFraction * approxItemSize).toInt()
-                                        coroutineScope.launch {
-                                            try {
-                                                lazyListState.scrollToItem(targetIndex, scrollOffsetPx)
-                                            } catch (e: Exception) {}
-                                        }
-                                    }
-                                )
-                            }
                     )
                 }
             } else {
@@ -2429,7 +2471,8 @@ fun ComicReaderScreen(
                     showAddBookmarkDialog = true
                 },
                 onOpenLobby = { viewModel.openSettingsTab() },
-                onOpenViewEnhancer = { viewModel.openSettingsTab() }
+                onOpenViewEnhancer = { viewModel.openSettingsTab() },
+                onToggleDisplayTheme = { showDisplayThemePopup = !showDisplayThemePopup }
             )
         }
 
@@ -2442,8 +2485,8 @@ fun ComicReaderScreen(
                 .align(Alignment.TopCenter)
                 .fillMaxWidth()
         ) {
-            val canUndo = viewModel.canUndo(currentPage)
-            val canRedo = viewModel.canRedo(currentPage)
+            val canUndo = remember(currentPage, drawUndoVersion, sketches) { viewModel.canUndo(currentPage) }
+            val canRedo = remember(currentPage, drawUndoVersion, sketches) { viewModel.canRedo(currentPage) }
             val drawHighlighter by viewModel.activeDrawHighlighter.collectAsStateWithLifecycle()
             DrawingControlsBar(
                 currentColor = drawColor,
@@ -2461,9 +2504,126 @@ fun ComicReaderScreen(
             )
         }
 
+        // View Settings popup (Floating directly above bottom tab bar with live resizing & preview)
+        AnimatedVisibility(
+            visible = showDisplayThemePopup,
+            enter = slideInVertically(initialOffsetY = { it }) + fadeIn(),
+            exit = slideOutVertically(targetOffsetY = { it }) + fadeOut(),
+            modifier = Modifier
+                .align(Alignment.BottomCenter)
+                .padding(bottom = 12.dp)
+        ) {
+            DisplayThemeCanvasPopup(
+                currentHeightDp = displayPopupHeightDp,
+                onHeightChange = { displayPopupHeightDp = it },
+                canUndo = canUndoViewSettings,
+                canRedo = canRedoViewSettings,
+                onUndo = { viewModel.undoViewSettings() },
+                onRedo = { viewModel.redoViewSettings() },
+                onRecordSnapshot = { viewModel.pushViewSettingsSnapshotBeforeChange() },
+                onPushExplicitUndoSnapshot = { viewModel.pushExplicitUndoSnapshot(it) },
+                currentReaderTheme = readerTheme,
+                onReaderThemeChange = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setReaderTheme(it) 
+                },
+                customTint = customTint,
+                onCustomTintChange = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setCustomTint(it) 
+                },
+                pageSpacing = pageSpacing,
+                onPageSpacingChange = { viewModel.setPageSpacing(it) },
+                brightness = brightness,
+                onBrightnessChange = { viewModel.setBrightness(it) },
+                contrast = contrast,
+                onContrastChange = { viewModel.setContrast(it) },
+                saturation = saturation,
+                onSaturationChange = { viewModel.setSaturation(it) },
+                warmth = warmth,
+                onWarmthChange = { viewModel.setWarmth(it) },
+                gamma = gamma,
+                onGammaChange = { viewModel.setGamma(it) },
+                exposure = exposure,
+                onExposureChange = { viewModel.setExposure(it) },
+                highlights = highlights,
+                onHighlightsChange = { viewModel.setHighlights(it) },
+                shadows = shadows,
+                onShadowsChange = { viewModel.setShadows(it) },
+                colorMode = colorMode,
+                onColorModeChange = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setColorMode(it) 
+                },
+                presetFilter = presetFilter,
+                onPresetFilterChange = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setPresetFilter(it) 
+                },
+                onApplyDisplayPreset = { viewModel.applyDisplayPreset(it) },
+                autoGammaEnabled = autoGammaEnabled,
+                onToggleAutoGamma = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setAutoGammaEnabled(it) 
+                },
+                autoNightShift = autoNightShift,
+                onToggleAutoNightShift = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setAutoNightShift(it) 
+                },
+                mangaScanCrisper = mangaScanCrisper,
+                onToggleMangaScanCrisper = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setMangaScanCrisper(it) 
+                },
+                hdMode = hdMode,
+                onToggleHdMode = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.toggleHdMode() 
+                },
+                readingDirection = readingDirection,
+                onReadingDirectionChange = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setReadingDirection(it) 
+                },
+                swipeSensitivity = swipeSensitivity,
+                onSwipeSensitivityChange = { viewModel.setSwipeSensitivity(it) },
+                doubleTapZoomScale = doubleTapZoomScale,
+                onDoubleTapZoomScaleChange = { viewModel.setDoubleTapZoomScale(it) },
+                borderTrimEnabled = borderTrimEnabled,
+                onToggleBorderTrim = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setBorderTrimEnabled(it) 
+                },
+                eyeRestReminderEnabled = eyeRestReminderEnabled,
+                eyeRestIntervalMinutes = eyeRestIntervalMinutes,
+                onEyeRestChange = { enabled, interval ->
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setEyeRestSettings(enabled, interval)
+                },
+                volumeKeyNavigation = volumeKeyNavigation,
+                onToggleVolumeKeyNavigation = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setVolumeKeyNavigation(it) 
+                },
+                keepScreenOn = keepScreenOn,
+                onToggleKeepScreenOn = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setKeepScreenOn(it) 
+                },
+                hapticFeedbackEnabled = hapticFeedbackEnabled,
+                onToggleHapticFeedback = { 
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setHapticFeedbackEnabled(it) 
+                },
+                onResetSettings = { viewModel.resetViewEnhancerSettings() },
+                onClose = { showDisplayThemePopup = false }
+            )
+        }
+
         // Bottom HUD Bar (Chapter bookmark creator, status)
         AnimatedVisibility(
-            visible = !isDrawModeOn && areControlsVisible,
+            visible = !isDrawModeOn && areControlsVisible && !showDisplayThemePopup,
             enter = slideInVertically(initialOffsetY = { it }),
             exit = slideOutVertically(targetOffsetY = { it }),
             modifier = Modifier
@@ -2474,6 +2634,8 @@ fun ComicReaderScreen(
                 currentPage = currentPage,
                 totalPages = activeManhwa?.totalPages ?: 0,
                 isViewEnhancerEnabled = isViewEnhancerEnabled,
+                showDisplayThemePopup = showDisplayThemePopup,
+                onToggleDisplayThemePopup = { showDisplayThemePopup = !showDisplayThemePopup },
                 brightness = brightness,
                 contrast = contrast,
                 saturation = saturation,
@@ -2655,7 +2817,6 @@ fun PdfPageSliceItem(
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
     val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
 
-    var isVisible by remember { mutableStateOf(true) }
     val renderZoomStep = remember(zoomScale) {
         (Math.round(zoomScale * 2f) / 2f).coerceIn(1.0f, 4.0f)
     }
@@ -2669,11 +2830,7 @@ fun PdfPageSliceItem(
         }
     }
 
-    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, renderZoomStep, qualityLevel, viewModel, landscapeSplitMode, isVisible) {
-        if (!isVisible) {
-            sliceBitmap = null
-            return@LaunchedEffect
-        }
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, renderZoomStep, qualityLevel, viewModel, landscapeSplitMode) {
         if (sliceBitmap != null) {
             return@LaunchedEffect
         }
@@ -2715,12 +2872,6 @@ fun PdfPageSliceItem(
         modifier = Modifier
             .fillMaxWidth()
             .height(with(density) { displaySliceHeightPx.toDp() })
-            .onGloballyPositioned { coordinates ->
-                val positionY = coordinates.positionInWindow().y
-                val height = coordinates.size.height
-                val screenHeight = coordinates.parentLayoutCoordinates?.size?.height ?: 2400
-                isVisible = positionY + height >= 0 && positionY <= screenHeight
-            }
     ) {
         val bitmap = sliceBitmap
         if (bitmap != null) {
@@ -2784,7 +2935,6 @@ fun PdfPageItem(
     var aspectRatio by remember { mutableStateOf<Float?>(null) }
     var isLoadingAspect by remember { mutableStateOf(true) }
 
-    var isVisible by remember { mutableStateOf(true) }
     val renderZoomStep = remember(zoomScale) {
         (Math.round(zoomScale * 2f) / 2f).coerceIn(1.0f, 4.0f)
     }
@@ -2798,6 +2948,9 @@ fun PdfPageItem(
     val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsStateWithLifecycle()
 
     val hapticFeedback = androidx.compose.ui.platform.LocalHapticFeedback.current
+    val coroutineScope = rememberCoroutineScope()
+    var lastTapTime by remember { mutableLongStateOf(0L) }
+    var lastTapPosition by remember { mutableStateOf<Offset?>(null) }
 
     LaunchedEffect(pageIndex, viewModel, landscapeSplitMode) {
         isLoadingAspect = true
@@ -2812,43 +2965,75 @@ fun PdfPageItem(
             .fillMaxWidth()
             .background(Color.White)
             .pointerInput(isScreenLocked, doubleTapZoomScale, doubleTapResetEnabled, hapticFeedbackEnabled) {
-                detectTapGestures(
-                    onTap = {
-                        if (!isScreenLocked) {
-                            onPdfClick()
+                awaitEachGesture {
+                    val down = awaitFirstDown(requireUnconsumed = false)
+                    val initialDownTime = System.currentTimeMillis()
+                    val startPosition = down.position
+                    var isTapCandidate = true
+
+                    while (true) {
+                        val event = awaitPointerEvent()
+                        
+                        // If there is more than 1 finger, it is a multi-touch pinch/pan gesture
+                        if (event.changes.size > 1) {
+                            isTapCandidate = false
                         }
-                    },
-                    onDoubleTap = { tapOffset ->
-                        if (isScreenLocked) return@detectTapGestures
-                        if (hapticFeedbackEnabled) {
-                            try {
-                                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                            } catch (e: Exception) {
-                                // Fallback if not supported
+
+                        val allUp = event.changes.all { !it.pressed }
+                        if (allUp) {
+                            val upChange = event.changes.firstOrNull()
+                            if (isTapCandidate) {
+                                val clickDuration = System.currentTimeMillis() - initialDownTime
+                                val dx = (upChange?.position?.x ?: startPosition.x) - startPosition.x
+                                val dy = (upChange?.position?.y ?: startPosition.y) - startPosition.y
+                                val distance = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+
+                                if (clickDuration < 300 && distance < 40f) {
+                                    val now = System.currentTimeMillis()
+                                    // Double Tap Detection (within 300ms)
+                                    if (now - lastTapTime < 300) {
+                                        lastTapTime = 0L // Reset to prevent triple tap
+                                        
+                                        if (!isScreenLocked) {
+                                            if (hapticFeedbackEnabled) {
+                                                try {
+                                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                                } catch (e: Exception) {}
+                                            }
+                                            val currentActiveZoom = viewModel.activeZoomScale.value
+                                            if (currentActiveZoom > 1.05f) {
+                                                if (doubleTapResetEnabled) {
+                                                    viewModel.setActiveZoomScale(1.0f)
+                                                    onResetZoom?.invoke()
+                                                }
+                                            } else {
+                                                viewModel.setActiveZoomScale(doubleTapZoomScale)
+                                                val aspect = aspectRatio ?: 1.0f
+                                                val pageHeight = targetWidth * aspect
+                                                val fractionX = startPosition.x / targetWidth
+                                                val fractionY = startPosition.y / pageHeight
+                                                onDoubleTap(fractionX, fractionY, aspect)
+                                            }
+                                        }
+                                    } else {
+                                        // Single Tap Candidate
+                                        lastTapTime = now
+                                        coroutineScope.launch {
+                                            delay(250)
+                                            // If no second tap has overridden this timestamp, trigger single tap
+                                            if (lastTapTime == now) {
+                                                if (!isScreenLocked) {
+                                                    onPdfClick()
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                        }
-                        val currentActiveZoom = viewModel.activeZoomScale.value
-                        if (currentActiveZoom > 1.05f) {
-                            if (doubleTapResetEnabled) {
-                                viewModel.setActiveZoomScale(1.0f)
-                                onResetZoom?.invoke()
-                            }
-                        } else {
-                            viewModel.setActiveZoomScale(doubleTapZoomScale)
-                            val aspect = aspectRatio ?: 1.0f
-                            val pageHeight = targetWidth * aspect
-                            val fractionX = tapOffset.x / targetWidth
-                            val fractionY = tapOffset.y / pageHeight
-                            onDoubleTap(fractionX, fractionY, aspect)
+                            break
                         }
                     }
-                )
-            }
-            .onGloballyPositioned { coordinates ->
-                val positionY = coordinates.positionInWindow().y
-                val height = coordinates.size.height
-                val screenHeight = coordinates.parentLayoutCoordinates?.size?.height ?: 2400
-                isVisible = positionY + height >= 0 && positionY <= screenHeight
+                }
             }
     ) {
         val aspect = aspectRatio
@@ -2900,11 +3085,7 @@ fun PdfPageItem(
                     )
                 }
 
-                LaunchedEffect(pageIndex, targetWidth, scaleFactor, renderZoomStep, qualityLevel, landscapeSplitMode, isVisible) {
-                    if (!isVisible) {
-                        nativePageBitmap = null
-                        return@LaunchedEffect
-                    }
+                LaunchedEffect(pageIndex, targetWidth, scaleFactor, renderZoomStep, qualityLevel, landscapeSplitMode) {
                     if (nativePageBitmap != null) {
                         return@LaunchedEffect
                     }
@@ -3145,7 +3326,8 @@ fun HUDTopBar(
     onToggleHdMode: (() -> Unit)? = null,
     onAddBookmarkClick: (() -> Unit)? = null,
     onOpenLobby: (() -> Unit)? = null,
-    onOpenViewEnhancer: (() -> Unit)? = null
+    onOpenViewEnhancer: (() -> Unit)? = null,
+    onToggleDisplayTheme: (() -> Unit)? = null
 ) {
     var showTopMenu by remember { mutableStateOf(false) }
 
@@ -3263,6 +3445,23 @@ fun HUDTopBar(
                 }
             }
 
+            // View Settings Quick Button
+            if (onToggleDisplayTheme != null) {
+                IconButton(
+                    onClick = onToggleDisplayTheme,
+                    enabled = pdfEngineSetting != "NATIVE",
+                    modifier = Modifier
+                        .alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
+                        .testTag("view_settings_top_button")
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Tune,
+                        contentDescription = "View Settings",
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+            }
+
             // Main Reader Menu Bar Button
             Box {
                 IconButton(
@@ -3337,6 +3536,16 @@ fun HUDTopBar(
                             onClick = {
                                 showTopMenu = false
                                 onToggleHdMode()
+                            }
+                        )
+                    }
+                    if (onToggleDisplayTheme != null) {
+                        DropdownMenuItem(
+                            text = { Text("View Settings", color = Color.White, fontSize = 13.sp) },
+                            leadingIcon = { Icon(Icons.Default.Tune, contentDescription = null, tint = MaterialTheme.colorScheme.primary) },
+                            onClick = {
+                                showTopMenu = false
+                                onToggleDisplayTheme()
                             }
                         )
                     }
@@ -3603,12 +3812,946 @@ fun PauseIcon(tint: Color, modifier: Modifier = Modifier) {
     }
 }
 
+// --- View Settings Setting Popup (Resizable, Scrollable, Live Preview above Tabbar) ---
+@Composable
+fun DisplayThemeCanvasPopup(
+    currentHeightDp: Float,
+    onHeightChange: (Float) -> Unit,
+    canUndo: Boolean,
+    canRedo: Boolean,
+    onUndo: () -> Unit,
+    onRedo: () -> Unit,
+    onRecordSnapshot: () -> Unit,
+    onPushExplicitUndoSnapshot: (ManhwaViewModel.ViewSettingsSnapshot) -> Unit,
+    currentReaderTheme: ManhwaViewModel.ReaderTheme,
+    onReaderThemeChange: (ManhwaViewModel.ReaderTheme) -> Unit,
+    customTint: String,
+    onCustomTintChange: (String) -> Unit,
+    pageSpacing: Int,
+    onPageSpacingChange: (Int) -> Unit,
+    brightness: Float,
+    onBrightnessChange: (Float) -> Unit,
+    contrast: Float,
+    onContrastChange: (Float) -> Unit,
+    saturation: Float,
+    onSaturationChange: (Float) -> Unit,
+    warmth: Float,
+    onWarmthChange: (Float) -> Unit,
+    gamma: Float,
+    onGammaChange: (Float) -> Unit,
+    exposure: Float,
+    onExposureChange: (Float) -> Unit,
+    highlights: Float,
+    onHighlightsChange: (Float) -> Unit,
+    shadows: Float,
+    onShadowsChange: (Float) -> Unit,
+    colorMode: ManhwaViewModel.ColorMode,
+    onColorModeChange: (ManhwaViewModel.ColorMode) -> Unit,
+    presetFilter: String,
+    onPresetFilterChange: (String) -> Unit,
+    onApplyDisplayPreset: (String) -> Unit,
+    autoGammaEnabled: Boolean,
+    onToggleAutoGamma: (Boolean) -> Unit,
+    autoNightShift: Boolean,
+    onToggleAutoNightShift: (Boolean) -> Unit,
+    mangaScanCrisper: Boolean,
+    onToggleMangaScanCrisper: (Boolean) -> Unit,
+    hdMode: Boolean,
+    onToggleHdMode: () -> Unit,
+    readingDirection: String,
+    onReadingDirectionChange: (String) -> Unit,
+    swipeSensitivity: Float,
+    onSwipeSensitivityChange: (Float) -> Unit,
+    doubleTapZoomScale: Float,
+    onDoubleTapZoomScaleChange: (Float) -> Unit,
+    borderTrimEnabled: Boolean,
+    onToggleBorderTrim: (Boolean) -> Unit,
+    eyeRestReminderEnabled: Boolean,
+    eyeRestIntervalMinutes: Int,
+    onEyeRestChange: (Boolean, Int) -> Unit,
+    volumeKeyNavigation: Boolean,
+    onToggleVolumeKeyNavigation: (Boolean) -> Unit,
+    keepScreenOn: Boolean,
+    onToggleKeepScreenOn: (Boolean) -> Unit,
+    hapticFeedbackEnabled: Boolean,
+    onToggleHapticFeedback: (Boolean) -> Unit,
+    onResetSettings: () -> Unit,
+    onClose: () -> Unit
+) {
+    val density = LocalDensity.current
+    val currentHeightState = rememberUpdatedState(currentHeightDp)
+    val onHeightChangeState = rememberUpdatedState(onHeightChange)
+    val onCloseState = rememberUpdatedState(onClose)
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val tabTitles = listOf("Light & Tone", "Theme & Canvas", "Gestures & Controls", "Presets & Engine")
+
+    fun buildCurrentSnapshot(): ManhwaViewModel.ViewSettingsSnapshot {
+        return ManhwaViewModel.ViewSettingsSnapshot(
+            readerTheme = currentReaderTheme,
+            customTint = customTint,
+            pageSpacing = pageSpacing,
+            brightness = brightness,
+            contrast = contrast,
+            saturation = saturation,
+            warmth = warmth,
+            gamma = gamma,
+            exposure = exposure,
+            highlights = highlights,
+            shadows = shadows,
+            colorMode = colorMode,
+            presetFilter = presetFilter,
+            autoGammaEnabled = autoGammaEnabled,
+            autoNightShift = autoNightShift,
+            mangaScanCrisper = mangaScanCrisper,
+            hdMode = hdMode,
+            swipeSensitivity = swipeSensitivity,
+            doubleTapZoomScale = doubleTapZoomScale,
+            borderTrimEnabled = borderTrimEnabled,
+            eyeRestReminderEnabled = eyeRestReminderEnabled,
+            eyeRestIntervalMinutes = eyeRestIntervalMinutes,
+            volumeKeyNavigation = volumeKeyNavigation,
+            keepScreenOn = keepScreenOn,
+            readingDirection = readingDirection
+        )
+    }
+
+    var sliderInitialSnapshot by remember { mutableStateOf<ManhwaViewModel.ViewSettingsSnapshot?>(null) }
+
+    fun <T> wrapSlider(setter: (T) -> Unit): (T) -> Unit = { newVal ->
+        if (sliderInitialSnapshot == null) {
+            sliderInitialSnapshot = buildCurrentSnapshot()
+        }
+        setter(newVal)
+    }
+
+    val onSliderChangeFinished: () -> Unit = {
+        sliderInitialSnapshot?.let { initial ->
+            val current = buildCurrentSnapshot()
+            if (initial != current) {
+                onPushExplicitUndoSnapshot(initial)
+            }
+        }
+        sliderInitialSnapshot = null
+    }
+
+    Surface(
+        modifier = Modifier
+            .fillMaxWidth(0.96f)
+            .height(currentHeightDp.dp)
+            .testTag("display_theme_canvas_popup"),
+        shape = RoundedCornerShape(topStart = 16.dp, topEnd = 16.dp, bottomStart = 12.dp, bottomEnd = 12.dp),
+        color = Color(0xFF141416).copy(alpha = 0.96f),
+        contentColor = Color.White,
+        border = BorderStroke(1.dp, Color.White.copy(alpha = 0.2f)),
+        shadowElevation = 12.dp
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // Drag Handle & Customizable Resize Zone (Closes automatically if dragged below ~115dp)
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .heightIn(min = 24.dp)
+                    .pointerInput(Unit) {
+                        detectVerticalDragGestures(
+                            onVerticalDrag = { change, dragAmount ->
+                                change.consume()
+                                // Dragging upward increases height, downward decreases height
+                                val deltaDp = -dragAmount / density.density
+                                val updatedHeight = currentHeightState.value + deltaDp
+                                if (updatedHeight < 115f) {
+                                    // Under ~100px/115dp threshold: auto close popup
+                                    onCloseState.value.invoke()
+                                } else {
+                                    onHeightChangeState.value.invoke(updatedHeight.coerceIn(160f, 680f))
+                                }
+                            },
+                            onDragEnd = {
+                                if (currentHeightState.value < 130f) {
+                                    onCloseState.value.invoke()
+                                }
+                            }
+                        )
+                    }
+                    .padding(top = 8.dp, bottom = 6.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .width(48.dp)
+                        .height(4.dp)
+                        .background(Color.White.copy(alpha = 0.45f), RoundedCornerShape(2.dp))
+                )
+            }
+
+            // Header Bar with Undo, Redo, Reset, and Close
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 12.dp, vertical = 2.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
+            ) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        imageVector = Icons.Default.Tune,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        "VIEW SETTINGS",
+                        fontSize = 12.sp,
+                        fontWeight = FontWeight.Black,
+                        letterSpacing = 0.8.sp,
+                        color = Color.White
+                    )
+                }
+
+                // Action Controls: Undo, Redo, Reset, Close
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    // Undo Button
+                    IconButton(
+                        onClick = onUndo,
+                        enabled = canUndo,
+                        modifier = Modifier.size(28.dp).testTag("view_settings_undo_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Undo,
+                            contentDescription = "Undo View Settings",
+                            tint = if (canUndo) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.4f),
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+
+                    // Redo Button
+                    IconButton(
+                        onClick = onRedo,
+                        enabled = canRedo,
+                        modifier = Modifier.size(28.dp).testTag("view_settings_redo_btn")
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Filled.Redo,
+                            contentDescription = "Redo View Settings",
+                            tint = if (canRedo) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.4f),
+                            modifier = Modifier.size(17.dp)
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.width(2.dp))
+
+                    Text(
+                        text = "RESET",
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.error,
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(4.dp))
+                            .background(Color.White.copy(alpha = 0.08f))
+                            .clickable {
+                                onRecordSnapshot()
+                                onResetSettings()
+                            }
+                            .padding(horizontal = 7.dp, vertical = 4.dp)
+                    )
+
+                    IconButton(
+                        onClick = onClose,
+                        modifier = Modifier.size(26.dp)
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = Color.LightGray,
+                            modifier = Modifier.size(16.dp)
+                        )
+                    }
+                }
+            }
+
+            // Tab bar (Scrollable to comfortably fit 4 descriptive tabs)
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 10.dp, vertical = 4.dp)
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(6.dp)
+            ) {
+                tabTitles.forEachIndexed { index, title ->
+                    val isSelected = selectedTab == index
+                    Box(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(6.dp))
+                            .background(
+                                if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)
+                                else Color.White.copy(alpha = 0.05f)
+                            )
+                            .border(
+                                width = 1.dp,
+                                color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.6f) else Color.Transparent,
+                                shape = RoundedCornerShape(6.dp)
+                            )
+                            .clickable { selectedTab = index }
+                            .padding(horizontal = 10.dp, vertical = 5.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Text(
+                            text = title,
+                            fontSize = 11.sp,
+                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                            color = if (isSelected) MaterialTheme.colorScheme.primary else Color.LightGray
+                        )
+                    }
+                }
+            }
+
+            HorizontalDivider(color = Color.White.copy(alpha = 0.1f), thickness = 0.5.dp)
+
+            // Fully Scrollable Content Area with Smooth Physics & Generous Bounds
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    .padding(horizontal = 14.dp, vertical = 8.dp)
+            ) {
+                when (selectedTab) {
+                    0 -> {
+                        // === TAB 0: LIGHT & TONE ===
+                        Text("COLOR SPECTRUM MODE", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val modes = listOf(
+                                ManhwaViewModel.ColorMode.NORMAL to "Normal",
+                                ManhwaViewModel.ColorMode.GRAYSCALE to "Gray",
+                                ManhwaViewModel.ColorMode.SEPIA to "Sepia",
+                                ManhwaViewModel.ColorMode.INVERTED to "Night/Invert",
+                                ManhwaViewModel.ColorMode.PROTANOPIA to "Protanopia",
+                                ManhwaViewModel.ColorMode.DEUTERANOPIA to "Deuteranopia",
+                                ManhwaViewModel.ColorMode.TRITANOPIA to "Tritanopia",
+                                ManhwaViewModel.ColorMode.HIGH_CONTRAST to "Contrast+"
+                            )
+                            modes.forEach { (mode, name) ->
+                                val isSelected = colorMode == mode
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.06f))
+                                        .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent, RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            onRecordSnapshot()
+                                            onColorModeChange(mode)
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = name,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else Color.LightGray
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Text("COLOR TEMPERATURE PRESETS", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val tempPresets = listOf(
+                                "Neutral 6500K" to 0.0f,
+                                "Amber 4000K" to 0.25f,
+                                "Sunset 3200K" to 0.45f,
+                                "Candle 2200K" to 0.70f,
+                                "Ruby OLED" to 0.95f
+                            )
+                            tempPresets.forEach { (label, targetWarmth) ->
+                                val isSelected = kotlin.math.abs(warmth - targetWarmth) < 0.05f
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.05f))
+                                        .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.1f), RoundedCornerShape(6.dp))
+                                        .clickable {
+                                            onRecordSnapshot()
+                                            onWarmthChange(targetWarmth)
+                                        }
+                                        .padding(horizontal = 8.dp, vertical = 5.dp)
+                                ) {
+                                    Text(
+                                        text = label,
+                                        fontSize = 10.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else Color.LightGray
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Sliders with continuous live adjustments and robust undo history capture
+                        CanvasSliderRow(
+                            label = "Brightness",
+                            value = brightness,
+                            range = 0.5f..1.5f,
+                            onValueChange = wrapSlider(onBrightnessChange),
+                            format = "%.2fx",
+                            onValueChangeFinished = onSliderChangeFinished
+                        )
+                        CanvasSliderRow(
+                            label = "Contrast",
+                            value = contrast,
+                            range = 0.5f..1.5f,
+                            onValueChange = wrapSlider(onContrastChange),
+                            format = "%.2fx",
+                            onValueChangeFinished = onSliderChangeFinished
+                        )
+                        CanvasSliderRow(
+                            label = "Exposure",
+                            value = exposure,
+                            range = 0.5f..2.0f,
+                            onValueChange = wrapSlider(onExposureChange),
+                            format = "%.2fx",
+                            onValueChangeFinished = onSliderChangeFinished
+                        )
+                        CanvasSliderRow(
+                            label = "Highlights",
+                            value = highlights,
+                            range = -1.0f..1.0f,
+                            onValueChange = wrapSlider(onHighlightsChange),
+                            format = "%+.2f",
+                            onValueChangeFinished = onSliderChangeFinished
+                        )
+                        CanvasSliderRow(
+                            label = "Shadows",
+                            value = shadows,
+                            range = -1.0f..1.0f,
+                            onValueChange = wrapSlider(onShadowsChange),
+                            format = "%+.2f",
+                            onValueChangeFinished = onSliderChangeFinished
+                        )
+                        CanvasSliderRow(
+                            label = "Saturation",
+                            value = saturation,
+                            range = 0.0f..2.0f,
+                            onValueChange = wrapSlider(onSaturationChange),
+                            format = "%.2fx",
+                            onValueChangeFinished = onSliderChangeFinished
+                        )
+                        CanvasSliderRow(
+                            label = "Warmth",
+                            value = warmth,
+                            range = 0.0f..1.0f,
+                            onValueChange = wrapSlider(onWarmthChange),
+                            format = "%.2f",
+                            onValueChangeFinished = onSliderChangeFinished
+                        )
+                        CanvasSliderRow(
+                            label = "Gamma",
+                            value = gamma,
+                            range = 0.5f..2.0f,
+                            onValueChange = wrapSlider(onGammaChange),
+                            format = if (autoGammaEnabled) "Auto" else "%.2f",
+                            enabled = !autoGammaEnabled,
+                            onValueChangeFinished = onSliderChangeFinished
+                        )
+
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+                    1 -> {
+                        // === TAB 1: THEME & CANVAS ===
+                        Text("CANVAS BACKDROP THEME", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val themes = listOf(
+                                Triple(ManhwaViewModel.ReaderTheme.DARK, "Dark Canvas", Color(0xFF121212)),
+                                Triple(ManhwaViewModel.ReaderTheme.PITCH_BLACK, "OLED Black", Color(0xFF000000)),
+                                Triple(ManhwaViewModel.ReaderTheme.SEPIA, "Classic Sepia", Color(0xFFF5EFE6)),
+                                Triple(ManhwaViewModel.ReaderTheme.WARM, "Warm Amber", Color(0xFF2B2622)),
+                                Triple(ManhwaViewModel.ReaderTheme.WHITE, "Pure White", Color(0xFFFFFFFF))
+                            )
+                            themes.forEach { (theme, name, colorSwatch) ->
+                                val isSelected = currentReaderTheme == theme
+                                Surface(
+                                    onClick = {
+                                        onRecordSnapshot()
+                                        onReaderThemeChange(theme)
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.05f),
+                                    border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.15f))
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp)
+                                    ) {
+                                        Box(
+                                            modifier = Modifier
+                                                .size(14.dp)
+                                                .background(colorSwatch, CircleShape)
+                                                .border(1.dp, Color.White.copy(alpha = 0.4f), CircleShape)
+                                        )
+                                        Spacer(modifier = Modifier.width(6.dp))
+                                        Text(
+                                            text = name,
+                                            fontSize = 11.sp,
+                                            fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                            color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text("PAGE TINT OVERLAY", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val tints = listOf("None", "Parchment", "Eye Care Green", "Mint", "Cobalt Filter", "Warm Amber", "Soft Rose", "Muted Charcoal")
+                            tints.forEach { tint ->
+                                val isSelected = customTint == tint
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.06f))
+                                        .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent, RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            onRecordSnapshot()
+                                            onCustomTintChange(tint)
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = tint,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else Color.LightGray
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Page Spacing
+                        Text("PAGE GAP SPACING", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().height(36.dp)
+                        ) {
+                            Text("$pageSpacing dp", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(48.dp))
+                            Slider(
+                                value = pageSpacing.toFloat(),
+                                onValueChange = wrapSlider<Float> { onPageSpacingChange(it.toInt()) },
+                                onValueChangeFinished = onSliderChangeFinished,
+                                valueRange = 0f..48f,
+                                modifier = Modifier.weight(1f),
+                                colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                listOf(0, 6, 12, 24).forEach { gapVal ->
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(if (pageSpacing == gapVal) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.1f))
+                                            .border(1.dp, if (pageSpacing == gapVal) MaterialTheme.colorScheme.primary else Color.Transparent, RoundedCornerShape(4.dp))
+                                            .clickable {
+                                                onRecordSnapshot()
+                                                onPageSpacingChange(gapVal)
+                                            }
+                                            .padding(horizontal = 6.dp, vertical = 3.dp)
+                                    ) {
+                                        Text("$gapVal", fontSize = 10.sp, color = if (pageSpacing == gapVal) MaterialTheme.colorScheme.primary else Color.White)
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text("CANVAS ENHANCEMENTS", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        CanvasSwitchRow(
+                            title = "Auto Margin & Border Trim",
+                            subtitle = "Crops outer whitespace for seamless continuous reading",
+                            checked = borderTrimEnabled,
+                            onCheckedChange = {
+                                onRecordSnapshot()
+                                onToggleBorderTrim(it)
+                            }
+                        )
+
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+                    2 -> {
+                        // === TAB 2: GESTURES & CONTROLS ===
+                        Text("READING LAYOUT & DIRECTION", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val directions = listOf(
+                                "Vertical" to "Vertical Webtoon",
+                                "Right to Left" to "Right-to-Left (Manga)",
+                                "Left to Right" to "Left-to-Right (Comic)"
+                            )
+                            directions.forEach { (dirValue, dirTitle) ->
+                                val isSelected = readingDirection == dirValue
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.06f))
+                                        .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent, RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            onRecordSnapshot()
+                                            onReadingDirectionChange(dirValue)
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = dirTitle,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else Color.LightGray
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        // Swipe Sensitivity Slider
+                        CanvasSliderRow(
+                            label = "Swipe Speed",
+                            value = swipeSensitivity,
+                            range = 0.5f..2.5f,
+                            onValueChange = wrapSlider(onSwipeSensitivityChange),
+                            format = "%.1fx",
+                            onValueChangeFinished = onSliderChangeFinished
+                        )
+
+                        // Double-Tap Zoom Target Scale Slider
+                        CanvasSliderRow(
+                            label = "Double Tap Zoom",
+                            value = doubleTapZoomScale,
+                            range = 1.5f..4.0f,
+                            onValueChange = wrapSlider(onDoubleTapZoomScaleChange),
+                            format = "%.1fx",
+                            onValueChangeFinished = onSliderChangeFinished
+                        )
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text("HEALTH & NAVIGATION CONTROLS", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        CanvasSwitchRow(
+                            title = "Volume Key Navigation",
+                            subtitle = "Use physical volume up/down buttons to scroll pages",
+                            checked = volumeKeyNavigation,
+                            onCheckedChange = {
+                                onRecordSnapshot()
+                                onToggleVolumeKeyNavigation(it)
+                            }
+                        )
+
+                        CanvasSwitchRow(
+                            title = "Keep Screen Awake",
+                            subtitle = "Prevents device screen from dimming while reading",
+                            checked = keepScreenOn,
+                            onCheckedChange = {
+                                onRecordSnapshot()
+                                onToggleKeepScreenOn(it)
+                            }
+                        )
+
+                        CanvasSwitchRow(
+                            title = "Haptic Tactile Feedback",
+                            subtitle = "Vibrates gently on key slider/page adjustments",
+                            checked = hapticFeedbackEnabled,
+                            onCheckedChange = {
+                                onRecordSnapshot()
+                                onToggleHapticFeedback(it)
+                            }
+                        )
+
+                        CanvasSwitchRow(
+                            title = "Eye Rest 20-20-20 Reminder",
+                            subtitle = "Reminds you to look away every $eyeRestIntervalMinutes minutes",
+                            checked = eyeRestReminderEnabled,
+                            onCheckedChange = {
+                                onRecordSnapshot()
+                                onEyeRestChange(it, eyeRestIntervalMinutes)
+                            }
+                        )
+
+                        if (eyeRestReminderEnabled) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(start = 12.dp, top = 4.dp, bottom = 8.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Interval:", fontSize = 10.sp, color = Color.Gray)
+                                listOf(15, 20, 30, 45).forEach { min ->
+                                    val isCur = eyeRestIntervalMinutes == min
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(if (isCur) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.08f))
+                                            .border(1.dp, if (isCur) MaterialTheme.colorScheme.primary else Color.Transparent, RoundedCornerShape(4.dp))
+                                            .clickable {
+                                                onRecordSnapshot()
+                                                onEyeRestChange(true, min)
+                                            }
+                                            .padding(horizontal = 6.dp, vertical = 3.dp)
+                                    ) {
+                                        Text("${min}m", fontSize = 10.sp, color = if (isCur) MaterialTheme.colorScheme.primary else Color.LightGray)
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+                    3 -> {
+                        // === TAB 3: PRESETS & ENGINE ===
+                        Text("ONE-TAP DISPLAY PRESETS", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val displayPresets = listOf(
+                                "AMOLED_BLACK" to "OLED Black",
+                                "SEPIA_EYE_CARE" to "Sepia Eye-Care",
+                                "VINTAGE_PAPER" to "Vintage Paper",
+                                "HIGH_CONTRAST_MANGA" to "Manga High-Contrast",
+                                "PASTEL_NIGHT" to "Pastel Night",
+                                "SUNLIGHT_BOOST" to "Sunlight Boost",
+                                "MIDNIGHT_THEATER" to "Midnight Theater",
+                                "VIVID_ENHANCE" to "Vivid Enhance"
+                            )
+                            displayPresets.forEach { (presetKey, presetTitle) ->
+                                Surface(
+                                    onClick = {
+                                        onRecordSnapshot()
+                                        onApplyDisplayPreset(presetKey)
+                                    },
+                                    shape = RoundedCornerShape(8.dp),
+                                    color = Color.White.copy(alpha = 0.08f),
+                                    border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.4f))
+                                ) {
+                                    Text(
+                                        text = presetTitle,
+                                        fontSize = 11.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 7.dp)
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Text("SCAN TEXTURE FILTERS", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState()),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp)
+                        ) {
+                            val scanPresets = listOf("NONE" to "None", "FADED_PRINT" to "Faded Print", "BINARIZED" to "Binarized", "NEWSPAPER" to "Newspaper")
+                            scanPresets.forEach { (id, name) ->
+                                val isSelected = presetFilter == id
+                                Box(
+                                    modifier = Modifier
+                                        .clip(RoundedCornerShape(8.dp))
+                                        .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.06f))
+                                        .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent, RoundedCornerShape(8.dp))
+                                        .clickable {
+                                            onRecordSnapshot()
+                                            onPresetFilterChange(id)
+                                        }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) {
+                                    Text(
+                                        text = name,
+                                        fontSize = 11.sp,
+                                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Normal,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else Color.LightGray
+                                    )
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Text("AUTOMATION & ENGINE TUNING", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        // Toggle rows
+                        CanvasSwitchRow(
+                            title = "Auto Gamma Correction",
+                            subtitle = "Adapts tone dynamically to avoid washouts",
+                            checked = autoGammaEnabled,
+                            onCheckedChange = {
+                                onRecordSnapshot()
+                                onToggleAutoGamma(it)
+                            }
+                        )
+                        CanvasSwitchRow(
+                            title = "Auto-Night Shift",
+                            subtitle = "Adds gentle warmth at late night hours",
+                            checked = autoNightShift,
+                            onCheckedChange = {
+                                onRecordSnapshot()
+                                onToggleAutoNightShift(it)
+                            }
+                        )
+                        CanvasSwitchRow(
+                            title = "Manga Scan Crisper",
+                            subtitle = "Sharpens black inked lines on manga scans",
+                            checked = mangaScanCrisper,
+                            onCheckedChange = {
+                                onRecordSnapshot()
+                                onToggleMangaScanCrisper(it)
+                            }
+                        )
+                        CanvasSwitchRow(
+                            title = "Ultra-HD 2.0x Tiling Engine",
+                            subtitle = "Renders crystal-sharp 2x resolution tiles",
+                            checked = hdMode,
+                            onCheckedChange = {
+                                onRecordSnapshot()
+                                onToggleHdMode()
+                            }
+                        )
+
+                        Spacer(modifier = Modifier.height(24.dp))
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun CanvasSliderRow(
+    label: String,
+    value: Float,
+    range: ClosedFloatingPointRange<Float>,
+    onValueChange: (Float) -> Unit,
+    format: String,
+    enabled: Boolean = true,
+    onValueChangeFinished: (() -> Unit)? = null
+) {
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(34.dp)
+    ) {
+        Text(
+            text = label,
+            fontSize = 11.sp,
+            color = if (enabled) Color.LightGray else Color.Gray,
+            modifier = Modifier.width(76.dp)
+        )
+        Slider(
+            value = value,
+            onValueChange = onValueChange,
+            onValueChangeFinished = onValueChangeFinished,
+            valueRange = range,
+            enabled = enabled,
+            modifier = Modifier.weight(1f),
+            colors = SliderDefaults.colors(
+                thumbColor = MaterialTheme.colorScheme.primary,
+                disabledThumbColor = Color.Gray,
+                disabledActiveTrackColor = Color.DarkGray
+            )
+        )
+        Text(
+            text = try { String.format(format, value) } catch (e: Exception) { format },
+            fontSize = 10.sp,
+            modifier = Modifier.width(42.dp),
+            textAlign = TextAlign.End,
+            color = if (enabled) MaterialTheme.colorScheme.primary else Color.Gray
+        )
+    }
+}
+
+@Composable
+private fun CanvasSwitchRow(
+    title: String,
+    subtitle: String,
+    checked: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.SpaceBetween
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+            Text(subtitle, fontSize = 9.sp, color = Color.Gray)
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            colors = SwitchDefaults.colors(
+                checkedThumbColor = MaterialTheme.colorScheme.primary,
+                checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
+            ),
+            modifier = Modifier.scale(0.75f)
+        )
+    }
+}
+
 // --- HUD Bottom Bar ---
 @Composable
 fun HUDBottomBar(
     currentPage: Int,
     totalPages: Int,
     isViewEnhancerEnabled: Boolean,
+    showDisplayThemePopup: Boolean = false,
+    onToggleDisplayThemePopup: () -> Unit = {},
     brightness: Float,
     contrast: Float,
     saturation: Float,
@@ -3662,7 +4805,6 @@ fun HUDBottomBar(
     onShadowsChange: (Float) -> Unit,
     onResetViewEnhancerSettings: () -> Unit
 ) {
-    var showEnhancerControls by remember { mutableStateOf(false) }
     var showZoomControls by remember { mutableStateOf(false) }
     var showScrollControls by remember { mutableStateOf(false) }
 
@@ -3675,324 +4817,6 @@ fun HUDBottomBar(
                 .fillMaxWidth()
                 .padding(bottom = 12.dp)
         ) {
-            // View Enhancer Control panel
-            if (isViewEnhancerEnabled && showEnhancerControls) {
-                Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth(0.95f)
-                            .heightIn(max = 240.dp)
-                            .clip(RoundedCornerShape(topStart = 12.dp, topEnd = 12.dp))
-                            .background(Color.Black.copy(alpha = 0.95f))
-                            .verticalScroll(rememberScrollState())
-                            .padding(horizontal = 16.dp, vertical = 8.dp)
-                    ) {
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text(
-                            "IMAGE ENHANCEMENTS & FILTERS",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Black,
-                            letterSpacing = 1.sp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                        Text(
-                            text = "RESET ALL",
-                            fontSize = 11.sp,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.error,
-                            modifier = Modifier
-                                .clickable { onResetViewEnhancerSettings() }
-                                .padding(horizontal = 8.dp, vertical = 4.dp)
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Brightness slider
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
-                        Text("Brightness", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
-                        Slider(
-                            value = brightness,
-                            onValueChange = onBrightnessChange,
-                            valueRange = 0.5f..1.5f,
-                            modifier = Modifier.weight(1f),
-                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
-                        )
-                        Text(String.format("%.1f", brightness), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
-                    }
-
-                    // Contrast slider
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
-                        Text("Contrast", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
-                        Slider(
-                            value = contrast,
-                            onValueChange = onContrastChange,
-                            valueRange = 0.5f..1.5f,
-                            modifier = Modifier.weight(1f),
-                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
-                        )
-                        Text(String.format("%.1f", contrast), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
-                    }
-
-                    // Exposure slider
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
-                        Text("Exposure", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
-                        Slider(
-                            value = exposure,
-                            onValueChange = onExposureChange,
-                            valueRange = 0.5f..2.0f,
-                            modifier = Modifier.weight(1f),
-                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
-                        )
-                        Text(String.format("%.1f", exposure), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
-                    }
-
-                    // Highlights slider
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
-                        Text("Highlights", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
-                        Slider(
-                            value = highlights,
-                            onValueChange = onHighlightsChange,
-                            valueRange = -1.0f..1.0f,
-                            modifier = Modifier.weight(1f),
-                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
-                        )
-                        Text(String.format("%+.1f", highlights), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
-                    }
-
-                    // Shadows slider
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
-                        Text("Shadows", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
-                        Slider(
-                            value = shadows,
-                            onValueChange = onShadowsChange,
-                            valueRange = -1.0f..1.0f,
-                            modifier = Modifier.weight(1f),
-                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
-                        )
-                        Text(String.format("%+.1f", shadows), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
-                    }
-
-                    // Saturation slider
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
-                        Text("Saturation", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
-                        Slider(
-                            value = saturation,
-                            onValueChange = onSaturationChange,
-                            valueRange = 0.0f..2.0f,
-                            modifier = Modifier.weight(1f),
-                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
-                        )
-                        Text(String.format("%.1f", saturation), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
-                    }
-
-                    // Warmth slider
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
-                        Text("Warmth", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
-                        Slider(
-                            value = warmth,
-                            onValueChange = onWarmthChange,
-                            valueRange = 0.0f..1.0f,
-                            modifier = Modifier.weight(1f),
-                            colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
-                        )
-                        Text(String.format("%.1f", warmth), fontSize = 10.sp, modifier = Modifier.width(25.dp), textAlign = TextAlign.End)
-                    }
-
-                    // Gamma slider
-                    Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.height(32.dp)) {
-                        Text("Gamma", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(65.dp))
-                        Slider(
-                            value = gamma,
-                            onValueChange = onGammaChange,
-                            valueRange = 0.5f..2.0f,
-                            enabled = !autoGammaEnabled,
-                            modifier = Modifier.weight(1f),
-                            colors = SliderDefaults.colors(
-                                thumbColor = MaterialTheme.colorScheme.primary,
-                                disabledThumbColor = Color.Gray,
-                                disabledActiveTrackColor = Color.DarkGray
-                            )
-                        )
-                        Text(
-                            text = if (autoGammaEnabled) "Auto" else String.format("%.1f", gamma),
-                            fontSize = 10.sp,
-                            modifier = Modifier.width(25.dp),
-                            textAlign = TextAlign.End,
-                            color = if (autoGammaEnabled) MaterialTheme.colorScheme.primary else Color.White
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Color modes row
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Filter: ", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.padding(end = 6.dp))
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            val modes = listOf(
-                                ManhwaViewModel.ColorMode.NORMAL to "Normal",
-                                ManhwaViewModel.ColorMode.GRAYSCALE to "Gray",
-                                ManhwaViewModel.ColorMode.SEPIA to "Sepia",
-                                ManhwaViewModel.ColorMode.INVERTED to "Night",
-                                ManhwaViewModel.ColorMode.PROTANOPIA to "Protan (Red-Blind)",
-                                ManhwaViewModel.ColorMode.DEUTERANOPIA to "Deuteran (Green-Blind)",
-                                ManhwaViewModel.ColorMode.TRITANOPIA to "Tritan (Blue-Blind)",
-                                ManhwaViewModel.ColorMode.HIGH_CONTRAST to "Contrast+"
-                            )
-                            modes.forEach { (mode, name) ->
-                                val selected = colorMode == mode
-                                Text(
-                                    text = name,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (selected) MaterialTheme.colorScheme.primary else Color.Gray,
-                                    modifier = Modifier
-                                        .clickable { onColorModeChange(mode) }
-                                        .padding(horizontal = 8.dp, vertical = 6.dp)
-                                        .background(
-                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
-                                            RoundedCornerShape(6.dp)
-                                        )
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Custom Tint Presets
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Tint Preset: ", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.padding(end = 6.dp))
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            val tints = listOf("None", "Parchment", "Eye Care Green", "Mint", "Cobalt Filter", "Warm Amber")
-                            tints.forEach { tint ->
-                                val selected = customTint == tint
-                                Text(
-                                    text = tint,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (selected) MaterialTheme.colorScheme.primary else Color.Gray,
-                                    modifier = Modifier
-                                        .clickable { onCustomTintChange(tint) }
-                                        .padding(horizontal = 8.dp, vertical = 6.dp)
-                                        .background(
-                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
-                                            RoundedCornerShape(6.dp)
-                                        )
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(8.dp))
-
-                    // Advanced Preset Filters
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        Text("Presets: ", fontSize = 12.sp, color = Color.LightGray, modifier = Modifier.padding(end = 6.dp))
-                        Row(
-                            modifier = Modifier
-                                .weight(1f)
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            val presets = listOf("NONE" to "None", "FADED_PRINT" to "Faded Print", "BINARIZED" to "Binarized", "NEWSPAPER" to "Newspaper")
-                            presets.forEach { (id, name) ->
-                                val selected = presetFilter == id
-                                Text(
-                                    text = name,
-                                    fontSize = 11.sp,
-                                    fontWeight = FontWeight.Bold,
-                                    color = if (selected) MaterialTheme.colorScheme.primary else Color.Gray,
-                                    modifier = Modifier
-                                        .clickable { viewModel.setPresetFilter(id) }
-                                        .padding(horizontal = 8.dp, vertical = 6.dp)
-                                        .background(
-                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else Color.Transparent,
-                                            RoundedCornerShape(6.dp)
-                                        )
-                                )
-                            }
-                        }
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-
-                    // Auto-Tuning and Manga scan binarizer options
-                    Text("AUTOMATIC ENHANCEMENTS", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
-                    Spacer(modifier = Modifier.height(6.dp))
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState()),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        HudOptionChip(
-                            text = "Auto Gamma Correction",
-                            selected = autoGammaEnabled,
-                            onClick = { onToggleAutoGamma(!autoGammaEnabled) }
-                        )
-
-                        HudOptionChip(
-                            text = "Auto-Night Shift",
-                            selected = autoNightShift,
-                            onClick = { onToggleAutoNightShift(!autoNightShift) }
-                        )
-
-                        HudOptionChip(
-                            text = "Manga Scan Crisper",
-                            selected = mangaScanCrisper,
-                            onClick = { onToggleMangaScanCrisper(!mangaScanCrisper) }
-                        )
-                    }
-
-                    Spacer(modifier = Modifier.height(10.dp))
-                    HorizontalDivider(color = Color.DarkGray, thickness = 0.5.dp)
-                    Spacer(modifier = Modifier.height(6.dp))
-
-                    // HD High Quality rendering Toggle
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.SpaceBetween
-                    ) {
-                        Text("Ultra-HD 2.0x Rendering (Tiling Engine)", fontSize = 12.sp, color = Color.LightGray)
-                        Switch(
-                            checked = hdMode,
-                            onCheckedChange = { onToggleHdMode() },
-                            colors = SwitchDefaults.colors(
-                                checkedThumbColor = MaterialTheme.colorScheme.primary,
-                                checkedTrackColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
-                            ),
-                            modifier = Modifier.scale(0.8f)
-                        )
-                    }
-                }
-            }
-        }
 
             // Zoom & Focus engine control panel
             if (showZoomControls) {
@@ -4263,14 +5087,14 @@ fun HUDBottomBar(
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                // View enhancer, zoom, and scroll toggles
+                // View enhancer / display theme canvas, zoom, and scroll toggles
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     if (isViewEnhancerEnabled) {
                         IconButton(
                             onClick = { 
                                 if (pdfEngineSetting != "NATIVE") {
-                                    showEnhancerControls = !showEnhancerControls 
-                                    if (showEnhancerControls) {
+                                    onToggleDisplayThemePopup()
+                                    if (!showDisplayThemePopup) {
                                         showZoomControls = false
                                         showScrollControls = false
                                     }
@@ -4280,9 +5104,9 @@ fun HUDBottomBar(
                             modifier = Modifier.alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
                         ) {
                             Icon(
-                                Icons.Default.Settings,
-                                contentDescription = "Enhance",
-                                tint = if (showEnhancerControls) MaterialTheme.colorScheme.primary else Color.White
+                                Icons.Default.Tune,
+                                contentDescription = "View Settings",
+                                tint = if (showDisplayThemePopup) MaterialTheme.colorScheme.primary else Color.White
                             )
                         }
                     }
@@ -4292,7 +5116,6 @@ fun HUDBottomBar(
                             if (pdfEngineSetting != "NATIVE") {
                                 showZoomControls = !showZoomControls 
                                 if (showZoomControls) {
-                                    showEnhancerControls = false
                                     showScrollControls = false
                                 }
                             }
@@ -4313,7 +5136,6 @@ fun HUDBottomBar(
                             if (pdfEngineSetting != "NATIVE") {
                                 showScrollControls = !showScrollControls 
                                 if (showScrollControls) {
-                                    showEnhancerControls = false
                                     showZoomControls = false
                                 }
                             }

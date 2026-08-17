@@ -716,6 +716,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     // --- Comprehensive Reader Display Presets Engine ---
     fun applyDisplayPreset(presetKey: String) {
+        pushViewSettingsSnapshotBeforeChange()
         when (presetKey) {
             "AMOLED_BLACK" -> {
                 setReaderTheme(ReaderTheme.PITCH_BLACK)
@@ -767,6 +768,29 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 setSaturation(1.1f)
                 setWarmth(0.0f)
                 setCustomTint("None")
+            }
+            "MIDNIGHT_THEATER" -> {
+                setReaderTheme(ReaderTheme.PITCH_BLACK)
+                setBrightness(0.85f)
+                setContrast(1.15f)
+                setSaturation(1.05f)
+                setWarmth(0.25f)
+                setExposure(0.9f)
+                setHighlights(-0.2f)
+                setShadows(0.1f)
+                setCustomTint("None")
+            }
+            "VIVID_ENHANCE" -> {
+                setReaderTheme(ReaderTheme.DARK)
+                setBrightness(1.05f)
+                setContrast(1.2f)
+                setSaturation(1.35f)
+                setWarmth(0.0f)
+                setExposure(1.05f)
+                setHighlights(0.1f)
+                setShadows(-0.1f)
+                setCustomTint("None")
+                setColorMode(ColorMode.NORMAL)
             }
         }
     }
@@ -832,7 +856,193 @@ class ManhwaViewModel(private val application: Application, private val reposito
         checkAndTrimMemoryIfNeeded(physicalPage)
     }
 
+    // --- View Settings Undo / Redo History & Snapshots ---
+    data class ViewSettingsSnapshot(
+        val readerTheme: ReaderTheme = ReaderTheme.DARK,
+        val customTint: String = "None",
+        val pageSpacing: Int = 0,
+        val brightness: Float = 1.0f,
+        val contrast: Float = 1.0f,
+        val saturation: Float = 1.0f,
+        val warmth: Float = 0.0f,
+        val gamma: Float = 1.0f,
+        val exposure: Float = 1.0f,
+        val highlights: Float = 0.0f,
+        val shadows: Float = 0.0f,
+        val colorMode: ColorMode = ColorMode.NORMAL,
+        val presetFilter: String = "NONE",
+        val autoGammaEnabled: Boolean = false,
+        val autoNightShift: Boolean = false,
+        val mangaScanCrisper: Boolean = false,
+        val hdMode: Boolean = true,
+        val swipeSensitivity: Float = 1.0f,
+        val doubleTapZoomScale: Float = 2.0f,
+        val borderTrimEnabled: Boolean = false,
+        val eyeRestReminderEnabled: Boolean = false,
+        val eyeRestIntervalMinutes: Int = 20,
+        val volumeKeyNavigation: Boolean = true,
+        val keepScreenOn: Boolean = true,
+        val readingDirection: String = "Vertical"
+    )
+
+    private val _viewSettingsUndoStack = mutableListOf<ViewSettingsSnapshot>()
+    private val _viewSettingsRedoStack = mutableListOf<ViewSettingsSnapshot>()
+
+    private val _canUndoViewSettings = MutableStateFlow(false)
+    val canUndoViewSettings: StateFlow<Boolean> = _canUndoViewSettings.asStateFlow()
+
+    private val _canRedoViewSettings = MutableStateFlow(false)
+    val canRedoViewSettings: StateFlow<Boolean> = _canRedoViewSettings.asStateFlow()
+
+    fun getCurrentViewSettingsSnapshot(): ViewSettingsSnapshot {
+        return ViewSettingsSnapshot(
+            readerTheme = _readerTheme.value,
+            customTint = _customTint.value,
+            pageSpacing = _pageSpacing.value,
+            brightness = _brightness.value,
+            contrast = _contrast.value,
+            saturation = _saturation.value,
+            warmth = _warmth.value,
+            gamma = _gamma.value,
+            exposure = _exposure.value,
+            highlights = _highlights.value,
+            shadows = _shadows.value,
+            colorMode = _colorMode.value,
+            presetFilter = _presetFilter.value,
+            autoGammaEnabled = _autoGammaEnabled.value,
+            autoNightShift = _autoNightShift.value,
+            mangaScanCrisper = _mangaScanCrisper.value,
+            hdMode = _hdModeEnabled.value,
+            swipeSensitivity = _swipeSensitivity.value,
+            doubleTapZoomScale = _doubleTapZoomScale.value,
+            borderTrimEnabled = _borderTrimEnabled.value,
+            eyeRestReminderEnabled = _eyeRestReminderEnabled.value,
+            eyeRestIntervalMinutes = _eyeRestIntervalMinutes.value,
+            volumeKeyNavigation = _volumeKeyNavigation.value,
+            keepScreenOn = _keepScreenOn.value,
+            readingDirection = _readingDirection.value
+        )
+    }
+
+    fun pushExplicitUndoSnapshot(snapshot: ViewSettingsSnapshot) {
+        if (_viewSettingsUndoStack.isEmpty() || _viewSettingsUndoStack.last() != snapshot) {
+            _viewSettingsUndoStack.add(snapshot)
+            if (_viewSettingsUndoStack.size > 50) {
+                _viewSettingsUndoStack.removeAt(0)
+            }
+            _viewSettingsRedoStack.clear()
+            _canUndoViewSettings.value = true
+            _canRedoViewSettings.value = false
+        }
+    }
+
+    fun pushViewSettingsSnapshotBeforeChange() {
+        val current = getCurrentViewSettingsSnapshot()
+        pushExplicitUndoSnapshot(current)
+    }
+
+    fun applyViewSettingsSnapshot(snapshot: ViewSettingsSnapshot) {
+        _readerTheme.value = snapshot.readerTheme
+        sharedPrefs.edit().putString("reader_theme", snapshot.readerTheme.name).apply()
+
+        _customTint.value = snapshot.customTint
+        sharedPrefs.edit().putString("custom_tint", snapshot.customTint).apply()
+
+        _pageSpacing.value = snapshot.pageSpacing
+        sharedPrefs.edit().putInt("page_spacing", snapshot.pageSpacing).apply()
+
+        _brightness.value = snapshot.brightness
+        sharedPrefs.edit().putFloat("view_brightness", snapshot.brightness).apply()
+
+        _contrast.value = snapshot.contrast
+        sharedPrefs.edit().putFloat("view_contrast", snapshot.contrast).apply()
+
+        _saturation.value = snapshot.saturation
+        sharedPrefs.edit().putFloat("view_saturation", snapshot.saturation).apply()
+
+        _warmth.value = snapshot.warmth
+        sharedPrefs.edit().putFloat("view_warmth", snapshot.warmth).apply()
+
+        _gamma.value = snapshot.gamma
+        sharedPrefs.edit().putFloat("view_gamma", snapshot.gamma).apply()
+
+        _exposure.value = snapshot.exposure
+        sharedPrefs.edit().putFloat("view_exposure", snapshot.exposure).apply()
+
+        _highlights.value = snapshot.highlights
+        sharedPrefs.edit().putFloat("view_highlights", snapshot.highlights).apply()
+
+        _shadows.value = snapshot.shadows
+        sharedPrefs.edit().putFloat("view_shadows", snapshot.shadows).apply()
+
+        _colorMode.value = snapshot.colorMode
+        sharedPrefs.edit().putString("color_mode", snapshot.colorMode.name).apply()
+
+        _presetFilter.value = snapshot.presetFilter
+        sharedPrefs.edit().putString("preset_filter", snapshot.presetFilter).apply()
+
+        _autoGammaEnabled.value = snapshot.autoGammaEnabled
+        sharedPrefs.edit().putBoolean("auto_gamma", snapshot.autoGammaEnabled).apply()
+
+        _autoNightShift.value = snapshot.autoNightShift
+        sharedPrefs.edit().putBoolean("auto_night_shift", snapshot.autoNightShift).apply()
+
+        _mangaScanCrisper.value = snapshot.mangaScanCrisper
+        sharedPrefs.edit().putBoolean("manga_scan_crisper", snapshot.mangaScanCrisper).apply()
+
+        _hdModeEnabled.value = snapshot.hdMode
+        sharedPrefs.edit().putBoolean("hd_mode_enabled", snapshot.hdMode).apply()
+
+        _swipeSensitivity.value = snapshot.swipeSensitivity
+        sharedPrefs.edit().putFloat("swipe_sensitivity", snapshot.swipeSensitivity).apply()
+
+        _doubleTapZoomScale.value = snapshot.doubleTapZoomScale
+        sharedPrefs.edit().putFloat("double_tap_zoom_scale", snapshot.doubleTapZoomScale).apply()
+
+        _borderTrimEnabled.value = snapshot.borderTrimEnabled
+        sharedPrefs.edit().putBoolean("border_trim_enabled", snapshot.borderTrimEnabled).apply()
+
+        _eyeRestReminderEnabled.value = snapshot.eyeRestReminderEnabled
+        _eyeRestIntervalMinutes.value = snapshot.eyeRestIntervalMinutes
+        sharedPrefs.edit()
+            .putBoolean("eye_rest_reminder_enabled", snapshot.eyeRestReminderEnabled)
+            .putInt("eye_rest_interval_minutes", snapshot.eyeRestIntervalMinutes)
+            .apply()
+
+        _volumeKeyNavigation.value = snapshot.volumeKeyNavigation
+        sharedPrefs.edit().putBoolean("volume_key_nav", snapshot.volumeKeyNavigation).apply()
+
+        _keepScreenOn.value = snapshot.keepScreenOn
+        sharedPrefs.edit().putBoolean("keep_screen_on", snapshot.keepScreenOn).apply()
+
+        _readingDirection.value = snapshot.readingDirection
+        sharedPrefs.edit().putString("reading_direction", snapshot.readingDirection).apply()
+    }
+
+    fun undoViewSettings() {
+        if (_viewSettingsUndoStack.isNotEmpty()) {
+            val current = getCurrentViewSettingsSnapshot()
+            _viewSettingsRedoStack.add(current)
+            val previous = _viewSettingsUndoStack.removeAt(_viewSettingsUndoStack.size - 1)
+            applyViewSettingsSnapshot(previous)
+            _canUndoViewSettings.value = _viewSettingsUndoStack.isNotEmpty()
+            _canRedoViewSettings.value = true
+        }
+    }
+
+    fun redoViewSettings() {
+        if (_viewSettingsRedoStack.isNotEmpty()) {
+            val current = getCurrentViewSettingsSnapshot()
+            _viewSettingsUndoStack.add(current)
+            val next = _viewSettingsRedoStack.removeAt(_viewSettingsRedoStack.size - 1)
+            applyViewSettingsSnapshot(next)
+            _canUndoViewSettings.value = true
+            _canRedoViewSettings.value = _viewSettingsRedoStack.isNotEmpty()
+        }
+    }
+
     fun resetViewEnhancerSettings() {
+        pushViewSettingsSnapshotBeforeChange()
         setBrightness(1.0f)
         setContrast(1.0f)
         setSaturation(1.0f)
@@ -847,6 +1057,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         setHighlights(0.0f)
         setShadows(0.0f)
         setPresetFilter("NONE")
+        setPageSpacing(0)
     }
 
     val activeScaleFactor: StateFlow<Float> = combine(
@@ -2156,6 +2367,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val undoStacks = mutableMapOf<Int, MutableList<List<DrawPath>>>()
     private val redoStacks = mutableMapOf<Int, MutableList<List<DrawPath>>>()
 
+    private val _drawUndoStateVersion = MutableStateFlow(0)
+    val drawUndoStateVersion: StateFlow<Int> = _drawUndoStateVersion.asStateFlow()
+
     fun setDrawColor(color: Color) {
         _activeDrawColor.value = color
     }
@@ -2187,6 +2401,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         newPaths.add(path)
         currentSketches[pageIndex] = newPaths
         _sketches.value = currentSketches
+        _drawUndoStateVersion.value++
         
         activeManhwa.value?.let { saveSketchesToDisk(it.id) }
     }
@@ -2209,6 +2424,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 currentSketches[pageIndex] = previousPaths
             }
             _sketches.value = currentSketches
+            _drawUndoStateVersion.value++
             
             activeManhwa.value?.let { saveSketchesToDisk(it.id) }
         }
@@ -2228,6 +2444,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
             val nextPaths = redoStack.removeAt(redoStack.size - 1)
             currentSketches[pageIndex] = nextPaths
             _sketches.value = currentSketches
+            _drawUndoStateVersion.value++
             
             activeManhwa.value?.let { saveSketchesToDisk(it.id) }
         }
@@ -2243,6 +2460,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         }
         currentSketches.remove(pageIndex)
         _sketches.value = currentSketches
+        _drawUndoStateVersion.value++
         
         activeManhwa.value?.let { saveSketchesToDisk(it.id) }
     }
