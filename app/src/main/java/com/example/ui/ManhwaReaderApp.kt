@@ -1627,6 +1627,7 @@ fun ComicReaderScreen(
     val doubleTapResetEnabled by viewModel.doubleTapResetEnabled.collectAsStateWithLifecycle()
 
     val pageSpacing by viewModel.pageSpacing.collectAsStateWithLifecycle()
+    val sideMargin by viewModel.sideMargin.collectAsStateWithLifecycle()
     val keepScreenOn by viewModel.keepScreenOn.collectAsStateWithLifecycle()
     val volumeScrollEnabled by viewModel.volumeScrollEnabled.collectAsStateWithLifecycle()
     val canUndoViewSettings by viewModel.canUndoViewSettings.collectAsStateWithLifecycle()
@@ -1883,9 +1884,10 @@ fun ComicReaderScreen(
                                                 val firstItem = visibleItems.firstOrNull()
 
                                                 val targetZoom = doubleTapZoomScale.coerceIn(1.5f, 4.0f)
-                                                val maxScrollX = horizScrollState.maxValue
                                                 val contentTapX = savedPreZoomHorizOffset + tapX
                                                 val targetScrollX = (contentTapX * targetZoom) - tapX
+                                                val computedMaxScrollX = (componentWidth * (targetZoom - 1f)).coerceAtLeast(0f)
+                                                val clampedTargetScrollX = targetScrollX.coerceIn(0f, computedMaxScrollX)
 
                                                 if (firstItem != null) {
                                                     val tapDistFromFirst = (tapY - firstItem.offset).coerceAtLeast(0f)
@@ -1898,11 +1900,17 @@ fun ComicReaderScreen(
                                                         index = firstItem.index,
                                                         scrollOffset = targetFirstItemOffset
                                                     )
-                                                    horizScrollState.animateScrollTo(targetScrollX.toInt().coerceIn(0, maxScrollX.coerceAtLeast(0)))
+                                                    coroutineScope.launch {
+                                                        kotlinx.coroutines.yield()
+                                                        horizScrollState.animateScrollTo(clampedTargetScrollX.toInt())
+                                                    }
                                                 } else {
                                                     zoomScaleTarget = targetZoom
                                                     viewModel.setActiveZoomScale(targetZoom)
-                                                    horizScrollState.animateScrollTo(targetScrollX.toInt().coerceIn(0, maxScrollX.coerceAtLeast(0)))
+                                                    coroutineScope.launch {
+                                                        kotlinx.coroutines.yield()
+                                                        horizScrollState.animateScrollTo(clampedTargetScrollX.toInt())
+                                                    }
                                                 }
                                             }
                                         }
@@ -2084,6 +2092,7 @@ fun ComicReaderScreen(
             modifier = Modifier
                 .width(with(LocalDensity.current) { (componentWidth * animatedZoomScale).toDp() })
                 .fillMaxHeight()
+                .padding(horizontal = sideMargin.dp)
                 .nestedScroll(nestedScrollConnection),
             verticalArrangement = Arrangement.spacedBy(pageSpacing.dp) // Dynamic reading spacing!
         ) {
@@ -2697,6 +2706,8 @@ fun ComicReaderScreen(
                 },
                 pageSpacing = pageSpacing,
                 onPageSpacingChange = { viewModel.setPageSpacing(it) },
+                sideMargin = sideMargin,
+                onSideMarginChange = { viewModel.setSideMargin(it) },
                 brightness = brightness,
                 onBrightnessChange = { viewModel.setBrightness(it) },
                 contrast = contrast,
@@ -3905,6 +3916,8 @@ fun DisplayThemeCanvasPopup(
     onCustomTintChange: (String) -> Unit,
     pageSpacing: Int,
     onPageSpacingChange: (Int) -> Unit,
+    sideMargin: Int = 0,
+    onSideMarginChange: (Int) -> Unit = {},
     brightness: Float,
     onBrightnessChange: (Float) -> Unit,
     contrast: Float,
@@ -3966,6 +3979,7 @@ fun DisplayThemeCanvasPopup(
             readerTheme = currentReaderTheme,
             customTint = customTint,
             pageSpacing = pageSpacing,
+            sideMargin = sideMargin,
             brightness = brightness,
             contrast = contrast,
             saturation = saturation,
@@ -4470,6 +4484,42 @@ fun DisplayThemeCanvasPopup(
 
                         Spacer(modifier = Modifier.height(12.dp))
 
+                        // Add Space (Side Margin) Slider
+                        Text("ADD SPACE (SIDE MARGIN)", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.fillMaxWidth().height(36.dp)
+                        ) {
+                            Text("${sideMargin}px", fontSize = 11.sp, color = Color.LightGray, modifier = Modifier.width(48.dp))
+                            Slider(
+                                value = sideMargin.toFloat(),
+                                onValueChange = wrapSlider<Float> { onSideMarginChange(it.toInt()) },
+                                onValueChangeFinished = onSliderChangeFinished,
+                                valueRange = 0f..50f,
+                                modifier = Modifier.weight(1f),
+                                colors = SliderDefaults.colors(thumbColor = MaterialTheme.colorScheme.primary)
+                            )
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                                listOf(0, 10, 25, 50).forEach { marginVal ->
+                                    Box(
+                                        modifier = Modifier
+                                            .clip(RoundedCornerShape(4.dp))
+                                            .background(if (sideMargin == marginVal) MaterialTheme.colorScheme.primary.copy(alpha = 0.25f) else Color.White.copy(alpha = 0.1f))
+                                            .border(1.dp, if (sideMargin == marginVal) MaterialTheme.colorScheme.primary else Color.Transparent, RoundedCornerShape(4.dp))
+                                            .clickable {
+                                                onRecordSnapshot()
+                                                onSideMarginChange(marginVal)
+                                            }
+                                            .padding(horizontal = 6.dp, vertical = 3.dp)
+                                    ) {
+                                        Text("$marginVal", fontSize = 10.sp, color = if (sideMargin == marginVal) MaterialTheme.colorScheme.primary else Color.White)
+                                    }
+                                }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
                         Text("CANVAS ENHANCEMENTS", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
                         Spacer(modifier = Modifier.height(6.dp))
                         CanvasSwitchRow(
@@ -4528,7 +4578,7 @@ fun DisplayThemeCanvasPopup(
                         CanvasSliderRow(
                             label = "Swipe Speed",
                             value = swipeSensitivity,
-                            range = 0.5f..2.5f,
+                            range = 0.5f..5.0f,
                             onValueChange = wrapSlider(onSwipeSensitivityChange),
                             format = "%.1fx",
                             onValueChangeFinished = onSliderChangeFinished
@@ -5729,6 +5779,7 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
     val currentReaderTheme by viewModel.readerTheme.collectAsStateWithLifecycle()
 
     val pageSpacing by viewModel.pageSpacing.collectAsStateWithLifecycle()
+    val sideMargin by viewModel.sideMargin.collectAsStateWithLifecycle()
     val doubleTapZoomScale by viewModel.doubleTapZoomScale.collectAsStateWithLifecycle()
     val volumeScrollEnabled by viewModel.volumeScrollEnabled.collectAsStateWithLifecycle()
     val bitmapConfigSetting by viewModel.bitmapConfigSetting.collectAsStateWithLifecycle()
@@ -6294,6 +6345,19 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                             value = pageSpacing.toFloat(),
                             onValueChange = { viewModel.setPageSpacing(it.toInt()) },
                             valueRange = 0f..32f,
+                            modifier = Modifier.fillMaxWidth()
+                        )
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // Add Space (Side Margin) Slider
+                        Text("ADD SPACE (SIDE MARGIN): ${sideMargin} PX", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text("Adds margin to both left and right sides of pages (0-50px)", fontSize = 11.sp, color = Color.Gray)
+                        Slider(
+                            value = sideMargin.toFloat(),
+                            onValueChange = { viewModel.setSideMargin(it.toInt()) },
+                            valueRange = 0f..50f,
                             modifier = Modifier.fillMaxWidth()
                         )
 

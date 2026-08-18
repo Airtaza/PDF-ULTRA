@@ -523,6 +523,14 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _pageSpacing = MutableStateFlow(sharedPrefs.getInt("page_spacing", 0))
     val pageSpacing: StateFlow<Int> = _pageSpacing.asStateFlow()
 
+    private val _sideMargin = MutableStateFlow(sharedPrefs.getInt("side_margin", 0))
+    val sideMargin: StateFlow<Int> = _sideMargin.asStateFlow()
+
+    fun setSideMargin(value: Int) {
+        _sideMargin.value = value
+        sharedPrefs.edit().putInt("side_margin", value).apply()
+    }
+
     private val _doubleTapZoomScale = MutableStateFlow(sharedPrefs.getFloat("double_tap_zoom_scale", 2.0f))
     val doubleTapZoomScale: StateFlow<Float> = _doubleTapZoomScale.asStateFlow()
 
@@ -861,6 +869,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val readerTheme: ReaderTheme = ReaderTheme.DARK,
         val customTint: String = "None",
         val pageSpacing: Int = 0,
+        val sideMargin: Int = 0,
         val brightness: Float = 1.0f,
         val contrast: Float = 1.0f,
         val saturation: Float = 1.0f,
@@ -899,6 +908,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
             readerTheme = _readerTheme.value,
             customTint = _customTint.value,
             pageSpacing = _pageSpacing.value,
+            sideMargin = _sideMargin.value,
             brightness = _brightness.value,
             contrast = _contrast.value,
             saturation = _saturation.value,
@@ -950,6 +960,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
         _pageSpacing.value = snapshot.pageSpacing
         sharedPrefs.edit().putInt("page_spacing", snapshot.pageSpacing).apply()
+
+        _sideMargin.value = snapshot.sideMargin
+        sharedPrefs.edit().putInt("side_margin", snapshot.sideMargin).apply()
 
         _brightness.value = snapshot.brightness
         sharedPrefs.edit().putFloat("view_brightness", snapshot.brightness).apply()
@@ -1058,6 +1071,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         setShadows(0.0f)
         setPresetFilter("NONE")
         setPageSpacing(0)
+        setSideMargin(0)
     }
 
     val activeScaleFactor: StateFlow<Float> = combine(
