@@ -23,6 +23,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.detectDragGestures
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.gestures.scrollBy
@@ -1622,6 +1624,7 @@ fun ComicReaderScreen(
     val zoomLockEnabled by viewModel.zoomLockEnabled.collectAsStateWithLifecycle()
     val lockedZoomLevel by viewModel.lockedZoomLevel.collectAsStateWithLifecycle()
     val doubleTapZoomScale by viewModel.doubleTapZoomScale.collectAsStateWithLifecycle()
+    val doubleTapResetEnabled by viewModel.doubleTapResetEnabled.collectAsStateWithLifecycle()
 
     val pageSpacing by viewModel.pageSpacing.collectAsStateWithLifecycle()
     val keepScreenOn by viewModel.keepScreenOn.collectAsStateWithLifecycle()
@@ -1646,21 +1649,27 @@ fun ComicReaderScreen(
         }
     }
 
-    var isTransforming by remember { mutableStateOf(false) }
+    var isScaling by remember { mutableStateOf(false) }
     var zoomScaleTarget by remember { mutableFloatStateOf(1.0f) }
     var isDraggingScrollbar by remember { mutableStateOf(false) }
     var showDisplayThemePopup by remember { mutableStateOf(false) }
     var displayPopupHeightDp by remember { mutableFloatStateOf(340f) }
+    var lastTapTime by remember { mutableLongStateOf(0L) }
+    var lastTapPosition by remember { mutableStateOf<Offset?>(null) }
+    var savedPreZoomItemIndex by remember { mutableIntStateOf(0) }
+    var savedPreZoomItemOffset by remember { mutableIntStateOf(0) }
+    var savedPreZoomHorizOffset by remember { mutableIntStateOf(0) }
+    val hapticFeedback = androidx.compose.ui.platform.LocalHapticFeedback.current
 
     LaunchedEffect(activeZoomScale) {
-        if (!isTransforming) {
+        if (!isScaling) {
             zoomScaleTarget = activeZoomScale
         }
     }
 
     val animatedZoomScale by androidx.compose.animation.core.animateFloatAsState(
         targetValue = zoomScaleTarget,
-        animationSpec = if (isTransforming) {
+        animationSpec = if (isScaling) {
             androidx.compose.animation.core.snap()
         } else {
             androidx.compose.animation.core.tween(durationMillis = 250, easing = androidx.compose.animation.core.FastOutSlowInEasing)
@@ -1688,35 +1697,236 @@ fun ComicReaderScreen(
         }
     } else Modifier
 
-    val transformableState = rememberTransformableState { zoomChange, panChange, _ ->
-        isTransforming = true
-        val newZoom = (zoomScaleTarget * zoomChange).coerceIn(1.0f, 4.0f)
-        zoomScaleTarget = newZoom
-        
-        if (newZoom > 1.0f) {
-            if (panChange.x != 0f) {
-                coroutineScope.launch {
-                    horizScrollState.scrollBy(-panChange.x)
-                }
-            }
-            if (panChange.y != 0f) {
-                coroutineScope.launch {
-                    lazyListState.scrollBy(-panChange.y)
+    val masterGestureModifier = if (!isMagnifierEnabled && !isDrawModeOn) {
+        Modifier.pointerInput(
+            isScreenLocked,
+            doubleTapZoomScale,
+            doubleTapResetEnabled,
+            hapticFeedbackEnabled,
+            pdfEngineSetting
+        ) {
+            val touchSlop = viewConfiguration.touchSlop
+            awaitEachGesture {
+                val firstDown = awaitFirstDown(requireUnconsumed = false)
+                val firstDownTime = System.currentTimeMillis()
+                val startPosition = firstDown.position
+
+                var isPinchActive = false
+                var multiTouchOccurred = false
+                var hasMovedBeyondSlop = false
+                var prevPanPos = startPosition
+
+                var pinchStartSpan = 0f
+                var pinchStartZoom = 1.0f
+                var pinchStartCentroid = startPosition
+                var pinchStartItemIndex = 0
+                var pinchStartItemOffset = 0
+                var pinchStartHorizScroll = 0
+
+                while (true) {
+                    val event = awaitPointerEvent()
+                    val pressedChanges = event.changes.filter { it.pressed }
+
+                    // --- 1. PINCH TO ZOOM (HIGHEST PRIORITY) ---
+                    if (pressedChanges.size >= 2) {
+                        multiTouchOccurred = true
+                        if (!isScaling) {
+                            isScaling = true
+                        }
+                        val p1 = pressedChanges[0].position
+                        val p2 = pressedChanges[1].position
+                        val currentSpan = kotlin.math.hypot((p1.x - p2.x).toDouble(), (p1.y - p2.y).toDouble()).toFloat()
+                        val currentCentroid = Offset((p1.x + p2.x) / 2f, (p1.y + p2.y) / 2f)
+
+                        if (!isPinchActive) {
+                            isPinchActive = true
+                            pinchStartSpan = currentSpan.coerceAtLeast(10f)
+                            pinchStartZoom = zoomScaleTarget
+                            pinchStartCentroid = currentCentroid
+                            pinchStartItemIndex = lazyListState.firstVisibleItemIndex
+                            pinchStartItemOffset = lazyListState.firstVisibleItemScrollOffset
+                            pinchStartHorizScroll = horizScrollState.value
+                        } else {
+                            if (pinchStartSpan > 0f && currentSpan > 0f && pdfEngineSetting != "NATIVE" && !isScreenLocked) {
+                                val totalZoomFactor = currentSpan / pinchStartSpan
+                                val newZoom = (pinchStartZoom * totalZoomFactor).coerceIn(1.0f, 4.0f)
+                                zoomScaleTarget = newZoom
+
+                                val scaleRatio = if (pinchStartZoom > 0f) newZoom / pinchStartZoom else 1.0f
+
+                                // Horizontal: anchor to pinchStartCentroid.x
+                                val startContentX = pinchStartHorizScroll + pinchStartCentroid.x
+                                val targetScrollX = (startContentX * scaleRatio) - currentCentroid.x
+                                val maxScrollX = horizScrollState.maxValue
+                                coroutineScope.launch {
+                                    horizScrollState.scrollTo(targetScrollX.toInt().coerceIn(0, maxScrollX.coerceAtLeast(0)))
+                                }
+
+                                // Vertical: anchor to pinchStartCentroid.y
+                                val startContentY = pinchStartItemOffset + pinchStartCentroid.y
+                                val targetItemOffset = (startContentY * scaleRatio) - currentCentroid.y
+                                coroutineScope.launch {
+                                    lazyListState.scrollToItem(
+                                        index = pinchStartItemIndex,
+                                        scrollOffset = targetItemOffset.toInt().coerceAtLeast(0)
+                                    )
+                                }
+                            }
+                        }
+
+                        // Consume all multi-touch changes to block child scrolling
+                        event.changes.forEach { it.consume() }
+                    }
+                    // --- 2. SINGLE FINGER ACTIVE ---
+                    else if (pressedChanges.size == 1) {
+                        val currentPos = pressedChanges[0].position
+                        val dx = currentPos.x - startPosition.x
+                        val dy = currentPos.y - startPosition.y
+                        val distance = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
+
+                        if (distance > touchSlop) {
+                            hasMovedBeyondSlop = true
+                        }
+
+                        // Consume remaining events if transitioning out of a pinch
+                        if (isPinchActive || multiTouchOccurred) {
+                            event.changes.forEach { it.consume() }
+                        }
+                        // If zoomed in, 1-finger drag pans content
+                        else if (zoomScaleTarget > 1.05f && pdfEngineSetting != "NATIVE" && !isScreenLocked) {
+                            val panDelta = currentPos - prevPanPos
+                            if (panDelta.x != 0f) {
+                                coroutineScope.launch {
+                                    horizScrollState.scrollBy(-panDelta.x)
+                                }
+                            }
+                            if (panDelta.y != 0f) {
+                                coroutineScope.launch {
+                                    lazyListState.scrollBy(-panDelta.y)
+                                }
+                            }
+                            prevPanPos = currentPos
+                            event.changes.forEach { it.consume() }
+                        }
+                        // When at 1.0x zoom, vertical drag is standard scroll (LOWEST PRIORITY fallback)
+                        else {
+                            prevPanPos = currentPos
+                        }
+                    }
+
+                    // --- 3. GESTURE COMPLETION (ALL POINTERS UP) ---
+                    val allUp = event.changes.all { !it.pressed }
+                    if (allUp) {
+                        if (isScaling || isPinchActive || multiTouchOccurred) {
+                            isScaling = false
+                            if (zoomScaleTarget < 1.05f) {
+                                zoomScaleTarget = 1.0f
+                                viewModel.setActiveZoomScale(1.0f)
+                                coroutineScope.launch {
+                                    if (pinchStartZoom <= 1.05f) {
+                                        lazyListState.scrollToItem(pinchStartItemIndex, pinchStartItemOffset)
+                                    }
+                                    horizScrollState.animateScrollTo(0)
+                                }
+                            } else {
+                                viewModel.setActiveZoomScale(zoomScaleTarget)
+                            }
+                        } else if (!hasMovedBeyondSlop) {
+                            // Candidate for Tap or Double Tap
+                            val clickDuration = System.currentTimeMillis() - firstDownTime
+                            if (clickDuration < 350) {
+                                val now = System.currentTimeMillis()
+                                val lastPos = lastTapPosition
+                                val tapDistance = if (lastPos != null) {
+                                    kotlin.math.hypot((startPosition.x - lastPos.x).toDouble(), (startPosition.y - lastPos.y).toDouble()).toFloat()
+                                } else Float.MAX_VALUE
+
+                                if (now - lastTapTime < 300 && tapDistance < 60f) {
+                                    // --- DOUBLE TAP DETECTED ---
+                                    lastTapTime = 0L
+                                    lastTapPosition = null
+
+                                    if (hapticFeedbackEnabled) {
+                                        try {
+                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
+                                        } catch (e: Exception) {}
+                                    }
+
+                                    event.changes.forEach { it.consume() }
+
+                                    // Schedule zoom toggle to execute AFTER touch cycle completes and settles
+                                    val tapX = startPosition.x
+                                    val tapY = startPosition.y
+                                    coroutineScope.launch {
+                                        kotlinx.coroutines.delay(16)
+                                        if (!isScreenLocked && pdfEngineSetting != "NATIVE") {
+                                            val currentActiveZoom = zoomScaleTarget
+                                            if (currentActiveZoom > 1.05f) {
+                                                // Zoom out: restore saved pre-zoom position exactly
+                                                if (doubleTapResetEnabled) {
+                                                    zoomScaleTarget = 1.0f
+                                                    viewModel.setActiveZoomScale(1.0f)
+                                                    lazyListState.scrollToItem(
+                                                        index = savedPreZoomItemIndex,
+                                                        scrollOffset = savedPreZoomItemOffset
+                                                    )
+                                                    horizScrollState.animateScrollTo(savedPreZoomHorizOffset)
+                                                }
+                                            } else {
+                                                // Zoom in: remember pre-zoom position first
+                                                savedPreZoomItemIndex = lazyListState.firstVisibleItemIndex
+                                                savedPreZoomItemOffset = lazyListState.firstVisibleItemScrollOffset
+                                                savedPreZoomHorizOffset = horizScrollState.value
+
+                                                // Find first visible item to anchor vertical position
+                                                val visibleItems = lazyListState.layoutInfo.visibleItemsInfo
+                                                val firstItem = visibleItems.firstOrNull()
+
+                                                val targetZoom = doubleTapZoomScale.coerceIn(1.5f, 4.0f)
+                                                val maxScrollX = horizScrollState.maxValue
+                                                val contentTapX = savedPreZoomHorizOffset + tapX
+                                                val targetScrollX = (contentTapX * targetZoom) - tapX
+
+                                                if (firstItem != null) {
+                                                    val tapDistFromFirst = (tapY - firstItem.offset).coerceAtLeast(0f)
+                                                    val newTapDist = tapDistFromFirst * targetZoom
+                                                    val targetFirstItemOffset = (newTapDist - tapY).toInt().coerceAtLeast(0)
+
+                                                    zoomScaleTarget = targetZoom
+                                                    viewModel.setActiveZoomScale(targetZoom)
+                                                    lazyListState.scrollToItem(
+                                                        index = firstItem.index,
+                                                        scrollOffset = targetFirstItemOffset
+                                                    )
+                                                    horizScrollState.animateScrollTo(targetScrollX.toInt().coerceIn(0, maxScrollX.coerceAtLeast(0)))
+                                                } else {
+                                                    zoomScaleTarget = targetZoom
+                                                    viewModel.setActiveZoomScale(targetZoom)
+                                                    horizScrollState.animateScrollTo(targetScrollX.toInt().coerceIn(0, maxScrollX.coerceAtLeast(0)))
+                                                }
+                                            }
+                                        }
+                                    }
+                                } else {
+                                    // --- FIRST TAP CANDIDATE ---
+                                    lastTapTime = now
+                                    lastTapPosition = startPosition
+                                    coroutineScope.launch {
+                                        kotlinx.coroutines.delay(260)
+                                        if (lastTapTime == now) {
+                                            if (!isScreenLocked) {
+                                                areControlsVisible = !areControlsVisible
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        break
+                    }
                 }
             }
         }
-    }
-
-    LaunchedEffect(isTransforming, zoomScaleTarget) {
-        if (isTransforming) {
-            kotlinx.coroutines.delay(120)
-            isTransforming = false
-            viewModel.setActiveZoomScale(zoomScaleTarget)
-        }
-    }
-
-    val zoomGestureModifier = if (!isMagnifierEnabled && !isDrawModeOn && !isScreenLocked && pdfEngineSetting != "NATIVE") {
-        Modifier.transformable(state = transformableState)
     } else Modifier
 
     LaunchedEffect(pdfEngineSetting) {
@@ -1846,7 +2056,7 @@ fun ComicReaderScreen(
             .then(backgroundBrushModifier)
             .onGloballyPositioned { componentWidth = it.size.width }
             .then(magnifierGestureModifier)
-            .then(zoomGestureModifier)
+            .then(masterGestureModifier)
             .then(
                 if (isMagnifierEnabled && magnifierPosition != null) {
                     Modifier.magnifier(
@@ -1857,7 +2067,6 @@ fun ComicReaderScreen(
             )
     ) {
         // --- 1. CONTINUOUS VERTICAL STRIP OF MANHWA PAGES ---
-        var lastClickTime by remember { mutableLongStateOf(0L) }
         Box(
             modifier = Modifier
                 .fillMaxSize()
@@ -1869,11 +2078,9 @@ fun ComicReaderScreen(
         // Chapter reach auto-load checking removed to prevent chaotic scroll jumping
         // Users must tap the Next/Prev chapter cards to navigate
 
-        val isZoomActive = isTransforming || zoomScaleTarget > 1.05f || animatedZoomScale > 1.05f
-
         LazyColumn(
             state = lazyListState,
-            userScrollEnabled = !isDrawModeOn && !isZoomActive && !isDraggingScrollbar, // Freeze standard scrolling when zooming or dragging scrollbar
+            userScrollEnabled = !isDrawModeOn && !isScaling && zoomScaleTarget <= 1.05f && !isDraggingScrollbar, // Freeze standard scrolling when scaling, zoomed, or dragging scrollbar
             modifier = Modifier
                 .width(with(LocalDensity.current) { (componentWidth * animatedZoomScale).toDp() })
                 .fillMaxHeight()
@@ -1954,51 +2161,7 @@ fun ComicReaderScreen(
                         autoNightShift = autoNightShift,
                         mangaScanCrisper = mangaScanCrisper,
                         colorMode = colorMode,
-                        landscapeSplitMode = vp.splitMode,
-                        isScreenLocked = isScreenLocked,
-                        onResetZoom = {
-                            coroutineScope.launch {
-                                horizScrollState.animateScrollTo(0)
-                            }
-                        },
-                        onPdfClick = {
-                            if (!isScreenLocked) {
-                                val currentTime = System.currentTimeMillis()
-                                if (currentTime - lastClickTime > 100) {
-                                    lastClickTime = currentTime
-                                    areControlsVisible = !areControlsVisible
-                                }
-                            }
-                        },
-                        onDoubleTap = { fractionX, fractionY, aspect ->
-                            if (isScreenLocked || pdfEngineSetting == "NATIVE") return@PdfPageItem
-                            val viewportHeight = lazyListState.layoutInfo.viewportSize.height
-                            val pageHeight = componentWidth * aspect
-                            val targetOffsetY = (fractionY * pageHeight * doubleTapZoomScale) - (viewportHeight / 2f)
-                            coroutineScope.launch {
-                                try {
-                                    lazyListState.animateScrollToItem(
-                                        index = virtualIdx,
-                                        scrollOffset = targetOffsetY.toInt().coerceAtLeast(0)
-                                    )
-                                } catch (e: Exception) {
-                                    lazyListState.scrollToItem(
-                                        index = virtualIdx,
-                                        scrollOffset = targetOffsetY.toInt().coerceAtLeast(0)
-                                    )
-                                }
-                            }
-                            coroutineScope.launch {
-                                kotlinx.coroutines.delay(120)
-                                val maxScrollX = horizScrollState.maxValue
-                                if (maxScrollX > 0) {
-                                    val targetScrollX = (fractionX * (componentWidth * doubleTapZoomScale)) - (componentWidth / 2f)
-                                    horizScrollState.animateScrollTo(
-                                        targetScrollX.toInt().coerceIn(0, maxScrollX)
-                                    )
-                                }
-                            }
-                        }
+                        landscapeSplitMode = vp.splitMode
                     )
 
                         // Draw drawing sketch overlay on page
@@ -2924,11 +3087,7 @@ fun PdfPageItem(
     autoNightShift: Boolean,
     mangaScanCrisper: Boolean,
     colorMode: ManhwaViewModel.ColorMode,
-    landscapeSplitMode: String = "NONE",
-    isScreenLocked: Boolean = false,
-    onResetZoom: (() -> Unit)? = null,
-    onPdfClick: () -> Unit,
-    onDoubleTap: (fractionX: Float, fractionY: Float, aspect: Float) -> Unit
+    landscapeSplitMode: String = "NONE"
 ) {
     val scaleFactor by viewModel.activeScaleFactor.collectAsStateWithLifecycle()
     val qualityLevel by viewModel.qualityLevel.collectAsStateWithLifecycle()
@@ -2943,15 +3102,6 @@ fun PdfPageItem(
     val highlights by viewModel.highlights.collectAsStateWithLifecycle()
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
 
-    val doubleTapZoomScale by viewModel.doubleTapZoomScale.collectAsStateWithLifecycle()
-    val doubleTapResetEnabled by viewModel.doubleTapResetEnabled.collectAsStateWithLifecycle()
-    val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsStateWithLifecycle()
-
-    val hapticFeedback = androidx.compose.ui.platform.LocalHapticFeedback.current
-    val coroutineScope = rememberCoroutineScope()
-    var lastTapTime by remember { mutableLongStateOf(0L) }
-    var lastTapPosition by remember { mutableStateOf<Offset?>(null) }
-
     LaunchedEffect(pageIndex, viewModel, landscapeSplitMode) {
         isLoadingAspect = true
         val baseAspect = viewModel.getPageAspectRatio(pageIndex)
@@ -2964,77 +3114,6 @@ fun PdfPageItem(
         modifier = Modifier
             .fillMaxWidth()
             .background(Color.White)
-            .pointerInput(isScreenLocked, doubleTapZoomScale, doubleTapResetEnabled, hapticFeedbackEnabled) {
-                awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
-                    val initialDownTime = System.currentTimeMillis()
-                    val startPosition = down.position
-                    var isTapCandidate = true
-
-                    while (true) {
-                        val event = awaitPointerEvent()
-                        
-                        // If there is more than 1 finger, it is a multi-touch pinch/pan gesture
-                        if (event.changes.size > 1) {
-                            isTapCandidate = false
-                        }
-
-                        val allUp = event.changes.all { !it.pressed }
-                        if (allUp) {
-                            val upChange = event.changes.firstOrNull()
-                            if (isTapCandidate) {
-                                val clickDuration = System.currentTimeMillis() - initialDownTime
-                                val dx = (upChange?.position?.x ?: startPosition.x) - startPosition.x
-                                val dy = (upChange?.position?.y ?: startPosition.y) - startPosition.y
-                                val distance = Math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
-
-                                if (clickDuration < 300 && distance < 40f) {
-                                    val now = System.currentTimeMillis()
-                                    // Double Tap Detection (within 300ms)
-                                    if (now - lastTapTime < 300) {
-                                        lastTapTime = 0L // Reset to prevent triple tap
-                                        
-                                        if (!isScreenLocked) {
-                                            if (hapticFeedbackEnabled) {
-                                                try {
-                                                    hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.LongPress)
-                                                } catch (e: Exception) {}
-                                            }
-                                            val currentActiveZoom = viewModel.activeZoomScale.value
-                                            if (currentActiveZoom > 1.05f) {
-                                                if (doubleTapResetEnabled) {
-                                                    viewModel.setActiveZoomScale(1.0f)
-                                                    onResetZoom?.invoke()
-                                                }
-                                            } else {
-                                                viewModel.setActiveZoomScale(doubleTapZoomScale)
-                                                val aspect = aspectRatio ?: 1.0f
-                                                val pageHeight = targetWidth * aspect
-                                                val fractionX = startPosition.x / targetWidth
-                                                val fractionY = startPosition.y / pageHeight
-                                                onDoubleTap(fractionX, fractionY, aspect)
-                                            }
-                                        }
-                                    } else {
-                                        // Single Tap Candidate
-                                        lastTapTime = now
-                                        coroutineScope.launch {
-                                            delay(250)
-                                            // If no second tap has overridden this timestamp, trigger single tap
-                                            if (lastTapTime == now) {
-                                                if (!isScreenLocked) {
-                                                    onPdfClick()
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                            break
-                        }
-                    }
-                }
-            }
     ) {
         val aspect = aspectRatio
         if (isLoadingAspect || aspect == null) {
@@ -3063,7 +3142,7 @@ fun PdfPageItem(
             val pdfEngineSetting by viewModel.pdfEngineSetting.collectAsStateWithLifecycle()
 
             if (pdfEngineSetting == "NATIVE") {
-                var nativePageBitmap by remember(pageIndex, targetWidth, scaleFactor, renderZoomStep, qualityLevel, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
+                var nativePageBitmap by remember(pageIndex, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
 
                 val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
                 val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
@@ -3086,9 +3165,6 @@ fun PdfPageItem(
                 }
 
                 LaunchedEffect(pageIndex, targetWidth, scaleFactor, renderZoomStep, qualityLevel, landscapeSplitMode) {
-                    if (nativePageBitmap != null) {
-                        return@LaunchedEffect
-                    }
                     val bmp = viewModel.renderPage(
                         pageIndex = pageIndex,
                         targetWidth = targetWidth,
@@ -3100,7 +3176,7 @@ fun PdfPageItem(
                     }
                 }
 
-                DisposableEffect(pageIndex, targetWidth, scaleFactor, renderZoomStep, qualityLevel, landscapeSplitMode) {
+                DisposableEffect(pageIndex, landscapeSplitMode) {
                     onDispose {
                         // Directly unload page bitmap when scrolled off view in Native mode
                         nativePageBitmap = null
@@ -6389,7 +6465,7 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                         Slider(
                             value = swipeSensitivity,
                             onValueChange = { viewModel.setSwipeSensitivity(it) },
-                            valueRange = 0.5f..2.5f,
+                            valueRange = 0.5f..5.0f,
                             modifier = Modifier.fillMaxWidth()
                         )
 
