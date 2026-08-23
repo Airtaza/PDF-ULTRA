@@ -1603,11 +1603,12 @@ class ManhwaViewModel(private val application: Application, private val reposito
                     }
                     lastPageChangeTimestamp = now
                 }
-                val updatedTab = tab.copy(currentPage = pageIndex, scrollOffset = offset)
-                tab.manhwa?.let { manhwa ->
+                val updatedManhwa = tab.manhwa?.copy(lastReadPage = pageIndex, scrollOffset = offset, lastOpened = now)
+                val updatedTab = tab.copy(currentPage = pageIndex, scrollOffset = offset, manhwa = updatedManhwa)
+                updatedManhwa?.let { m ->
                     dbUpdateJob?.cancel()
                     dbUpdateJob = viewModelScope.launch(Dispatchers.IO) {
-                        repository.updateManhwa(manhwa.copy(lastReadPage = pageIndex, scrollOffset = offset, lastOpened = now))
+                        repository.updateManhwa(m)
                     }
                 }
                 updatedTab

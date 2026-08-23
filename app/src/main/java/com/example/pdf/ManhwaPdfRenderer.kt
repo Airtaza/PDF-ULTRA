@@ -78,28 +78,22 @@ class ManhwaPdfRenderer(
             parcelFileDescriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
             pdfRenderer = PdfRenderer(parcelFileDescriptor!!)
             
-            // Asynchronously pre-populate aspect ratios of all pages to make scrolling completely instant
+            // Populate aspect ratios of all pages synchronously on initialization
             val renderer = pdfRenderer
             if (renderer != null) {
                 val count = renderer.pageCount
-                CoroutineScope(Dispatchers.IO).launch {
-                    try {
-                        for (i in 0 until count) {
-                            if (isClosed || pdfRenderer == null) break
-                            synchronized(this@ManhwaPdfRenderer) {
-                                if (isClosed || pdfRenderer == null) return@synchronized
-                                val page = try { renderer.openPage(i) } catch (e: Throwable) { null }
-                                if (page != null) {
-                                    val ratio = page.height.toFloat() / page.width.toFloat()
-                                    page.close()
-                                    aspectRatios[i] = ratio
-                                }
+                synchronized(this@ManhwaPdfRenderer) {
+                    for (i in 0 until count) {
+                        try {
+                            val page = renderer.openPage(i)
+                            if (page.width > 0 && page.height > 0) {
+                                val ratio = page.height.toFloat() / page.width.toFloat()
+                                aspectRatios[i] = ratio
                             }
-                            // Yield CPU and allow render requests to acquire lock
-                            kotlinx.coroutines.delay(30)
+                            page.close()
+                        } catch (e: Throwable) {
+                            e.printStackTrace()
                         }
-                    } catch (e: Throwable) {
-                        e.printStackTrace()
                     }
                 }
             }
@@ -110,7 +104,7 @@ class ManhwaPdfRenderer(
 
     suspend fun getPageAspectRatio(pageIndex: Int): Float = withContext(Dispatchers.IO) {
         val cached = aspectRatios[pageIndex]
-        if (cached != null) return@withContext cached
+        if (cached != null && cached > 0.05f) return@withContext cached
 
         if (isClosed || pdfRenderer == null) return@withContext 1.414f
         val renderer = pdfRenderer ?: return@withContext 1.414f
@@ -120,14 +114,15 @@ class ManhwaPdfRenderer(
         try {
             synchronized(this@ManhwaPdfRenderer) {
                 if (isClosed || pdfRenderer == null) return@synchronized 1.414f
-                // Double check after acquiring lock
                 val cached2 = aspectRatios[pageIndex]
-                if (cached2 != null) return@synchronized cached2
+                if (cached2 != null && cached2 > 0.05f) return@synchronized cached2
 
                 val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null } ?: return@synchronized 1.414f
                 val ratio = page.height.toFloat() / page.width.toFloat()
                 page.close()
-                aspectRatios[pageIndex] = ratio
+                if (ratio > 0.05f) {
+                    aspectRatios[pageIndex] = ratio
+                }
                 ratio
             }
         } catch (e: Throwable) {

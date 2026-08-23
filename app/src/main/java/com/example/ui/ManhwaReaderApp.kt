@@ -23,6 +23,7 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import kotlinx.coroutines.flow.distinctUntilChanged
 import androidx.compose.ui.layout.positionInParent
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.BorderStroke
@@ -1668,6 +1669,9 @@ fun ComicReaderScreen(
     val eyeRestIntervalMinutes by viewModel.eyeRestIntervalMinutes.collectAsStateWithLifecycle()
     val volumeKeyNavigation by viewModel.volumeKeyNavigation.collectAsStateWithLifecycle()
     val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsStateWithLifecycle()
+    val leftTapAction by viewModel.leftTapAction.collectAsStateWithLifecycle()
+    val rightTapAction by viewModel.rightTapAction.collectAsStateWithLifecycle()
+    val centerTapAction by viewModel.centerTapAction.collectAsStateWithLifecycle()
 
     val currentView = androidx.compose.ui.platform.LocalView.current
     DisposableEffect(keepScreenOn) {
@@ -1756,6 +1760,17 @@ fun ComicReaderScreen(
                     val event = awaitPointerEvent()
                     val pressedChanges = event.changes.filter { it.pressed }
 
+                    // Track movement across all changes against startPosition
+                    event.changes.forEach { c ->
+                        val dist = kotlin.math.hypot(
+                            (c.position.x - startPosition.x).toDouble(),
+                            (c.position.y - startPosition.y).toDouble()
+                        ).toFloat()
+                        if (dist > touchSlop) {
+                            hasMovedBeyondSlop = true
+                        }
+                    }
+
                     // --- 1. PINCH TO ZOOM (HIGHEST PRIORITY) ---
                     if (pressedChanges.size >= 2) {
                         multiTouchOccurred = true
@@ -1809,13 +1824,6 @@ fun ComicReaderScreen(
                     // --- 2. SINGLE FINGER ACTIVE ---
                     else if (pressedChanges.size == 1) {
                         val currentPos = pressedChanges[0].position
-                        val dx = currentPos.x - startPosition.x
-                        val dy = currentPos.y - startPosition.y
-                        val distance = kotlin.math.hypot(dx.toDouble(), dy.toDouble()).toFloat()
-
-                        if (distance > touchSlop) {
-                            hasMovedBeyondSlop = true
-                        }
 
                         // Consume remaining events if transitioning out of a pinch
                         if (isPinchActive || multiTouchOccurred) {
@@ -1953,11 +1961,34 @@ fun ComicReaderScreen(
                                     // --- FIRST TAP CANDIDATE ---
                                     lastTapTime = now
                                     lastTapPosition = startPosition
+                                    val tapX = startPosition.x
+                                    val widthPx = componentWidth.coerceAtLeast(1)
+                                    val tapActionToPerform = when {
+                                        tapX < widthPx * 0.3f -> leftTapAction
+                                        tapX > widthPx * 0.7f -> rightTapAction
+                                        else -> centerTapAction
+                                    }
                                     coroutineScope.launch {
                                         kotlinx.coroutines.delay(260)
                                         if (lastTapTime == now) {
                                             if (!isScreenLocked && !isAnyMenuOrSettingsOpen) {
-                                                areControlsVisible = !areControlsVisible
+                                                when (tapActionToPerform) {
+                                                    "PREV_PAGE" -> {
+                                                        val currIdx = lazyListState.firstVisibleItemIndex
+                                                        if (currIdx > 0) {
+                                                            lazyListState.animateScrollToItem(currIdx - 1)
+                                                        }
+                                                    }
+                                                    "NEXT_PAGE" -> {
+                                                        val currIdx = lazyListState.firstVisibleItemIndex
+                                                        if (currIdx < virtualPages.size - 1) {
+                                                            lazyListState.animateScrollToItem(currIdx + 1)
+                                                        }
+                                                    }
+                                                    else -> {
+                                                        areControlsVisible = !areControlsVisible
+                                                    }
+                                                }
                                             }
                                         }
                                     }
@@ -1995,6 +2026,19 @@ fun ComicReaderScreen(
                 } catch (e: Exception) {
                     // Ignore any instant scroll conflicts
                 }
+            }
+        }
+    }
+
+    // Continuous scroll position synchronization to ViewModel
+    LaunchedEffect(lazyListState, activeManhwaId) {
+        snapshotFlow {
+            lazyListState.firstVisibleItemIndex to lazyListState.firstVisibleItemScrollOffset
+        }
+        .distinctUntilChanged()
+        .collect { (virtualIndex, offset) ->
+            if (activeManhwaId > 0 && (virtualIndex > 0 || offset > 0 || lazyListState.isScrollInProgress)) {
+                viewModel.setCurrentVirtualPageAndOffset(virtualIndex, offset)
             }
         }
     }
