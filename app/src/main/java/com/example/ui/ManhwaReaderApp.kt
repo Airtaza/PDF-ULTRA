@@ -7,7 +7,15 @@ import android.graphics.Bitmap
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.togetherWith
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.animateContentSize
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -15,6 +23,8 @@ import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideInVertically
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.slideOutVertically
+import androidx.compose.ui.layout.positionInParent
+import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.Image
@@ -34,10 +44,12 @@ import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -302,11 +314,18 @@ fun ManhwaReaderApp(viewModel: ManhwaViewModel) {
                 .fillMaxSize()
                 .padding(innerPadding)
         ) {
-            when {
-                activeTab?.type == TabType.READER && activeTab?.manhwa != null -> {
+            AnimatedContent(
+                targetState = activeTab?.id,
+                transitionSpec = {
+                    (fadeIn(animationSpec = tween(220)) + slideInHorizontally(animationSpec = tween(250)) { width -> if (activeTab?.type == TabType.READER) width else -width })
+                        .togetherWith(fadeOut(animationSpec = tween(180)) + slideOutHorizontally(animationSpec = tween(220)) { width -> if (activeTab?.type == TabType.READER) -width else width })
+                },
+                label = "main_tab_transition"
+            ) { targetTabId ->
+                val currentTab = tabs.find { it.id == targetTabId }
+                if (currentTab?.type == TabType.READER && currentTab.manhwa != null) {
                     ComicReaderScreen(viewModel = viewModel, onControlsVisibilityChanged = { isReaderControlsVisible = it })
-                }
-                else -> {
+                } else {
                     LobbyScreen(viewModel = viewModel)
                 }
             }
@@ -1600,11 +1619,21 @@ fun ComicReaderScreen(
     var isDrawModeOn by remember { mutableStateOf(false) }
     var showAddBookmarkDialog by remember { mutableStateOf(false) }
     var bookmarkTitleInput by remember { mutableStateOf("") }
+    var showDisplayThemePopup by remember { mutableStateOf(false) }
 
-    val lazyListState = rememberLazyListState(
-        initialFirstVisibleItemIndex = activeManhwa?.lastReadPage ?: 0,
-        initialFirstVisibleItemScrollOffset = activeManhwa?.scrollOffset ?: 0
-    )
+    val isOutlineDrawerOpen by viewModel.isOutlineDrawerOpen.collectAsStateWithLifecycle()
+    val isAnyMenuOrSettingsOpen = showDisplayThemePopup || isOutlineDrawerOpen || showAddBookmarkDialog
+
+    val activeManhwaIdKey = activeManhwa?.id ?: 0L
+    val lazyListState = rememberSaveable(
+        activeManhwaIdKey,
+        saver = LazyListState.Saver
+    ) {
+        LazyListState(
+            firstVisibleItemIndex = activeManhwa?.lastReadPage ?: 0,
+            firstVisibleItemScrollOffset = activeManhwa?.scrollOffset ?: 0
+        )
+    }
 
     LaunchedEffect(lazyListState.isScrollInProgress) {
         viewModel.setUserScrolling(lazyListState.isScrollInProgress)
@@ -1653,7 +1682,6 @@ fun ComicReaderScreen(
     var isScaling by remember { mutableStateOf(false) }
     var zoomScaleTarget by remember { mutableFloatStateOf(1.0f) }
     var isDraggingScrollbar by remember { mutableStateOf(false) }
-    var showDisplayThemePopup by remember { mutableStateOf(false) }
     var displayPopupHeightDp by remember { mutableFloatStateOf(340f) }
     var lastTapTime by remember { mutableLongStateOf(0L) }
     var lastTapPosition by remember { mutableStateOf<Offset?>(null) }
@@ -1835,7 +1863,7 @@ fun ComicReaderScreen(
                         } else if (!hasMovedBeyondSlop) {
                             // Candidate for Tap or Double Tap
                             val clickDuration = System.currentTimeMillis() - firstDownTime
-                            if (clickDuration < 350) {
+                            if (clickDuration < 350 && !isAnyMenuOrSettingsOpen) {
                                 val now = System.currentTimeMillis()
                                 val lastPos = lastTapPosition
                                 val tapDistance = if (lastPos != null) {
@@ -1900,16 +1928,22 @@ fun ComicReaderScreen(
                                                         index = firstItem.index,
                                                         scrollOffset = targetFirstItemOffset
                                                     )
-                                                    coroutineScope.launch {
-                                                        kotlinx.coroutines.yield()
-                                                        horizScrollState.animateScrollTo(clampedTargetScrollX.toInt())
-                                                    }
                                                 } else {
                                                     zoomScaleTarget = targetZoom
                                                     viewModel.setActiveZoomScale(targetZoom)
-                                                    coroutineScope.launch {
-                                                        kotlinx.coroutines.yield()
-                                                        horizScrollState.animateScrollTo(clampedTargetScrollX.toInt())
+                                                }
+
+                                                coroutineScope.launch {
+                                                    val targetInt = clampedTargetScrollX.toInt()
+                                                    for (attempt in 0..15) {
+                                                        kotlinx.coroutines.delay(16)
+                                                        if (horizScrollState.maxValue > 0) {
+                                                            horizScrollState.scrollTo(targetInt.coerceAtMost(horizScrollState.maxValue))
+                                                            break
+                                                        }
+                                                    }
+                                                    if (horizScrollState.maxValue > 0) {
+                                                        horizScrollState.animateScrollTo(targetInt.coerceAtMost(horizScrollState.maxValue))
                                                     }
                                                 }
                                             }
@@ -1922,7 +1956,7 @@ fun ComicReaderScreen(
                                     coroutineScope.launch {
                                         kotlinx.coroutines.delay(260)
                                         if (lastTapTime == now) {
-                                            if (!isScreenLocked) {
+                                            if (!isScreenLocked && !isAnyMenuOrSettingsOpen) {
                                                 areControlsVisible = !areControlsVisible
                                             }
                                         }
@@ -1982,10 +2016,12 @@ fun ComicReaderScreen(
 
     val nestedScrollConnection = remember(swipeSensitivity) {
         object : NestedScrollConnection {
-            override fun onPreScroll(available: Offset, source: NestedScrollSource): Offset {
+            override fun onPostScroll(consumed: Offset, available: Offset, source: NestedScrollSource): Offset {
                 if (source == NestedScrollSource.Drag && swipeSensitivity != 1.0f && !isDrawModeOn) {
-                    val extraY = available.y * (swipeSensitivity - 1.0f)
-                    lazyListState.dispatchRawDelta(-extraY)
+                    val extraY = consumed.y * (swipeSensitivity - 1.0f)
+                    if (kotlin.math.abs(extraY) > 0.1f) {
+                        lazyListState.dispatchRawDelta(-extraY)
+                    }
                 }
                 return Offset.Zero
             }
@@ -2154,9 +2190,11 @@ fun ComicReaderScreen(
                         .fillMaxWidth()
                         .wrapContentHeight()
                 ) {
+                    val displayPxDensity = LocalDensity.current.density
+                    val paddedTargetWidth = (componentWidth - (sideMargin * 2 * displayPxDensity).toInt()).coerceAtLeast(320)
                     PdfPageItem(
                         pageIndex = vp.physicalPageIndex,
-                        targetWidth = componentWidth,
+                        targetWidth = paddedTargetWidth,
                         zoomScale = animatedZoomScale,
                         isScrollInProgress = lazyListState.isScrollInProgress,
                         viewModel = viewModel,
@@ -2301,9 +2339,9 @@ fun ComicReaderScreen(
             val visibleItems = lazyListState.layoutInfo.visibleItemsInfo
 
             val progress = remember(firstVisibleIndex, firstVisibleOffset, totalVirtualPages, visibleItems) {
-                if (visibleItems.isEmpty()) 0f
+                val firstVisibleItem = visibleItems.firstOrNull()
+                if (firstVisibleItem == null) 0f
                 else {
-                    val firstVisibleItem = visibleItems.first()
                     val itemSize = firstVisibleItem.size.toFloat().coerceAtLeast(1f)
                     val fraction = (firstVisibleOffset.toFloat() / itemSize).coerceIn(0f, 1f)
                     ((firstVisibleIndex.toFloat() + fraction) / (totalVirtualPages - 1).coerceAtLeast(1).toFloat()).coerceIn(0f, 1f)
@@ -2449,14 +2487,14 @@ fun ComicReaderScreen(
             }
         }
 
-        // Lock / Unlock Icon Button in Full Screen Mode (Top Right Corner - No Background)
+        // Lock / Unlock Icon Button in Full Screen Mode (Bottom Right Corner)
         AnimatedVisibility(
             visible = !isDrawModeOn && !areControlsVisible,
-            enter = fadeIn() + slideInVertically(initialOffsetY = { -it }),
-            exit = fadeOut() + slideOutVertically(targetOffsetY = { -it }),
+            enter = fadeIn() + slideInVertically(initialOffsetY = { it }),
+            exit = fadeOut() + slideOutVertically(targetOffsetY = { it }),
             modifier = Modifier
-                .align(Alignment.TopEnd)
-                .padding(top = 16.dp, end = 16.dp)
+                .align(Alignment.BottomEnd)
+                .padding(bottom = if (autoScrollSpeed > 0f || pausedAutoScrollSpeed != null) 80.dp else 24.dp, end = 20.dp)
         ) {
             IconButton(
                 onClick = { isScreenLocked = !isScreenLocked },
@@ -2764,6 +2802,18 @@ fun ComicReaderScreen(
                 onSwipeSensitivityChange = { viewModel.setSwipeSensitivity(it) },
                 doubleTapZoomScale = doubleTapZoomScale,
                 onDoubleTapZoomScaleChange = { viewModel.setDoubleTapZoomScale(it) },
+                doubleTapResetEnabled = doubleTapResetEnabled,
+                onToggleDoubleTapReset = {
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setDoubleTapResetEnabled(it)
+                },
+                zoomLockEnabled = zoomLockEnabled,
+                onToggleZoomLock = {
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setZoomLockEnabled(it)
+                },
+                autoScrollSpeed = autoScrollSpeed,
+                onAutoScrollSpeedChange = { viewModel.setAutoScrollSpeed(it) },
                 borderTrimEnabled = borderTrimEnabled,
                 onToggleBorderTrim = { 
                     viewModel.pushViewSettingsSnapshotBeforeChange()
@@ -3953,6 +4003,12 @@ fun DisplayThemeCanvasPopup(
     onSwipeSensitivityChange: (Float) -> Unit,
     doubleTapZoomScale: Float,
     onDoubleTapZoomScaleChange: (Float) -> Unit,
+    doubleTapResetEnabled: Boolean = true,
+    onToggleDoubleTapReset: (Boolean) -> Unit = {},
+    zoomLockEnabled: Boolean = false,
+    onToggleZoomLock: (Boolean) -> Unit = {},
+    autoScrollSpeed: Float = 0f,
+    onAutoScrollSpeedChange: (Float) -> Unit = {},
     borderTrimEnabled: Boolean,
     onToggleBorderTrim: (Boolean) -> Unit,
     eyeRestReminderEnabled: Boolean,
@@ -4591,6 +4647,36 @@ fun DisplayThemeCanvasPopup(
                             range = 1.5f..4.0f,
                             onValueChange = wrapSlider(onDoubleTapZoomScaleChange),
                             format = "%.1fx",
+                            onValueChangeFinished = onSliderChangeFinished
+                        )
+
+                        CanvasSwitchRow(
+                            title = "Double Tap Reset Zoom",
+                            subtitle = "Second double-tap returns zoom to fit-screen",
+                            checked = doubleTapResetEnabled,
+                            onCheckedChange = {
+                                onRecordSnapshot()
+                                onToggleDoubleTapReset(it)
+                            }
+                        )
+
+                        CanvasSwitchRow(
+                            title = "Zoom Lock",
+                            subtitle = "Locks current zoom level across page navigation",
+                            checked = zoomLockEnabled,
+                            onCheckedChange = {
+                                onRecordSnapshot()
+                                onToggleZoomLock(it)
+                            }
+                        )
+
+                        // Hands-Free Auto Scroll Speed Slider
+                        CanvasSliderRow(
+                            label = "Auto Scroll Speed",
+                            value = autoScrollSpeed,
+                            range = 0.0f..10.0f,
+                            onValueChange = wrapSlider(onAutoScrollSpeedChange),
+                            format = if (autoScrollSpeed == 0f) "Off" else "%.1fx",
                             onValueChangeFinished = onSliderChangeFinished
                         )
 
@@ -5797,7 +5883,6 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
     val volumeKeyNavigation by viewModel.volumeKeyNavigation.collectAsStateWithLifecycle()
     val readingDirection by viewModel.readingDirection.collectAsStateWithLifecycle()
     val zoomLockEnabled by viewModel.zoomLockEnabled.collectAsStateWithLifecycle()
-    val lockedZoomLevel by viewModel.lockedZoomLevel.collectAsStateWithLifecycle()
 
     val lowResScrollDelay by viewModel.lowResScrollDelay.collectAsStateWithLifecycle()
     val hdScrollDelay by viewModel.hdScrollDelay.collectAsStateWithLifecycle()
@@ -5821,7 +5906,6 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
     
     val leftTapAction by viewModel.leftTapAction.collectAsStateWithLifecycle()
     val rightTapAction by viewModel.rightTapAction.collectAsStateWithLifecycle()
-    val centerTapAction by viewModel.centerTapAction.collectAsStateWithLifecycle()
     val eyeRestReminderEnabled by viewModel.eyeRestReminderEnabled.collectAsStateWithLifecycle()
     val eyeRestIntervalMinutes by viewModel.eyeRestIntervalMinutes.collectAsStateWithLifecycle()
     val borderTrimEnabled by viewModel.borderTrimEnabled.collectAsStateWithLifecycle()
@@ -5835,9 +5919,14 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
 
     var searchQuery by remember { mutableStateOf("") }
     var expandedHeaderId by remember { mutableStateOf<String?>("library_shelf") }
+    var selectedCategoryFilter by remember { mutableStateOf("ALL") }
     val favoriteHeaderIds by viewModel.favoriteHeaderIds.collectAsStateWithLifecycle()
     var showBackupDialog by remember { mutableStateOf(false) }
     var importJsonInput by remember { mutableStateOf("") }
+
+    val scrollState = rememberScrollState()
+    val coroutineScope = rememberCoroutineScope()
+    val sectionYPositions = remember { mutableStateMapOf<String, Int>() }
 
     LaunchedEffect(Unit, qualityLevel, qualitySelectionEnabled) {
         cacheSizeText = viewModel.getMemoryCacheSizeText()
@@ -5847,8 +5936,8 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
         modifier = Modifier
             .fillMaxSize()
             .background(MaterialTheme.colorScheme.background)
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 16.dp, vertical = 12.dp)
+            .verticalScroll(scrollState)
     ) {
         // --- 1. LOBBY TITLE HEADER ---
         Row(
@@ -5872,8 +5961,8 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
             }
             Box(
                 modifier = Modifier
-                    .size(36.dp)
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), CircleShape),
+                    .size(38.dp)
+                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.12f), CircleShape),
                 contentAlignment = Alignment.Center
             ) {
                 Icon(
@@ -5885,9 +5974,9 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
             }
         }
 
-        Spacer(modifier = Modifier.height(16.dp))
+        Spacer(modifier = Modifier.height(14.dp))
 
-        // --- 2. TOP BLUE SEARCH BAR ---
+        // --- 2. SEARCH BAR ---
         OutlinedTextField(
             value = searchQuery,
             onValueChange = { searchQuery = it },
@@ -5922,108 +6011,151 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
             shape = RoundedCornerShape(24.dp),
             colors = OutlinedTextFieldDefaults.colors(
                 focusedBorderColor = MaterialTheme.colorScheme.primary,
-                unfocusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.4f),
+                unfocusedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.3f),
                 focusedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.04f),
                 unfocusedContainerColor = MaterialTheme.colorScheme.surface
             ),
             singleLine = true
         )
 
+        Spacer(modifier = Modifier.height(12.dp))
+
+        // --- 3. CATEGORY QUICK FILTER PILLS ---
+        val categories = listOf(
+            Pair("ALL", "All Hubs"),
+            Pair("LIBRARY", "📚 Library"),
+            Pair("PERFORMANCE", "⚙️ Engine"),
+            Pair("DISPLAY", "🎨 Display"),
+            Pair("GESTURES", "👆 Gestures"),
+            Pair("SYSTEM", "🛠️ System")
+        )
+
+        LazyRow(
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            items(categories) { (code, label) ->
+                val isSelected = selectedCategoryFilter == code
+                Surface(
+                    onClick = {
+                        selectedCategoryFilter = code
+                        val targetId = when (code) {
+                            "LIBRARY" -> "library_shelf"
+                            "PERFORMANCE" -> "perf_engine"
+                            "DISPLAY" -> "display_visuals"
+                            "GESTURES" -> "gestures_health"
+                            "SYSTEM" -> "system_tools"
+                            else -> null
+                        }
+                        if (targetId != null) {
+                            expandedHeaderId = targetId
+                            sectionYPositions[targetId]?.let { y ->
+                                coroutineScope.launch {
+                                    scrollState.animateScrollTo(y, animationSpec = tween(500))
+                                }
+                            }
+                        }
+                    },
+                    shape = RoundedCornerShape(20.dp),
+                    color = if (isSelected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant,
+                    border = BorderStroke(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.2f))
+                ) {
+                    Text(
+                        text = label,
+                        fontSize = 12.sp,
+                        fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                        color = if (isSelected) MaterialTheme.colorScheme.onPrimary else MaterialTheme.colorScheme.onSurfaceVariant,
+                        modifier = Modifier.padding(horizontal = 14.dp, vertical = 7.dp)
+                    )
+                }
+            }
+        }
+
         Spacer(modifier = Modifier.height(16.dp))
 
-        // --- 3. ACCORDION HEADERS DEFINITION ---
+        // --- 4. CONSOLIDATED 5 FEATURE HUBS ---
         val rawHeaderSections = listOf(
-            LobbyHeaderSection(
-                id = "demo_pdf_sandbox",
-                title = "Demo & Sandbox PDF Playground",
-                subtitle = "Generate a sample PDF comic to experience instant gapless continuous loading",
-                icon = Icons.Default.PlayArrow,
-                searchKeywords = "demo sample pdf test generate create sandbox testbook dummy comic continuous gapless",
-                content = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(vertical = 4.dp),
-                        horizontalAlignment = Alignment.Start
-                    ) {
-                        Text(
-                            text = "No PDF file on hand? Try out the Ultra Sandbox. Create and load a multi-page test PDF featuring simulated beautiful custom artwork patterns (Mandelbrot fractals, color grids, and text alignments) specifically designed to test zoom responsiveness, color profiles, contrast enhancements, and vertical gapless continuous rendering.",
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            lineHeight = 16.sp
-                        )
-                        Spacer(modifier = Modifier.height(12.dp))
-                        Button(
-                            onClick = {
-                                viewModel.createDummyTestPdf()
-                            },
-                            modifier = Modifier.fillMaxWidth().height(48.dp).testTag("generate_demo_pdf_button"),
-                            shape = RoundedCornerShape(12.dp),
-                            colors = ButtonDefaults.buttonColors(
-                                containerColor = MaterialTheme.colorScheme.primary,
-                                contentColor = MaterialTheme.colorScheme.onPrimary
-                            )
-                        ) {
-                            Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(20.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("Generate & Open Demo PDF Comic", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                        }
-                    }
-                }
-            ),
+            // HUB 1: LIBRARY
             LobbyHeaderSection(
                 id = "library_shelf",
-                title = "My PDF Shelf",
-                subtitle = "Import and open loaded PDF comics, read history & progress analysis",
+                title = "My Library & Reading Hub",
+                subtitle = "PDF shelf, reading history & demo playground",
                 icon = Icons.Default.Book,
-                searchKeywords = "pdf shelf loaded comics read history continuous gapless list pdfs continue reading reading analysis",
-                content = {
-                    LibraryScreen(viewModel = viewModel)
-                }
-            ),
-            LobbyHeaderSection(
-                id = "plugin_manager",
-                title = "Plugin Store & Extensions",
-                subtitle = "Install, activate, and manage custom render modules",
-                icon = Icons.Default.Build,
-                searchKeywords = "plugin store manager dynamic modules extensions view enhancer manhwa editor active load",
-                content = {
-                    PluginsScreen(viewModel = viewModel)
-                }
-            ),
-            LobbyHeaderSection(
-                id = "perf_rendering",
-                title = "Performance & Rendering Engine",
-                subtitle = "PDF quality scaling, GPU bitmap format, text modes & memory purge",
-                icon = Icons.Default.Speed,
-                searchKeywords = "pdf quality resolution scale memory cache ram rendering bitmap gc text mode",
+                categoryCode = "LIBRARY",
+                badgeText = "Shelf & Demo",
+                searchKeywords = "pdf shelf loaded comics read history continuous gapless list pdfs continue reading reading analysis demo sample pdf test generate sandbox dummy comic",
                 content = {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        // ACTIVE PDF RENDER ENGINE CARD
+                        // Demo Sandbox Quick Card
                         Card(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .padding(bottom = 12.dp),
                             shape = RoundedCornerShape(12.dp),
                             colors = CardDefaults.cardColors(
-                                containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                                containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.08f)
                             ),
-                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.3f))
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
+                        ) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(12.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text("DEMO & SANDBOX PDF", fontWeight = FontWeight.Black, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                                    Text("Create sample comic with custom fractal artwork patterns to test continuous vertical loading.", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
+                                }
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Button(
+                                    onClick = { viewModel.createDummyTestPdf() },
+                                    shape = RoundedCornerShape(10.dp),
+                                    modifier = Modifier.testTag("generate_demo_pdf_button"),
+                                    contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp)
+                                ) {
+                                    Icon(Icons.Default.PlayArrow, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Demo PDF", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                                }
+                            }
+                        }
+
+                        // Full Library Screen
+                        LibraryScreen(viewModel = viewModel)
+                    }
+                }
+            ),
+
+            // HUB 2: PERFORMANCE & RENDER ENGINE
+            LobbyHeaderSection(
+                id = "perf_engine",
+                title = "Performance, Engine & Storage",
+                subtitle = "PDF rendering engines, resolution scaling, RAM purge & diagnostics",
+                icon = Icons.Default.Speed,
+                categoryCode = "PERFORMANCE",
+                badgeText = "Engine & RAM",
+                searchKeywords = "pdf quality resolution scale memory cache ram rendering bitmap gc text mode native pdfium storage disk webp preloader delay stagger slice height hardware specs cores heap diagnostics",
+                content = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        // RENDER ENGINE SWITCHER
+                        Card(
+                            modifier = Modifier.fillMaxWidth().padding(bottom = 12.dp),
+                            shape = RoundedCornerShape(12.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f))
                         ) {
                             Column(modifier = Modifier.padding(12.dp)) {
                                 Text("ACTIVE PDF RENDER ENGINE", fontWeight = FontWeight.Black, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                                 Spacer(modifier = Modifier.height(4.dp))
                                 Text(
-                                    text = if (pdfEngineSetting == "NATIVE") "Native Android Engine Active: Renders 100% direct high resolution native pages with zero memory overhead. Other features are disabled for maximum speed."
-                                           else "PDFium Engine Active: Supports full image enhancements, preset filters, sketch mode, and custom color adjustments.",
+                                    text = if (pdfEngineSetting == "NATIVE") "Native Engine: Direct Android rendering with minimal RAM footprint." else "PDFium Engine: Supports full color filters, custom tints, sketches & zoom scaling.",
                                     fontSize = 11.sp,
                                     color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
-                                Spacer(modifier = Modifier.height(10.dp))
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                                ) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                     OutlinedButton(
                                         onClick = { viewModel.setPdfEngineSetting("PDFIUM") },
                                         modifier = Modifier.weight(1f).testTag("engine_pdfium_button"),
@@ -6033,9 +6165,7 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                                             contentColor = if (pdfEngineSetting == "PDFIUM") MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface
                                         ),
                                         border = BorderStroke(1.5.dp, if (pdfEngineSetting == "PDFIUM") MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.3f))
-                                    ) {
-                                        Text("PDFium Engine", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                    }
+                                    ) { Text("PDFium Engine", fontWeight = FontWeight.Bold, fontSize = 11.sp) }
 
                                     OutlinedButton(
                                         onClick = { viewModel.setPdfEngineSetting("NATIVE") },
@@ -6046,14 +6176,48 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                                             contentColor = if (pdfEngineSetting == "NATIVE") Color(0xFF4CAF50) else MaterialTheme.colorScheme.onSurface
                                         ),
                                         border = BorderStroke(1.5.dp, if (pdfEngineSetting == "NATIVE") Color(0xFF4CAF50) else Color.Gray.copy(alpha = 0.3f))
-                                    ) {
-                                        Text("Native Engine", fontWeight = FontWeight.Bold, fontSize = 12.sp)
-                                    }
+                                    ) { Text("Native Engine", fontWeight = FontWeight.Bold, fontSize = 11.sp) }
                                 }
                             }
                         }
 
-                        // PDF Quality Switch
+                        // HARDWARE TUNING PROFILES
+                        Text("1-TAP HARDWARE QUICK PROFILES", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = {
+                                    viewModel.applyRecommendedSettings(forceTier = "HIGH")
+                                    Toast.makeText(context, "Applied High-End HD Profile", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) { Text("Device HD", fontSize = 11.sp) }
+
+                            Button(
+                                onClick = {
+                                    viewModel.applyRecommendedSettings(forceTier = "LOW")
+                                    Toast.makeText(context, "Applied Smooth Performance Profile", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                            ) { Text("Device Smooth", fontSize = 11.sp) }
+
+                            Button(
+                                onClick = {
+                                    viewModel.applyRecommendedSettings()
+                                    Toast.makeText(context, "Auto-detected profile for ${specs.deviceCategory}!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary)
+                            ) { Text("Auto Tune", fontSize = 11.sp) }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // RESOLUTION & SCALING
                         Row(
                             modifier = Modifier.fillMaxWidth(),
                             horizontalArrangement = Arrangement.SpaceBetween,
@@ -6063,547 +6227,73 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                                 Text("PDF Resolution Scale Engine", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                 Text("Dynamically scales page DPI for razor-sharp artwork", fontSize = 11.sp, color = Color.Gray)
                             }
-                            Switch(
-                                checked = qualitySelectionEnabled,
-                                onCheckedChange = { viewModel.setQualitySelectionEnabled(it) }
-                            )
+                            Switch(checked = qualitySelectionEnabled, onCheckedChange = { viewModel.setQualitySelectionEnabled(it) })
                         }
 
                         if (qualitySelectionEnabled) {
-                            Spacer(modifier = Modifier.height(12.dp))
-                            Text("RESOLUTION LEVEL", fontWeight = FontWeight.Bold, fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
-                            Spacer(modifier = Modifier.height(6.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(4.dp)
-                            ) {
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
                                 listOf("MAX", "HIGH", "MEDIUM", "AVERAGE", "LOW").forEach { opt ->
                                     val isSel = qualityLevel == opt
                                     Button(
                                         onClick = { viewModel.setQualityLevel(opt) },
-                                        modifier = Modifier.weight(1f).height(36.dp),
-                                        colors = ButtonDefaults.buttonColors(
-                                            containerColor = if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-                                        ),
-                                        contentPadding = PaddingValues(0.dp),
-                                        shape = RoundedCornerShape(8.dp)
-                                    ) {
-                                        Text(opt, fontSize = 10.sp, color = if (isSel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant)
-                                    }
+                                        modifier = Modifier.weight(1f).height(32.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
+                                        contentPadding = PaddingValues(0.dp), shape = RoundedCornerShape(6.dp)
+                                    ) { Text(opt, fontSize = 10.sp, color = if (isSel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant) }
                                 }
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(12.dp))
-                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        // Super-Res Text Mode
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Super-Res Text Sharpener", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("1.5x rendering boost specifically for fine comic dialog", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = hdTextModeEnabled,
-                                onCheckedChange = { viewModel.setHdTextModeEnabled(it) }
-                            )
-                        }
-
                         Spacer(modifier = Modifier.height(10.dp))
 
-                        // Aggressive GC
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text("Super-Res Text Sharpener", fontWeight = FontWeight.Bold, fontSize = 13.sp)
+                                Text("1.5x rendering boost specifically for fine dialogue", fontSize = 11.sp, color = Color.Gray)
+                            }
+                            Switch(checked = hdTextModeEnabled, onCheckedChange = { viewModel.setHdTextModeEnabled(it) })
+                        }
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Column(modifier = Modifier.weight(1f)) {
                                 Text("Aggressive Garbage Collection", fontWeight = FontWeight.Bold, fontSize = 13.sp)
                                 Text("Frees unreferenced page bitmaps immediately on scroll", fontSize = 11.sp, color = Color.Gray)
                             }
-                            Switch(
-                                checked = aggressiveGcEnabled,
-                                onCheckedChange = { viewModel.setAggressiveGcEnabled(it) }
-                            )
+                            Switch(checked = aggressiveGcEnabled, onCheckedChange = { viewModel.setAggressiveGcEnabled(it) })
                         }
 
                         Spacer(modifier = Modifier.height(14.dp))
                         HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                         Spacer(modifier = Modifier.height(14.dp))
 
-                        // Max Storage Cache Allocation Limit
+                        // CACHE & STORAGE SLIDERS
                         Text("MAX DISK CACHE LIMIT: $maxStorageAllocation MB", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text("Determines disk storage allowance for preloaded page slices", fontSize = 11.sp, color = Color.Gray)
-                        Slider(
-                            value = maxStorageAllocation.toFloat(),
-                            onValueChange = { viewModel.setMaxStorageAllocation(it.toInt()) },
-                            valueRange = 100f..2000f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        Slider(value = maxStorageAllocation.toFloat(), onValueChange = { viewModel.setMaxStorageAllocation(it.toInt()) }, valueRange = 100f..2000f)
 
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // WebP Preload Compression Quality
                         Text("WEBP PRELOAD QUALITY: $webpQuality%", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text("Higher is sharper; lower values reduce RAM and disk utilization", fontSize = 11.sp, color = Color.Gray)
-                        Slider(
-                            value = webpQuality.toFloat(),
-                            onValueChange = { viewModel.setWebpQuality(it.toInt()) },
-                            valueRange = 10f..100f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        Slider(value = webpQuality.toFloat(), onValueChange = { viewModel.setWebpQuality(it.toInt()) }, valueRange = 10f..100f)
 
-                        Spacer(modifier = Modifier.height(10.dp))
+                        Text("RENDER SLICE SEGMENT HEIGHT: ${sliceHeight} PX", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        Slider(value = sliceHeight.toFloat(), onValueChange = { viewModel.setSliceHeight(it.toInt()) }, valueRange = 512f..2048f)
 
-                        // Slice Height Segment Size
-                        Text("RENDERED SLICE SEGMENT HEIGHT: ${sliceHeight} PX", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text("DPI segment size for vertical seamless canvas stitching", fontSize = 11.sp, color = Color.Gray)
-                        Slider(
-                            value = sliceHeight.toFloat(),
-                            onValueChange = { viewModel.setSliceHeight(it.toInt()) },
-                            valueRange = 512f..2048f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(14.dp))
-                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Low-Res Scroll Preload Delay
-                        Text("LOW-RES PRELOAD DELAY: ${lowResScrollDelay} MS", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text("Delay before generating lightweight page placeholders during rapid swipes", fontSize = 11.sp, color = Color.Gray)
-                        Slider(
-                            value = lowResScrollDelay.toFloat(),
-                            onValueChange = { viewModel.setLowResScrollDelay(it.toLong()) },
-                            valueRange = 0f..300f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // High-Definition Preload Delay
-                        Text("HD PRELOAD RENDER DELAY: ${hdScrollDelay} MS", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text("Wait buffer before rendering high-fidelity layers after scrolling stops", fontSize = 11.sp, color = Color.Gray)
-                        Slider(
-                            value = hdScrollDelay.toFloat(),
-                            onValueChange = { viewModel.setHdScrollDelay(it.toLong()) },
-                            valueRange = 0f..500f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Stagger Pipeline Preload Delay
                         Text("PIPELINE STAGGER TIMEOUT: ${staggerDelay} MS", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text("Staggers background thread processing of adjacent pages to keep UI buttery", fontSize = 11.sp, color = Color.Gray)
-                        Slider(
-                            value = staggerDelay.toFloat(),
-                            onValueChange = { viewModel.setStaggerDelay(it.toLong()) },
-                            valueRange = 0f..200f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
+                        Slider(value = staggerDelay.toFloat(), onValueChange = { viewModel.setStaggerDelay(it.toLong()) }, valueRange = 0f..200f)
 
-                        Spacer(modifier = Modifier.height(14.dp))
-                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Bitmap Memory Hardware Format
+                        Spacer(modifier = Modifier.height(8.dp))
                         Text("BITMAP HARDWARE COLOR FORMAT", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text("ARGB_8888 (High precision), RGB_565 (Low RAM usage), HARDWARE (Direct GPU)", fontSize = 11.sp, color = Color.Gray)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                             listOf("ARGB_8888", "RGB_565", "HARDWARE").forEach { format ->
                                 val isSel = bitmapConfigSetting == format
                                 Button(
                                     onClick = { viewModel.setBitmapConfigSetting(format) },
-                                    modifier = Modifier.weight(1f).height(36.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-                                    ),
-                                    contentPadding = PaddingValues(0.dp),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text(format, fontSize = 11.sp, color = if (isSel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(18.dp))
-
-                        Button(
-                            onClick = {
-                                viewModel.clearMemoryCache()
-                                cacheSizeText = "0.00 MB"
-                                Toast.makeText(context, "Purged memory cache!", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Delete, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Purge Memory Cache ($cacheSizeText)", fontSize = 12.sp)
-                        }
-                    }
-                }
-            ),
-            LobbyHeaderSection(
-                id = "display_theme",
-                title = "Display, Canvas Themes & Eye Care",
-                subtitle = "Reader canvas color, page gaps, WebP preloader & color filters",
-                icon = Icons.Default.Palette,
-                searchKeywords = "display theme canvas color background gap space spacing night shift gamma eye care webp tint",
-                content = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Text("READER CANVAS THEME", fontWeight = FontWeight.Bold, fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            ManhwaViewModel.ReaderTheme.entries.forEach { theme ->
-                                val isSel = currentReaderTheme == theme
-                                val tColor = Color(theme.colorHex)
-                                Box(
-                                    modifier = Modifier
-                                        .background(tColor, RoundedCornerShape(10.dp))
-                                        .border(if (isSel) 2.dp else 1.dp, if (isSel) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.3f), RoundedCornerShape(10.dp))
-                                        .clickable { viewModel.setReaderTheme(theme) }
-                                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                                ) {
-                                    Text(
-                                        text = theme.title,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (theme.isDark) Color.White else Color.Black
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Eye Protection Tints
-                        Text("EYE PROTECTION CUSTOM TINT FILTER", fontWeight = FontWeight.Bold, fontSize = 10.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .horizontalScroll(rememberScrollState()),
-                            horizontalArrangement = Arrangement.spacedBy(6.dp)
-                        ) {
-                            val tints = listOf("None", "Parchment", "Eye Care Green", "Mint", "Cobalt Filter", "Warm Amber")
-                            tints.forEach { tint ->
-                                val selected = customTint == tint
-                                Box(
-                                    modifier = Modifier
-                                        .background(
-                                            if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant,
-                                            RoundedCornerShape(8.dp)
-                                        )
-                                        .border(
-                                            width = if (selected) 2.dp else 1.dp,
-                                            color = if (selected) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.3f),
-                                            shape = RoundedCornerShape(8.dp)
-                                        )
-                                        .clickable { viewModel.setCustomTint(tint) }
-                                        .padding(horizontal = 12.dp, vertical = 8.dp)
-                                ) {
-                                    Text(
-                                        text = tint,
-                                        fontSize = 11.sp,
-                                        fontWeight = FontWeight.Bold,
-                                        color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
-                                    )
-                                }
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Page Spacing Slider
-                        Text("PAGE SPACING GAP: ${pageSpacing} DP", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Slider(
-                            value = pageSpacing.toFloat(),
-                            onValueChange = { viewModel.setPageSpacing(it.toInt()) },
-                            valueRange = 0f..32f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Add Space (Side Margin) Slider
-                        Text("ADD SPACE (SIDE MARGIN): ${sideMargin} PX", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Spacer(modifier = Modifier.height(2.dp))
-                        Text("Adds margin to both left and right sides of pages (0-50px)", fontSize = 11.sp, color = Color.Gray)
-                        Slider(
-                            value = sideMargin.toFloat(),
-                            onValueChange = { viewModel.setSideMargin(it.toInt()) },
-                            valueRange = 0f..50f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Auto Night Shift
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Auto-Night Shift", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Warms canvas color at night to reduce eye strain", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = autoNightShift,
-                                onCheckedChange = { viewModel.setAutoNightShift(it) }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Manga Scan Crisper
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Manga Scan Background Eraser", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Whitens background textures for clean scan lines", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = mangaScanCrisper,
-                                onCheckedChange = { viewModel.setMangaScanCrisper(it) }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Auto Contrast Gamma Optimizer
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Auto Contrast Gamma Optimizer", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Auto-enhances low contrast text & borders", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = autoGammaEnabled,
-                                onCheckedChange = { viewModel.setAutoGammaEnabled(it) }
-                            )
-                        }
-
-                        if (!autoGammaEnabled) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            val gammaValue by viewModel.gamma.collectAsStateWithLifecycle()
-                            Text("MANUAL CONTRAST GAMMA: ${String.format("%.2f", gammaValue)}", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                            Slider(
-                                value = gammaValue,
-                                onValueChange = { viewModel.setGamma(it) },
-                                valueRange = 0.5f..2.5f,
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        Text("ADVANCED IMAGE ENHANCEMENTS", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("Fine-tune contrast, highlights, shadows, and saturation for optimal reading under different environments.", fontSize = 11.sp, color = Color.Gray)
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Brightness slider
-                        Text("BRIGHTNESS: ${String.format("%.2f", brightness)}X", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Slider(
-                            value = brightness,
-                            onValueChange = { viewModel.setBrightness(it) },
-                            valueRange = 0.5f..1.5f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Contrast slider
-                        Text("CONTRAST: ${String.format("%.2f", contrast)}X", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Slider(
-                            value = contrast,
-                            onValueChange = { viewModel.setContrast(it) },
-                            valueRange = 0.5f..1.5f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Saturation slider
-                        Text("SATURATION: ${String.format("%.2f", saturation)}X", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Slider(
-                            value = saturation,
-                            onValueChange = { viewModel.setSaturation(it) },
-                            valueRange = 0.0f..2.0f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Warmth slider
-                        Text("WARMTH: ${String.format("%.2f", warmth)}X", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Slider(
-                            value = warmth,
-                            onValueChange = { viewModel.setWarmth(it) },
-                            valueRange = 0.0f..1.0f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Exposure slider
-                        Text("EXPOSURE: ${String.format("%.2f", exposure)}X", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Slider(
-                            value = exposure,
-                            onValueChange = { viewModel.setExposure(it) },
-                            valueRange = 0.5f..2.0f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Highlights slider
-                        Text("HIGHLIGHTS: ${String.format("%+.2f", highlights)}", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Slider(
-                            value = highlights,
-                            onValueChange = { viewModel.setHighlights(it) },
-                            valueRange = -1.0f..1.0f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Shadows slider
-                        Text("SHADOWS: ${String.format("%+.2f", shadows)}", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Slider(
-                            value = shadows,
-                            onValueChange = { viewModel.setShadows(it) },
-                            valueRange = -1.0f..1.0f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
-            ),
-            LobbyHeaderSection(
-                id = "gestures_controls",
-                title = "Reader Controls & Gestures",
-                subtitle = "Double tap zoom scale, volume key page scroll, haptic feedback & auto-scroll",
-                icon = Icons.Default.TouchApp,
-                searchKeywords = "gestures double tap zoom volume scroll haptic feedback keep screen awake auto scroll speed swipe finger sensitivity preload flow direction immersive lock",
-                content = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        // Swipe Finger Sensitivity Slider
-                        Text("SWIPE FINGER SENSITIVITY: ${String.format("%.1f", swipeSensitivity)}X", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("Controls how responsive page scrolling is to finger drags", fontSize = 11.sp, color = Color.Gray)
-                        Slider(
-                            value = swipeSensitivity,
-                            onValueChange = { viewModel.setSwipeSensitivity(it) },
-                            valueRange = 0.5f..5.0f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Double Tap Zoom Slider
-                        Text("DOUBLE TAP ZOOM SCALE: ${String.format("%.1f", doubleTapZoomScale)}X", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Slider(
-                            value = doubleTapZoomScale,
-                            onValueChange = { viewModel.setDoubleTapZoomScale(it) },
-                            valueRange = 1.5f..4.0f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        // Double Tap Reset
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Double Tap Reset Zoom", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Second double-tap returns zoom to fit-screen", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = doubleTapResetEnabled,
-                                onCheckedChange = { viewModel.setDoubleTapResetEnabled(it) }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Zoom Lock
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Zoom Lock", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Locks current zoom scale when switching pages", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = zoomLockEnabled,
-                                onCheckedChange = { viewModel.setZoomLockEnabled(it) }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(14.dp))
-                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        // Reading Flow Direction
-                        Text("READING FLOW DIRECTION", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            listOf("Vertical", "Left-to-Right", "Right-to-Left").forEach { dir ->
-                                val isSel = readingDirection == dir
-                                Button(
-                                    onClick = { viewModel.setReadingDirection(dir) },
-                                    modifier = Modifier.weight(1f).height(36.dp),
-                                    colors = ButtonDefaults.buttonColors(
-                                        containerColor = if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant
-                                    ),
-                                    contentPadding = PaddingValues(0.dp),
-                                    shape = RoundedCornerShape(8.dp)
-                                ) {
-                                    Text(dir, fontSize = 11.sp, color = if (isSel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant)
-                                }
+                                    modifier = Modifier.weight(1f).height(32.dp),
+                                    colors = ButtonDefaults.buttonColors(containerColor = if (isSel) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.surfaceVariant),
+                                    contentPadding = PaddingValues(0.dp), shape = RoundedCornerShape(6.dp)
+                                ) { Text(format, fontSize = 10.sp, color = if (isSel) Color.White else MaterialTheme.colorScheme.onSurfaceVariant) }
                             }
                         }
 
@@ -6611,309 +6301,281 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                         HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
                         Spacer(modifier = Modifier.height(14.dp))
 
-                        // Auto-Scroll Step speed
-                        Text("AUTO-SCROLL FRAME STEP: ${String.format("%.1f", autoScrollStep)} PX", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("Default scrolling increment step for continuous scrolling mode", fontSize = 11.sp, color = Color.Gray)
-                        Slider(
-                            value = autoScrollStep,
-                            onValueChange = { viewModel.setAutoScrollStep(it) },
-                            valueRange = 0.5f..5.0f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Page Preload Buffer
-                        Text("PAGE PRELOAD BUFFER: $preloadCount PAGES", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Text("How many pages to pre-render ahead in memory for zero-lag reading", fontSize = 11.sp, color = Color.Gray)
-                        Slider(
-                            value = preloadCount.toFloat(),
-                            onValueChange = { viewModel.setPreloadCount(it.toInt()) },
-                            valueRange = 1f..5f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Immersive Full-Screen Mode
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Immersive Full-Screen Mode", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Hides status & system bars for focus reading", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = immersiveMode,
-                                onCheckedChange = { viewModel.setImmersiveMode(it) }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Volume Scroll (Drag/Move inside page)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Volume Hardware Key Page Scroll", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Scroll continuously inside pages via volume keys", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = volumeScrollEnabled,
-                                onCheckedChange = { viewModel.setVolumeScrollEnabled(it) }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Volume Key Navigation (Next/Prev page turn)
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Volume Hardware Key Page Navigation", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Instantly switch pages using volume keys", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = volumeKeyNavigation,
-                                onCheckedChange = { viewModel.setVolumeKeyNavigation(it) }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Haptic Feedback
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Touch Haptic Feedback", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Provides tactile vibration on tap actions", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = hapticFeedbackEnabled,
-                                onCheckedChange = { viewModel.setHapticFeedbackEnabled(it) }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        // Keep Screen Awake
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Keep Screen Awake While Reading", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Prevents your device's screen from dimming or sleeping", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = keepScreenOn,
-                                onCheckedChange = { viewModel.setKeepScreenOn(it) }
-                            )
-                        }
-                    }
-                }
-            ),
-            LobbyHeaderSection(
-                id = "storage_disk",
-                title = "Storage Engine & Disk Caching",
-                subtitle = "WebP pre-render disk cache allocation & local index manager",
-                icon = Icons.Default.Storage,
-                searchKeywords = "storage disk cache webp preloader prefetch allocation clear disk storage size index",
-                content = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Text("MAX DISK CACHE ALLOCATION: $maxStorageAllocation MB", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Slider(
-                            value = maxStorageAllocation.toFloat(),
-                            onValueChange = { viewModel.setMaxStorageAllocation(it.toInt()) },
-                            valueRange = 100f..1000f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Text("WEBP COMPRESSION QUALITY: $webpQuality%", fontWeight = FontWeight.Bold, fontSize = 11.sp)
-                        Slider(
-                            value = webpQuality.toFloat(),
-                            onValueChange = { viewModel.setWebpQuality(it.toInt()) },
-                            valueRange = 30f..100f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-
-                        Spacer(modifier = Modifier.height(14.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
+                        // PURGE & DIAGNOSTICS ACTIONS
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                             Button(
                                 onClick = {
-                                    Toast.makeText(context, "Re-indexed local files!", Toast.LENGTH_SHORT).show()
+                                    viewModel.clearMemoryCache()
+                                    cacheSizeText = "0.00 MB"
+                                    Toast.makeText(context, "Purged RAM cache!", Toast.LENGTH_SHORT).show()
                                 },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("Re-index Storage", fontSize = 11.sp)
-                            }
+                                modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                            ) { Text("Purge RAM ($cacheSizeText)", fontSize = 11.sp) }
+
                             Button(
                                 onClick = {
                                     viewModel.clearDiskCache()
                                     Toast.makeText(context, "Disk cache cleared!", Toast.LENGTH_SHORT).show()
                                 },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("Clear Disk Cache", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer)
+                                modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                            ) { Text("Clear Disk Cache", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer) }
+                        }
+
+                        Spacer(modifier = Modifier.height(12.dp))
+
+                        Card(
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f))
+                        ) {
+                            Column(modifier = Modifier.padding(10.dp)) {
+                                Text("HARDWARE DIAGNOSTICS", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
+                                Text("Heap: ${specs.maxJvmHeapMb} MB | Cores: ${specs.processorCores} | RAM: ~${specs.totalRamMb} MB", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface)
                             }
                         }
                     }
                 }
             ),
+
+            // HUB 3: DISPLAY, THEMES & PRESETS
             LobbyHeaderSection(
-                id = "data_backup_settings",
-                title = "Data Backup & Settings Manager",
-                subtitle = "Export / import settings JSON, save reading progress & clear sketches",
-                icon = Icons.Default.Save,
-                searchKeywords = "data backup settings export import save restore json clear sketches history",
-                content = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Text("BACKUP & SETTINGS PERSISTENCE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    val json = viewModel.exportSettingsJson()
-                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
-                                    val clip = ClipData.newPlainText("Manhwa Reader Settings", json)
-                                    clipboard.setPrimaryClip(clip)
-                                    Toast.makeText(context, "Settings JSON copied to clipboard!", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("Export Settings", fontSize = 11.sp)
-                            }
-
-                            Button(
-                                onClick = {
-                                    showBackupDialog = true
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("Import Settings", fontSize = 11.sp)
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    viewModel.clearAllSketches()
-                                    Toast.makeText(context, "Drawing sketches & annotations cleared!", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("Clear Sketches", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer)
-                            }
-
-                            Button(
-                                onClick = {
-                                    viewModel.clearMemoryCache()
-                                    Toast.makeText(context, "RAM cache purged!", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("Purge Memory", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer)
-                            }
-                        }
-                    }
-                }
-            ),
-            LobbyHeaderSection(
-                id = "display_presets",
-                title = "1-Tap Reader Display Presets Engine",
-                subtitle = "Instant thematic color profiles: OLED, Sepia, Vintage, High Contrast & Night",
+                id = "display_visuals",
+                title = "Display, Themes & Presets",
+                subtitle = "OLED/Sepia profiles, canvas colors, eye protection & image contrast",
                 icon = Icons.Default.Palette,
-                searchKeywords = "display presets oled amoled sepia vintage high contrast pastel night themes",
+                categoryCode = "DISPLAY",
+                badgeText = "Presets & Canvas",
+                searchKeywords = "display presets oled amoled sepia vintage high contrast pastel night themes canvas color background gap space spacing night shift gamma eye care webp tint brightness contrast saturation warmth exposure highlights shadows crop trim border font size",
                 content = {
                     Column(modifier = Modifier.fillMaxWidth()) {
-                        Text("READER THEME PRESETS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(8.dp))
-
+                        // 1-TAP PRESET PROFILES
+                        Text("1-TAP READER PRESET PROFILES", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(6.dp))
                         val presets = listOf(
-                            Pair("AMOLED_BLACK", "OLED Pitch Black"),
+                            Pair("AMOLED_BLACK", "OLED Black"),
                             Pair("SEPIA_EYE_CARE", "Classic Sepia"),
                             Pair("VINTAGE_PAPER", "Vintage Paper"),
-                            Pair("HIGH_CONTRAST_MANGA", "High Contrast Manga"),
+                            Pair("HIGH_CONTRAST_MANGA", "High Contrast"),
                             Pair("PASTEL_NIGHT", "Pastel Twilight"),
                             Pair("SUNLIGHT_BOOST", "Sunlight Boost")
                         )
-
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                            modifier = Modifier.fillMaxWidth()
-                        ) {
+                        LazyRow(horizontalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxWidth()) {
                             items(presets) { (key, label) ->
                                 Button(
                                     onClick = {
                                         viewModel.applyDisplayPreset(key)
                                         Toast.makeText(context, "Applied $label Preset!", Toast.LENGTH_SHORT).show()
                                     },
-                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
-                                    shape = RoundedCornerShape(12.dp)
-                                ) {
-                                    Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                    colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primaryContainer),
+                                    shape = RoundedCornerShape(8.dp),
+                                    contentPadding = PaddingValues(horizontal = 10.dp, vertical = 4.dp)
+                                ) { Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onPrimaryContainer) }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // CANVAS THEMES
+                        Text("READER CANVAS THEMES", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            ManhwaViewModel.ReaderTheme.entries.forEach { theme ->
+                                val isSel = currentReaderTheme == theme
+                                val tColor = Color(theme.colorHex)
+                                Box(
+                                    modifier = Modifier
+                                        .background(tColor, RoundedCornerShape(8.dp))
+                                        .border(if (isSel) 2.dp else 1.dp, if (isSel) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                        .clickable { viewModel.setReaderTheme(theme) }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) { Text(theme.title, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (theme.isDark) Color.White else Color.Black) }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // EYE CARE TINTS
+                        Text("EYE PROTECTION CUSTOM TINT", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                            listOf("None", "Parchment", "Eye Care Green", "Mint", "Cobalt Filter", "Warm Amber").forEach { tint ->
+                                val selected = customTint == tint
+                                Box(
+                                    modifier = Modifier
+                                        .background(if (selected) MaterialTheme.colorScheme.primary.copy(alpha = 0.15f) else MaterialTheme.colorScheme.surfaceVariant, RoundedCornerShape(8.dp))
+                                        .border(if (selected) 2.dp else 1.dp, if (selected) MaterialTheme.colorScheme.primary else Color.Gray.copy(alpha = 0.3f), RoundedCornerShape(8.dp))
+                                        .clickable { viewModel.setCustomTint(tint) }
+                                        .padding(horizontal = 10.dp, vertical = 6.dp)
+                                ) { Text(tint, fontSize = 11.sp, fontWeight = FontWeight.Bold, color = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant) }
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // SPACING & MARGINS
+                        Text("PAGE SPACING GAP: ${pageSpacing} DP", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        Slider(value = pageSpacing.toFloat(), onValueChange = { viewModel.setPageSpacing(it.toInt()) }, valueRange = 0f..32f)
+
+                        Text("ADD SPACE (SIDE MARGIN): ${sideMargin} PX", fontWeight = FontWeight.Bold, fontSize = 11.sp)
+                        Slider(value = sideMargin.toFloat(), onValueChange = { viewModel.setSideMargin(it.toInt()) }, valueRange = 0f..50f)
+
+                        Spacer(modifier = Modifier.height(8.dp))
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Auto-Night Shift", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Switch(checked = autoNightShift, onCheckedChange = { viewModel.setAutoNightShift(it) })
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Manga Scan Background Eraser", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Switch(checked = mangaScanCrisper, onCheckedChange = { viewModel.setMangaScanCrisper(it) })
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Smart Auto Border Trim", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Switch(checked = borderTrimEnabled, onCheckedChange = { viewModel.setBorderTrimEnabled(it) })
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+                        Text("IMAGE CONTRAST & BRIGHTNESS ENHANCEMENTS", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("BRIGHTNESS: ${String.format("%.2f", brightness)}X", fontSize = 11.sp)
+                        Slider(value = brightness, onValueChange = { viewModel.setBrightness(it) }, valueRange = 0.5f..1.5f)
+
+                        Text("CONTRAST: ${String.format("%.2f", contrast)}X", fontSize = 11.sp)
+                        Slider(value = contrast, onValueChange = { viewModel.setContrast(it) }, valueRange = 0.5f..1.5f)
+
+                        Text("SATURATION: ${String.format("%.2f", saturation)}X", fontSize = 11.sp)
+                        Slider(value = saturation, onValueChange = { viewModel.setSaturation(it) }, valueRange = 0.0f..2.0f)
+                    }
+                }
+            ),
+
+            // HUB 4: GESTURES, TAP ZONES & HEALTH
+            LobbyHeaderSection(
+                id = "gestures_health",
+                title = "Gestures, Tap Zones & Health",
+                subtitle = "Touch sensitivity, double-tap zoom, tap zone actions & eye rest reminders",
+                icon = Icons.Default.TouchApp,
+                categoryCode = "GESTURES",
+                badgeText = "Gestures & Controls",
+                searchKeywords = "gestures double tap zoom volume scroll haptic feedback keep screen awake auto scroll speed swipe finger sensitivity preload flow direction immersive lock tap zone gestures mapping touch controls flip flip page next prev toggle eye rest break reminder strain timer 20-20-20 alert health comfort",
+                content = {
+                    Column(modifier = Modifier.fillMaxWidth()) {
+                        Text("TOUCH SENSITIVITY & ZOOM", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(4.dp))
+                        Text("SWIPE FINGER SENSITIVITY: ${String.format("%.1f", swipeSensitivity)}X", fontSize = 11.sp)
+                        Slider(value = swipeSensitivity, onValueChange = { viewModel.setSwipeSensitivity(it) }, valueRange = 0.5f..5.0f)
+
+                        Text("DOUBLE TAP ZOOM SCALE: ${String.format("%.1f", doubleTapZoomScale)}X", fontSize = 11.sp)
+                        Slider(value = doubleTapZoomScale, onValueChange = { viewModel.setDoubleTapZoomScale(it) }, valueRange = 1.5f..4.0f)
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Double Tap Reset Zoom", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Switch(checked = doubleTapResetEnabled, onCheckedChange = { viewModel.setDoubleTapResetEnabled(it) })
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Zoom Lock Across Pages", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Switch(checked = zoomLockEnabled, onCheckedChange = { viewModel.setZoomLockEnabled(it) })
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // TAP ZONES
+                        Text("TAP ZONE MAPPING", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Left Screen Tap:", fontSize = 12.sp)
+                            Text(leftTapAction, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            listOf("PREV_PAGE", "NEXT_PAGE", "TOGGLE_BARS", "NONE").forEach { act ->
+                                FilterChip(selected = (leftTapAction == act), onClick = { viewModel.setTapZoneAction("LEFT", act) }, label = { Text(act, fontSize = 10.sp) })
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Right Screen Tap:", fontSize = 12.sp)
+                            Text(rightTapAction, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
+                        }
+                        Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                            listOf("NEXT_PAGE", "PREV_PAGE", "TOGGLE_BARS", "NONE").forEach { act ->
+                                FilterChip(selected = (rightTapAction == act), onClick = { viewModel.setTapZoneAction("RIGHT", act) }, label = { Text(act, fontSize = 10.sp) })
+                            }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // HARDWARE & HEALTH
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Volume Keys Page Navigation", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Switch(checked = volumeKeyNavigation, onCheckedChange = { viewModel.setVolumeKeyNavigation(it) })
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Volume Keys Page Scroll", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Switch(checked = volumeScrollEnabled, onCheckedChange = { viewModel.setVolumeScrollEnabled(it) })
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Touch Haptic Feedback", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Switch(checked = hapticFeedbackEnabled, onCheckedChange = { viewModel.setHapticFeedbackEnabled(it) })
+                        }
+
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Text("Keep Screen Awake", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Switch(checked = keepScreenOn, onCheckedChange = { viewModel.setKeepScreenOn(it) })
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        // EYE REST
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                            Column {
+                                Text("Eye Rest Alert (20-20-20 Rule)", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                Text("${eyeRestIntervalMinutes}m interval break timer", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
+                            }
+                            Switch(checked = eyeRestReminderEnabled, onCheckedChange = { viewModel.setEyeRestSettings(it, eyeRestIntervalMinutes) })
+                        }
+
+                        if (eyeRestReminderEnabled) {
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                listOf(15, 20, 30, 45).forEach { interval ->
+                                    FilterChip(selected = (eyeRestIntervalMinutes == interval), onClick = { viewModel.setEyeRestSettings(true, interval) }, label = { Text("${interval}m", fontSize = 10.sp) })
                                 }
                             }
                         }
                     }
                 }
             ),
+
+            // HUB 5: SYSTEM, BACKUP & TOOLS
             LobbyHeaderSection(
-                id = "reading_analytics",
-                title = "Reading Progress & Analytics Dashboard",
-                subtitle = "Daily time spent reading, consecutive day streaks & activity log",
-                icon = Icons.Default.BarChart,
-                searchKeywords = "reading analytics stats progress streak time duration daily counter history",
+                id = "system_tools",
+                title = "Analytics, Backup & Tools",
+                subtitle = "Reading stats, config import/export, sketch tools & trial status",
+                icon = Icons.Default.Analytics,
+                categoryCode = "SYSTEM",
+                badgeText = "Analytics & Backup",
+                searchKeywords = "reading analytics stats progress streak time duration daily counter history data backup settings export import save restore json clear sketches plugin extension plugins sources edit features draw sketch tools repository security trial license token verification free trial pro status",
                 content = {
                     Column(modifier = Modifier.fillMaxWidth()) {
+                        // READING ANALYTICS
                         Text("READING METRICS & STREAKS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.height(8.dp))
-
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.weight(1f)) {
                                 Text("${todayReadingSeconds / 60}m", fontSize = 20.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
                                 Text("Read Today", fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
@@ -6924,334 +6586,92 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                             }
                         }
 
-                        Spacer(modifier = Modifier.height(10.dp))
-                        Button(
-                            onClick = {
-                                viewModel.clearReadingStats()
-                                Toast.makeText(context, "Reading statistics reset!", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text("Reset Reading Analytics", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer)
-                        }
-                    }
-                }
-            ),
-            LobbyHeaderSection(
-                id = "tap_zones_gestures",
-                title = "Tap Zone & Custom Gesture Mapping",
-                subtitle = "Configure left, right & center screen touch actions for page flipping and controls",
-                icon = Icons.Default.TouchApp,
-                searchKeywords = "tap zone gestures mapping touch controls flip flip page next prev toggle",
-                content = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Text("TAP ZONE ACTIONS", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
+                        Spacer(modifier = Modifier.height(14.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // BACKUP & IMPORT/EXPORT
+                        Text("BACKUP & SETTINGS PERSISTENCE", fontSize = 11.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.height(8.dp))
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = {
+                                    val json = viewModel.exportSettingsJson()
+                                    val clipboard = context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+                                    val clip = ClipData.newPlainText("Manhwa Reader Settings", json)
+                                    clipboard.setPrimaryClip(clip)
+                                    Toast.makeText(context, "Settings JSON copied to clipboard!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary)
+                            ) { Text("Export Settings", fontSize = 11.sp) }
 
+                            Button(
+                                onClick = { showBackupDialog = true },
+                                modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary)
+                            ) { Text("Import Settings", fontSize = 11.sp) }
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
+                            Button(
+                                onClick = {
+                                    viewModel.clearAllSketches()
+                                    Toast.makeText(context, "Sketches & annotations cleared!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                            ) { Text("Clear Sketches", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer) }
+
+                            Button(
+                                onClick = {
+                                    viewModel.clearReadingStats()
+                                    Toast.makeText(context, "Analytics reset!", Toast.LENGTH_SHORT).show()
+                                },
+                                modifier = Modifier.weight(1f), shape = RoundedCornerShape(8.dp),
+                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                            ) { Text("Reset Analytics", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer) }
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f))
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        // DRAWING & TRIAL STATUS
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Left Screen Tap:", fontSize = 12.sp)
-                            Text(leftTapAction, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf("PREV_PAGE", "NEXT_PAGE", "TOGGLE_BARS", "NONE").forEach { act ->
-                                FilterChip(
-                                    selected = (leftTapAction == act),
-                                    onClick = { viewModel.setTapZoneAction("LEFT", act) },
-                                    label = { Text(act, fontSize = 10.sp) }
-                                )
-                            }
+                            Text("Drawing & Sketch Overlay Tools", fontWeight = FontWeight.Bold, fontSize = 12.sp)
+                            Switch(checked = showEditFeatures, onCheckedChange = { viewModel.setShowEditFeatures(it) })
                         }
 
-                        Spacer(modifier = Modifier.height(6.dp))
+                        Spacer(modifier = Modifier.height(12.dp))
 
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                            Text("Right Screen Tap:", fontSize = 12.sp)
-                            Text(rightTapAction, fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.secondary)
-                        }
-                        Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            listOf("NEXT_PAGE", "PREV_PAGE", "TOGGLE_BARS", "NONE").forEach { act ->
-                                FilterChip(
-                                    selected = (rightTapAction == act),
-                                    onClick = { viewModel.setTapZoneAction("RIGHT", act) },
-                                    label = { Text(act, fontSize = 10.sp) }
-                                )
-                            }
-                        }
-                    }
-                }
-            ),
-            LobbyHeaderSection(
-                id = "eye_rest_reminders",
-                title = "Eye Rest & Reading Break Reminders",
-                subtitle = "20-20-20 rule timer & periodic rest alerts to prevent eye strain",
-                icon = Icons.Default.Visibility,
-                searchKeywords = "eye rest break reminder strain timer 20-20-20 alert health comfort",
-                content = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(
+                        Card(
                             modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                            shape = RoundedCornerShape(10.dp),
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.06f))
                         ) {
-                            Column {
-                                Text("Eye Rest Alert", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                                Text("${eyeRestIntervalMinutes}m interval reminder", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f))
-                            }
-                            Switch(
-                                checked = eyeRestReminderEnabled,
-                                onCheckedChange = { viewModel.setEyeRestSettings(it, eyeRestIntervalMinutes) }
-                            )
-                        }
-
-                        if (eyeRestReminderEnabled) {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                listOf(15, 20, 30, 45).forEach { interval ->
-                                    FilterChip(
-                                        selected = (eyeRestIntervalMinutes == interval),
-                                        onClick = { viewModel.setEyeRestSettings(true, interval) },
-                                        label = { Text("${interval} min", fontSize = 11.sp) }
-                                    )
+                            Row(modifier = Modifier.padding(10.dp), verticalAlignment = Alignment.CenterVertically) {
+                                Icon(Icons.Default.Verified, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(20.dp))
+                                Spacer(modifier = Modifier.width(8.dp))
+                                Column {
+                                    Text("UNRESTRICTED LICENSE ACTIVE", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
+                                    Text("Full offline PDF rendering & WebP speedups enabled.", fontSize = 10.sp, color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f))
                                 }
                             }
                         }
                     }
                 }
-            ),
-            LobbyHeaderSection(
-                id = "text_mode_border_trim",
-                title = "Smart Page Cropping & OCR Text Customizer",
-                subtitle = "Auto border margin trimming & custom font scaling for text mode view",
-                icon = Icons.Default.Crop,
-                searchKeywords = "crop trim margin border white black text font size reader ocr",
-                content = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Text("Smart Auto Border Trim", fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                            Switch(
-                                checked = borderTrimEnabled,
-                                onCheckedChange = { viewModel.setBorderTrimEnabled(it) }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Text("Text Mode Font Size: ${textModeFontSize}sp", fontSize = 11.sp, fontWeight = FontWeight.Bold)
-                        Slider(
-                            value = textModeFontSize.toFloat(),
-                            onValueChange = { viewModel.setTextModeFontSize(it.toInt()) },
-                            valueRange = 12f..28f,
-                            modifier = Modifier.fillMaxWidth()
-                        )
-                    }
-                }
-            ),
-            LobbyHeaderSection(
-                id = "diagnostics_analysis",
-                title = "System Analysis & Hardware Diagnostics",
-                subtitle = "Hardware fingerprint, JVM heap metrics, CPU cores & diagnostic test",
-                icon = Icons.Default.Analytics,
-                searchKeywords = "diagnostics analysis hardware metrics specs cpu cores ram jvm heap test benchmark",
-                content = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.3f), RoundedCornerShape(12.dp))
-                            .padding(12.dp)
-                    ) {
-                        Text("HARDWARE SPECS & METRICS", fontSize = 10.sp, fontWeight = FontWeight.ExtraBold, color = MaterialTheme.colorScheme.primary)
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("JVM Heap Limit:", fontSize = 12.sp)
-                            Text("${specs.maxJvmHeapMb} MB", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("CPU Core Count:", fontSize = 12.sp)
-                            Text("${specs.processorCores} Cores", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                        }
-                        if (specs.totalRamMb > 0) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                                Text("System Total RAM:", fontSize = 12.sp)
-                                Text("~${specs.totalRamMb} MB", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.primary)
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(10.dp))
-                        HorizontalDivider(color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.1f))
-                        Spacer(modifier = Modifier.height(10.dp))
-
-                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                            Text("PDF Cache Hit Rate:", fontSize = 12.sp)
-                            Text("98.4% (Optimal)", fontSize = 12.sp, fontWeight = FontWeight.Bold, color = Color(0xFF2E7D32))
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Button(
-                            onClick = {
-                                Toast.makeText(context, "System Diagnostic Passed! All rendering pipelines active.", Toast.LENGTH_LONG).show()
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Build, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Run Full System Diagnostic Test", fontSize = 12.sp)
-                        }
-                    }
-                }
-            ),
-            LobbyHeaderSection(
-                id = "extensions_plugins",
-                title = "Plugin Engine & Source Extensions",
-                subtitle = "Manage external comic sources, extensions & editing tools",
-                icon = Icons.Default.Extension,
-                searchKeywords = "plugin extension plugins sources edit features draw sketch tools repository",
-                content = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            Column(modifier = Modifier.weight(1f)) {
-                                Text("Drawing & Sketch Edit Tools", fontWeight = FontWeight.Bold, fontSize = 13.sp)
-                                Text("Show or hide sketch overlay and drawing controls", fontSize = 11.sp, color = Color.Gray)
-                            }
-                            Switch(
-                                checked = showEditFeatures,
-                                onCheckedChange = { viewModel.setShowEditFeatures(it) }
-                            )
-                        }
-
-                        Spacer(modifier = Modifier.height(12.dp))
-
-                        Button(
-                            onClick = {
-                                Toast.makeText(context, "Extensions reloaded!", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Reload Extension Engines", fontSize = 12.sp)
-                        }
-                    }
-                }
-            ),
-            LobbyHeaderSection(
-                id = "preset_hardware",
-                title = "Hardware Profiles & Quick Tuning",
-                subtitle = "Auto-tune rendering speeds according to device capabilities",
-                icon = Icons.Default.Tune,
-                searchKeywords = "preset hardware profile tune device hd smooth average reset defaults",
-                content = {
-                    Column(modifier = Modifier.fillMaxWidth()) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(8.dp)
-                        ) {
-                            Button(
-                                onClick = {
-                                    viewModel.applyRecommendedSettings(forceTier = "HIGH")
-                                    Toast.makeText(context, "Applied Device HD Profile", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.primary),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("Device HD", fontSize = 11.sp)
-                            }
-                            Button(
-                                onClick = {
-                                    viewModel.applyRecommendedSettings(forceTier = "LOW")
-                                    Toast.makeText(context, "Applied Device Smooth Profile", Toast.LENGTH_SHORT).show()
-                                },
-                                modifier = Modifier.weight(1f),
-                                colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.secondary),
-                                shape = RoundedCornerShape(10.dp)
-                            ) {
-                                Text("Device Smooth", fontSize = 11.sp)
-                            }
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Button(
-                            onClick = {
-                                viewModel.applyRecommendedSettings()
-                                Toast.makeText(context, "Auto-applied best profile for ${specs.deviceCategory} device!", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.tertiary),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                            Spacer(modifier = Modifier.width(6.dp))
-                            Text("Auto-Detect Best Preset", fontSize = 12.sp)
-                        }
-
-                        Spacer(modifier = Modifier.height(8.dp))
-
-                        Button(
-                            onClick = {
-                                viewModel.resetSettings()
-                                Toast.makeText(context, "Settings Reset to Defaults!", Toast.LENGTH_SHORT).show()
-                            },
-                            modifier = Modifier.fillMaxWidth(),
-                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error),
-                            shape = RoundedCornerShape(10.dp)
-                        ) {
-                            Text("Reset All Settings to Defaults", fontSize = 12.sp)
-                        }
-                    }
-                }
-            ),
-            LobbyHeaderSection(
-                id = "security_trial",
-                title = "Security, License & Unrestricted Trial",
-                subtitle = "Device fingerprint token verification & 3-Day Free Trial status",
-                icon = Icons.Default.Security,
-                searchKeywords = "security trial license token verification free trial pro status",
-                content = {
-                    Column(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.06f), RoundedCornerShape(12.dp))
-                            .padding(12.dp)
-                    ) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.Default.Verified, contentDescription = null, tint = MaterialTheme.colorScheme.primary, modifier = Modifier.size(22.dp))
-                            Spacer(modifier = Modifier.width(8.dp))
-                            Text("UNRESTRICTED TRIAL ACTIVE", fontWeight = FontWeight.ExtraBold, fontSize = 13.sp, color = MaterialTheme.colorScheme.primary)
-                        }
-                        Spacer(modifier = Modifier.height(6.dp))
-                        Text(
-                            text = "Your device fingerprint is verified for high-performance offline rendering. Enjoy full access to all PDF & WebP engine speedups.",
-                            fontSize = 11.sp,
-                            color = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f),
-                            lineHeight = 15.sp
-                        )
-                    }
-                }
             )
         )
 
-        // --- 4. FILTERING & FAVORITE AUTO-SORTING LOGIC ---
-        val filteredAndSortedSections = remember(searchQuery, favoriteHeaderIds) {
+        // --- 5. FILTERING & FAVORITE AUTO-SORTING LOGIC ---
+        val filteredAndSortedSections = remember(searchQuery, favoriteHeaderIds, selectedCategoryFilter) {
             val filtered = rawHeaderSections.filter { header ->
+                val matchesCategory = (selectedCategoryFilter == "ALL" || header.categoryCode == selectedCategoryFilter)
+                if (!matchesCategory) return@filter false
+
                 if (searchQuery.isBlank()) true
                 else {
                     header.title.contains(searchQuery, ignoreCase = true) ||
@@ -7259,34 +6679,44 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                     header.searchKeywords.contains(searchQuery, ignoreCase = true)
                 }
             }
-            // Sort hearted (favorite) headers to top!
             filtered.sortedByDescending { favoriteHeaderIds.contains(it.id) }
         }
 
-        // --- 5. RENDER ACCORDION CARDS ---
+        // --- 6. RENDER ACCORDION HUB CARDS WITH SMOOTH SCROLLING ---
         filteredAndSortedSections.forEach { header ->
             val isFavorite = favoriteHeaderIds.contains(header.id)
             val isSearchActive = searchQuery.isNotBlank()
             val isExpanded = if (isSearchActive) true else (expandedHeaderId == header.id)
+            val arrowRotation by animateFloatAsState(targetValue = if (isExpanded) 180f else 0f, animationSpec = tween(300))
 
             Card(
                 colors = CardDefaults.cardColors(
                     containerColor = if (isFavorite) MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f) else MaterialTheme.colorScheme.surface
                 ),
-                shape = RoundedCornerShape(16.dp),
+                shape = RoundedCornerShape(18.dp),
                 border = if (isFavorite) BorderStroke(1.5.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)) else BorderStroke(1.dp, MaterialTheme.colorScheme.onSurface.copy(alpha = 0.08f)),
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(bottom = 12.dp)
-                    .shadow(if (isExpanded) 4.dp else 1.dp, RoundedCornerShape(16.dp))
+                    .onGloballyPositioned { coordinates ->
+                        sectionYPositions[header.id] = coordinates.positionInParent().y.toInt()
+                    }
             ) {
-                Column(modifier = Modifier.fillMaxWidth()) {
-                    // Header Title Row (Clickable Accordion Bar)
+                Column(modifier = Modifier.fillMaxWidth().animateContentSize(animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow))) {
+                    // Header Bar (Clickable)
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clickable {
-                                expandedHeaderId = if (expandedHeaderId == header.id) null else header.id
+                                val newExpanded = if (expandedHeaderId == header.id) null else header.id
+                                expandedHeaderId = newExpanded
+                                if (newExpanded != null) {
+                                    sectionYPositions[header.id]?.let { y ->
+                                        coroutineScope.launch {
+                                            scrollState.animateScrollTo(y, animationSpec = tween(450))
+                                        }
+                                    }
+                                }
                             }
                             .padding(14.dp),
                         verticalAlignment = Alignment.CenterVertically,
@@ -7296,14 +6726,10 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                             verticalAlignment = Alignment.CenterVertically,
                             modifier = Modifier.weight(1f)
                         ) {
-                            // Mini Heart Icon (Favoriting & Auto-Sorting button)
+                            // Mini Heart Favorite Toggle Button
                             IconButton(
-                                onClick = {
-                                    viewModel.toggleHeaderFavorite(header.id)
-                                },
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .testTag("mini_heart_${header.id}")
+                                onClick = { viewModel.toggleHeaderFavorite(header.id) },
+                                modifier = Modifier.size(32.dp).testTag("mini_heart_${header.id}")
                             ) {
                                 Icon(
                                     imageVector = if (isFavorite) Icons.Filled.Favorite else Icons.Default.FavoriteBorder,
@@ -7317,15 +6743,15 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
 
                             Box(
                                 modifier = Modifier
-                                    .size(36.dp)
-                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.08f), CircleShape),
+                                    .size(38.dp)
+                                    .background(MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), CircleShape),
                                 contentAlignment = Alignment.Center
                             ) {
                                 Icon(
                                     imageVector = header.icon,
                                     contentDescription = null,
                                     tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(18.dp)
+                                    modifier = Modifier.size(20.dp)
                                 )
                             }
 
@@ -7365,23 +6791,42 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                             }
                         }
 
-                        // Collapse/Expand Node Icon (Arrow)
-                        IconButton(
-                            onClick = {
-                                expandedHeaderId = if (expandedHeaderId == header.id) null else header.id
-                            },
-                            modifier = Modifier.size(28.dp)
-                        ) {
+                        // Badge & Arrow
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Surface(
+                                color = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.5f),
+                                shape = RoundedCornerShape(12.dp)
+                            ) {
+                                Text(
+                                    text = header.badgeText,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                                )
+                            }
+                            Spacer(modifier = Modifier.width(6.dp))
                             Icon(
-                                imageVector = if (isExpanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                                imageVector = Icons.Default.KeyboardArrowDown,
                                 contentDescription = if (isExpanded) "Collapse" else "Expand",
-                                tint = MaterialTheme.colorScheme.primary
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier
+                                    .size(22.dp)
+                                    .graphicsLayer { rotationZ = arrowRotation }
                             )
                         }
                     }
 
-                    // Expanded Options & Settings Content
-                    AnimatedVisibility(visible = isExpanded) {
+                    // Expanded Section Content with Smooth Expand Transition
+                    AnimatedVisibility(
+                        visible = isExpanded,
+                        enter = expandVertically(
+                            animationSpec = spring(dampingRatio = Spring.DampingRatioNoBouncy, stiffness = Spring.StiffnessMediumLow)
+                        ) + fadeIn(animationSpec = tween(220)),
+                        exit = shrinkVertically(
+                            animationSpec = tween(200)
+                        ) + fadeOut(animationSpec = tween(180))
+                    ) {
                         Column(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -7447,6 +6892,8 @@ private data class LobbyHeaderSection(
     val title: String,
     val subtitle: String,
     val icon: androidx.compose.ui.graphics.vector.ImageVector,
+    val categoryCode: String,
+    val badgeText: String,
     val searchKeywords: String,
     val content: @Composable () -> Unit
 )
