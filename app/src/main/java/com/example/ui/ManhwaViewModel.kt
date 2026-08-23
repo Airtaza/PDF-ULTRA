@@ -1379,65 +1379,88 @@ class ManhwaViewModel(private val application: Application, private val reposito
     fun openManhwaInTab(manhwa: Manhwa) {
         viewModelScope.launch {
             _importingState.value = ImportState.Loading
-            val file = File(manhwa.filePath)
+            val freshManhwa = withContext(Dispatchers.IO) { repository.getManhwaById(manhwa.id) } ?: manhwa
+            val file = File(freshManhwa.filePath)
             if (!file.exists()) {
                 _importingState.value = ImportState.Error("Local file does not exist")
                 return@launch
             }
 
-            val tabId = "reader_${manhwa.id}"
+            val targetTabId = "reader_${freshManhwa.id}"
             val existingList = _tabs.value.toMutableList()
 
             // Check if tab is already open
-            val existingTab = existingList.find { it.id == tabId }
+            val existingTab = existingList.find { it.id == targetTabId }
             if (existingTab != null) {
-                selectTabId(tabId)
+                selectTabId(targetTabId)
                 _importingState.value = ImportState.Idle
                 return@launch
             }
 
-            // If we have 3 tabs, replace the active one (if reader or plugins) or the oldest reader to respect 3-tab limit
-            if (existingList.size >= 3) {
-                val activeTabObj = existingList.find { it.id == _activeTabId.value }
-                if (activeTabObj != null && activeTabObj.type != TabType.SETTINGS) {
-                    activeTabObj.manhwa?.let { oldM ->
-                        synchronized(renderers) {
-                            renderers.remove(oldM.id)?.close()
-                        }
+            // Find all current reader tabs
+            val readerTabs = existingList.filter { it.type == TabType.READER }
+
+            if (readerTabs.isEmpty()) {
+                // Tab 1 is empty -> Open new PDF in Tab 1
+                val newTab = UltraTab(
+                    id = targetTabId,
+                    title = freshManhwa.title,
+                    type = TabType.READER,
+                    manhwa = freshManhwa,
+                    currentPage = freshManhwa.lastReadPage,
+                    scrollOffset = freshManhwa.scrollOffset
+                )
+                existingList.add(newTab)
+            } else if (readerTabs.size == 1) {
+                // Tab 1 is occupied, Tab 2 is empty -> Open new PDF in Tab 2
+                val newTab = UltraTab(
+                    id = targetTabId,
+                    title = freshManhwa.title,
+                    type = TabType.READER,
+                    manhwa = freshManhwa,
+                    currentPage = freshManhwa.lastReadPage,
+                    scrollOffset = freshManhwa.scrollOffset
+                )
+                existingList.add(newTab)
+            } else {
+                // Both Tab 1 and Tab 2 are occupied.
+                // Replace Tab 1 (close it & save position), shift Tab 2 to Tab 1, place new PDF in Tab 2.
+                val tab1ToClose = readerTabs[0]
+                val tab2ToMove = readerTabs[1]
+
+                tab1ToClose.manhwa?.let { oldM ->
+                    withContext(Dispatchers.IO) {
+                        repository.updateManhwa(
+                            oldM.copy(
+                                lastReadPage = tab1ToClose.currentPage,
+                                scrollOffset = tab1ToClose.scrollOffset,
+                                lastOpened = System.currentTimeMillis()
+                            )
+                        )
                     }
-                    existingList.remove(activeTabObj)
-                } else {
-                    // Fallback: find any reader tab to remove
-                    val anyReader = existingList.find { it.type == TabType.READER }
-                    if (anyReader != null) {
-                        anyReader.manhwa?.let { oldM ->
-                            synchronized(renderers) {
-                                renderers.remove(oldM.id)?.close()
-                            }
-                        }
-                        existingList.remove(anyReader)
-                    } else {
-                        // Fallback: remove last tab
-                        val lastTab = existingList.last()
-                        if (lastTab.type != TabType.SETTINGS) {
-                            existingList.remove(lastTab)
-                        }
+                    synchronized(renderers) {
+                        renderers.remove(oldM.id)?.close()
                     }
                 }
+
+                val nonReaderTabs = existingList.filter { it.type != TabType.READER }
+                val newTab = UltraTab(
+                    id = targetTabId,
+                    title = freshManhwa.title,
+                    type = TabType.READER,
+                    manhwa = freshManhwa,
+                    currentPage = freshManhwa.lastReadPage,
+                    scrollOffset = freshManhwa.scrollOffset
+                )
+
+                existingList.clear()
+                existingList.addAll(nonReaderTabs)
+                existingList.add(tab2ToMove)
+                existingList.add(newTab)
             }
 
-            // Create new reader tab
-            val newTab = UltraTab(
-                id = tabId,
-                title = manhwa.title,
-                type = TabType.READER,
-                manhwa = manhwa,
-                currentPage = manhwa.lastReadPage,
-                scrollOffset = manhwa.scrollOffset
-            )
-            existingList.add(newTab)
             _tabs.value = existingList
-            selectTabId(tabId)
+            selectTabId(targetTabId)
             _activeZoomScale.value = if (_zoomLockEnabled.value) _lockedZoomLevel.value else 1.0f
             _importingState.value = ImportState.Idle
 
@@ -1445,25 +1468,27 @@ class ManhwaViewModel(private val application: Application, private val reposito
             withContext(Dispatchers.IO) {
                 try {
                     val r = synchronized(renderers) {
-                        renderers.getOrPut(manhwa.id) {
+                        renderers.getOrPut(freshManhwa.id) {
                             createRenderer(file)
                         }
                     }
                     // Prefetch aspect ratios for the first few pages to make page layout calculation instant
                     val pageCount = r.pageCount
-                    val startPage = manhwa.lastReadPage
+                    val startPage = freshManhwa.lastReadPage
                     for (i in startPage until (startPage + 5).coerceAtMost(pageCount)) {
                         r.getPageAspectRatio(i)
                     }
                     // Start AOT Background Pre-processor for true instant loading
-                    startAotPreload(manhwa, r, startPage)
+                    startAotPreload(freshManhwa, r, startPage)
                 } catch (e: Throwable) {
                     e.printStackTrace()
                 }
             }
 
             // Save last opened
-            repository.updateManhwa(manhwa.copy(lastOpened = System.currentTimeMillis()))
+            withContext(Dispatchers.IO) {
+                repository.updateManhwa(freshManhwa.copy(lastOpened = System.currentTimeMillis()))
+            }
         }
     }
 
@@ -1530,12 +1555,15 @@ class ManhwaViewModel(private val application: Application, private val reposito
             }
 
             if (tabToClose.type == TabType.READER && tabToClose.manhwa != null) {
-                repository.updateManhwa(
-                    tabToClose.manhwa.copy(
-                        lastReadPage = tabToClose.currentPage,
-                        lastOpened = System.currentTimeMillis()
+                withContext(Dispatchers.IO) {
+                    repository.updateManhwa(
+                        tabToClose.manhwa.copy(
+                            lastReadPage = tabToClose.currentPage,
+                            scrollOffset = tabToClose.scrollOffset,
+                            lastOpened = System.currentTimeMillis()
+                        )
                     )
-                )
+                }
                 synchronized(renderers) {
                     renderers.remove(tabToClose.manhwa.id)?.close()
                 }
