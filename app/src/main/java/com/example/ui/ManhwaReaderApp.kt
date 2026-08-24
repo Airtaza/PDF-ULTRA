@@ -1637,15 +1637,20 @@ fun ComicReaderScreen(
         saver = LazyListState.Saver
     ) {
         val initVirtualPage = viewModel.getVirtualIndexForPhysicalPage(initialPdfState.pageIndex)
+        val initialPage = if (initVirtualPage > 0) initVirtualPage else initialPdfState.pageIndex
         LazyListState(
-            firstVisibleItemIndex = initVirtualPage,
+            firstVisibleItemIndex = initialPage,
             firstVisibleItemScrollOffset = initialPdfState.scrollOffset
         )
     }
     var isScrollRestored by remember(activeManhwaIdKey) { mutableStateOf(false) }
+    var userHasScrolled by remember(activeManhwaIdKey) { mutableStateOf(false) }
 
     LaunchedEffect(lazyListState.isScrollInProgress) {
         viewModel.setUserScrolling(lazyListState.isScrollInProgress)
+        if (lazyListState.isScrollInProgress) {
+            userHasScrolled = true
+        }
     }
     val coroutineScope = rememberCoroutineScope()
     var componentWidth by remember { mutableStateOf(1080) }
@@ -2034,14 +2039,20 @@ fun ComicReaderScreen(
         if (activeManhwaIdKey > 0 && virtualPages.isNotEmpty() && !isScrollRestored) {
             val state = viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey)
             val virtualLastPage = viewModel.getVirtualIndexForPhysicalPage(state.pageIndex)
-            try {
-                lazyListState.scrollToItem(virtualLastPage, state.scrollOffset)
-                if (state.zoomLevel > 1.05f) {
-                    zoomScaleTarget = state.zoomLevel
-                    viewModel.setActiveZoomScale(state.zoomLevel)
+            val targetVirtualPage = virtualLastPage.coerceIn(0, (virtualPages.size - 1).coerceAtLeast(0))
+            val targetOffset = state.scrollOffset.coerceAtLeast(0)
+
+            if (targetVirtualPage > 0 || targetOffset > 0) {
+                kotlinx.coroutines.delay(80)
+                try {
+                    lazyListState.scrollToItem(targetVirtualPage, targetOffset)
+                    if (state.zoomLevel > 1.05f) {
+                        zoomScaleTarget = state.zoomLevel
+                        viewModel.setActiveZoomScale(state.zoomLevel)
+                    }
+                } catch (e: Exception) {
+                    e.printStackTrace()
                 }
-            } catch (e: Exception) {
-                e.printStackTrace()
             }
             isScrollRestored = true
         }
@@ -2066,13 +2077,16 @@ fun ComicReaderScreen(
 
                 // Save when scrolling is IDLE (stopped)
                 if (!isScrolling) {
-                    viewModel.savePdfReadingState(
-                        filePath = activeFilePathKey,
-                        manhwaId = activeManhwaIdKey,
-                        pageIndex = physicalPage,
-                        scrollOffset = offset,
-                        zoomLevel = zoomScaleTarget
-                    )
+                    val savedState = viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey)
+                    if (physicalPage > 0 || offset > 0 || userHasScrolled || savedState.pageIndex == 0) {
+                        viewModel.savePdfReadingState(
+                            filePath = activeFilePathKey,
+                            manhwaId = activeManhwaIdKey,
+                            pageIndex = physicalPage,
+                            scrollOffset = offset,
+                            zoomLevel = zoomScaleTarget
+                        )
+                    }
                 }
             }
         }
@@ -2088,13 +2102,15 @@ fun ComicReaderScreen(
                     val offset = lazyListState.firstVisibleItemScrollOffset
                     val vp = virtualPages.getOrNull(virtualIndex)
                     val physicalPage = vp?.physicalPageIndex ?: virtualIndex
-                    viewModel.savePdfReadingState(
-                        filePath = activeFilePathKey,
-                        manhwaId = activeManhwaIdKey,
-                        pageIndex = physicalPage,
-                        scrollOffset = offset,
-                        zoomLevel = zoomScaleTarget
-                    )
+                    if (physicalPage > 0 || offset > 0 || userHasScrolled) {
+                        viewModel.savePdfReadingState(
+                            filePath = activeFilePathKey,
+                            manhwaId = activeManhwaIdKey,
+                            pageIndex = physicalPage,
+                            scrollOffset = offset,
+                            zoomLevel = zoomScaleTarget
+                        )
+                    }
                 }
             }
         }
@@ -2106,13 +2122,15 @@ fun ComicReaderScreen(
                 val offset = lazyListState.firstVisibleItemScrollOffset
                 val vp = virtualPages.getOrNull(virtualIndex)
                 val physicalPage = vp?.physicalPageIndex ?: virtualIndex
-                viewModel.savePdfReadingState(
-                    filePath = activeFilePathKey,
-                    manhwaId = activeManhwaIdKey,
-                    pageIndex = physicalPage,
-                    scrollOffset = offset,
-                    zoomLevel = zoomScaleTarget
-                )
+                if (physicalPage > 0 || offset > 0 || userHasScrolled) {
+                    viewModel.savePdfReadingState(
+                        filePath = activeFilePathKey,
+                        manhwaId = activeManhwaIdKey,
+                        pageIndex = physicalPage,
+                        scrollOffset = offset,
+                        zoomLevel = zoomScaleTarget
+                    )
+                }
             }
         }
     }

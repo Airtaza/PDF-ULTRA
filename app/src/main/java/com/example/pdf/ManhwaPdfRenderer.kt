@@ -35,6 +35,13 @@ class ManhwaPdfRenderer(
     private var pdfRenderer: PdfRenderer? = null
     @Volatile private var isClosed = false
     private val aspectRatios = java.util.concurrent.ConcurrentHashMap<Int, Float>()
+    @Volatile var activeAspectCalcMethod: AspectCalcMethod = AspectCalcMethod.DYNAMIC_AUTO
+
+    fun setAspectCalcMethod(method: AspectCalcMethod) {
+        this.activeAspectCalcMethod = method
+        clearAspectRatiosCache()
+        clearMemoryCache()
+    }
 
     fun clearAspectRatiosCache() {
         aspectRatios.clear()
@@ -118,10 +125,10 @@ class ManhwaPdfRenderer(
 
     suspend fun getPageAspectRatio(
         pageIndex: Int,
-        method: AspectCalcMethod = AspectCalcMethod.DYNAMIC_AUTO
+        method: AspectCalcMethod = activeAspectCalcMethod
     ): Float = withContext(Dispatchers.IO) {
         val cached = aspectRatios[pageIndex]
-        if (cached != null && cached > 0.05f && method == AspectCalcMethod.DYNAMIC_AUTO) {
+        if (cached != null && cached > 0.05f) {
             return@withContext cached
         }
 

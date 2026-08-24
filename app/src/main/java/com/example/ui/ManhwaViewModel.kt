@@ -468,7 +468,13 @@ class ManhwaViewModel(private val application: Application, private val reposito
         sharedPrefs.edit().putString("aspect_calc_method", method.name).apply()
         synchronized(renderers) {
             renderers.values.forEach { r ->
-                r.clearAspectRatiosCache()
+                r.setAspectCalcMethod(method)
+            }
+        }
+        val currentManhwa = activeManhwa.value
+        if (currentManhwa != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                updateVirtualPagesForManhwa(currentManhwa, _readingDirection.value)
             }
         }
     }
@@ -1284,13 +1290,15 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     private fun createRenderer(file: File): ManhwaPdfRenderer {
-        return ManhwaPdfRenderer(
+        val renderer = ManhwaPdfRenderer(
             application,
             file,
             _maxStorageAllocation.value,
             isScrolling = { _isUserScrolling.value },
             onOOM = { triggerMemoryPressure() }
         )
+        renderer.setAspectCalcMethod(_aspectCalcMethod.value)
+        return renderer
     }
 
     // --- Helper Enums / Sealed Classes ---
@@ -1952,7 +1960,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
             e.printStackTrace()
             null
         } ?: return@withContext 1.414f
-        renderer.getPageAspectRatio(pageIndex)
+        renderer.getPageAspectRatio(pageIndex, _aspectCalcMethod.value)
     }
 
     suspend fun renderPageSlice(

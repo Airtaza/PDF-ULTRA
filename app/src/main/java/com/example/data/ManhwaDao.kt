@@ -25,7 +25,7 @@ interface ManhwaDao {
     @Delete
     suspend fun deleteManhwa(manhwa: Manhwa)
 
-    @Query("UPDATE manhwas SET lastReadPage = 0, scrollOffset = 0 WHERE lastOpened < :thresholdTimestamp")
+    @Query("UPDATE manhwas SET lastReadPage = 0, scrollOffset = 0 WHERE lastOpened > 0 AND lastOpened < :thresholdTimestamp")
     suspend fun pruneOldReadingPositions(thresholdTimestamp: Long): Int
 
     // Bookmarks / Titles (Outline)
