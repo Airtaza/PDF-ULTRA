@@ -14,7 +14,8 @@ import kotlinx.coroutines.withContext
 import java.io.File
 
 enum class AspectCalcMethod(val displayName: String, val description: String) {
-    DYNAMIC_AUTO("Auto Adaptive", "Smart validation of PDF bounds with bitmap sample fallbacks"),
+    DYNAMIC_AUTO("Auto Adaptive", "Smart validation of PDF bounds for tall long-strip manhwa"),
+    STRETCH_FIT_PAGE("Exact Fit Page (No Overflow)", "Fits aspect ratio strictly to page dimensions without vertical overflow"),
     PDF_BOUNDS("PDF MediaBox Points", "Uses exact height & width from PDF page metadata"),
     FIRST_PAGE_UNIFORM("First Page Uniform", "Applies Page 1's aspect ratio to all pages"),
     SAMPLED_BITMAP("Rendered Pixel Sample", "Renders a sample bitmap to measure exact pixel bounds"),
@@ -34,7 +35,7 @@ class ManhwaPdfRenderer(
     private var parcelFileDescriptor: ParcelFileDescriptor? = null
     private var pdfRenderer: PdfRenderer? = null
     @Volatile private var isClosed = false
-    private val aspectRatios = java.util.concurrent.ConcurrentHashMap<Int, Float>()
+    private val aspectRatios = java.util.concurrent.ConcurrentHashMap<String, Float>()
     @Volatile var activeAspectCalcMethod: AspectCalcMethod = AspectCalcMethod.DYNAMIC_AUTO
 
     fun setAspectCalcMethod(method: AspectCalcMethod) {
@@ -109,7 +110,9 @@ class ManhwaPdfRenderer(
                             val page = renderer.openPage(i)
                             if (page.width > 0 && page.height > 0) {
                                 val ratio = page.height.toFloat() / page.width.toFloat()
-                                aspectRatios[i] = ratio
+                                aspectRatios["${i}_${AspectCalcMethod.DYNAMIC_AUTO.name}"] = ratio
+                                aspectRatios["${i}_${AspectCalcMethod.PDF_BOUNDS.name}"] = ratio
+                                aspectRatios["${i}_${AspectCalcMethod.STRETCH_FIT_PAGE.name}"] = ratio
                             }
                             page.close()
                         } catch (e: Throwable) {
@@ -127,7 +130,8 @@ class ManhwaPdfRenderer(
         pageIndex: Int,
         method: AspectCalcMethod = activeAspectCalcMethod
     ): Float = withContext(Dispatchers.IO) {
-        val cached = aspectRatios[pageIndex]
+        val cacheKey = "${pageIndex}_${method.name}"
+        val cached = aspectRatios[cacheKey]
         if (cached != null && cached > 0.05f) {
             return@withContext cached
         }
@@ -150,15 +154,16 @@ class ManhwaPdfRenderer(
                             firstPage.height.toFloat() / firstPage.width.toFloat()
                         } else 1.414f
                         firstPage?.close()
-                        if (r in 0.1f..10f) r else 1.414f
+                        if (r in 0.1f..15f) r else 1.414f
                     }
-                    AspectCalcMethod.PDF_BOUNDS -> {
+                    AspectCalcMethod.PDF_BOUNDS,
+                    AspectCalcMethod.STRETCH_FIT_PAGE -> {
                         val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null }
                         val r = if (page != null && page.width > 0) {
                             page.height.toFloat() / page.width.toFloat()
                         } else 1.414f
                         page?.close()
-                        if (r in 0.1f..10f) r else 1.414f
+                        if (r in 0.1f..15f) r else 1.414f
                     }
                     AspectCalcMethod.SAMPLED_BITMAP -> {
                         val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null }
@@ -174,7 +179,7 @@ class ManhwaPdfRenderer(
                                     val measuredRatio = bitmap.height.toFloat() / bitmap.width.toFloat()
                                     bitmap.recycle()
                                     page.close()
-                                    if (measuredRatio in 0.1f..10f) measuredRatio else 1.414f
+                                    if (measuredRatio in 0.1f..15f) measuredRatio else 1.414f
                                 } catch (e: Throwable) {
                                     bitmap.recycle()
                                     page.close()
@@ -237,7 +242,7 @@ class ManhwaPdfRenderer(
                         if (page != null) {
                             val ratio = if (page.width > 0) page.height.toFloat() / page.width.toFloat() else 1.414f
                             page.close()
-                            if (ratio in 0.3f..4.0f) {
+                            if (ratio in 0.1f..15.0f) {
                                 ratio
                             } else {
                                 1.414f
@@ -247,7 +252,7 @@ class ManhwaPdfRenderer(
                 }
 
                 if (calculatedRatio > 0.05f) {
-                    aspectRatios[pageIndex] = calculatedRatio
+                    aspectRatios[cacheKey] = calculatedRatio
                 }
                 calculatedRatio
             }
@@ -381,12 +386,15 @@ class ManhwaPdfRenderer(
                     val canvas = android.graphics.Canvas(bmp)
                     canvas.drawColor(android.graphics.Color.WHITE)
 
-                    // Calculate scale factors precisely
+                    // Calculate scale factors precisely to fit bitmap canvas exactly without vertical overflow
                     val pdfRenderWidth = if (isSplit) widthPt / 2f else widthPt.toFloat()
-                    val scale = totalWidth.toFloat() / pdfRenderWidth
+                    val pdfRenderHeight = heightPt.toFloat()
+
+                    val scaleX = totalWidth.toFloat() / pdfRenderWidth
+                    val scaleY = totalHeight.toFloat() / pdfRenderHeight
 
                     val matrix = Matrix()
-                    matrix.postScale(scale, scale)
+                    matrix.postScale(scaleX, scaleY)
                     
                     val translateX = if (landscapeSplitMode == "RIGHT_HALF") -totalWidth.toFloat() else 0f
                     matrix.postTranslate(translateX, -pixelSliceY.toFloat())

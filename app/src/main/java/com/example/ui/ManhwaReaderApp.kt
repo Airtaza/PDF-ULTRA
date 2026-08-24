@@ -2042,18 +2042,16 @@ fun ComicReaderScreen(
             val targetVirtualPage = virtualLastPage.coerceIn(0, (virtualPages.size - 1).coerceAtLeast(0))
             val targetOffset = state.scrollOffset.coerceAtLeast(0)
 
-            if (targetVirtualPage > 0 || targetOffset > 0) {
-                kotlinx.coroutines.delay(80)
-                try {
-                    lazyListState.scrollToItem(targetVirtualPage, targetOffset)
-                    if (state.zoomLevel > 1.05f) {
-                        zoomScaleTarget = state.zoomLevel
-                        viewModel.setActiveZoomScale(state.zoomLevel)
-                    }
-                } catch (e: Exception) {
-                    e.printStackTrace()
+            try {
+                lazyListState.scrollToItem(targetVirtualPage, targetOffset)
+                if (state.zoomLevel > 1.05f) {
+                    zoomScaleTarget = state.zoomLevel
+                    viewModel.setActiveZoomScale(state.zoomLevel)
                 }
+            } catch (e: Exception) {
+                e.printStackTrace()
             }
+            kotlinx.coroutines.delay(100)
             isScrollRestored = true
         }
     }

@@ -1364,18 +1364,32 @@ class ManhwaViewModel(private val application: Application, private val reposito
                     if (type == TabType.READER && manhwaId != -1L) {
                         manhwa = repository.getManhwaById(manhwaId)
                         if (manhwa == null) continue // Skip deleted manhwa
-                    }
-
-                    restoredTabs.add(
-                        UltraTab(
-                            id = id,
-                            title = if (manhwa != null) manhwa.title else title,
-                            type = type,
-                            manhwa = manhwa,
-                            currentPage = if (manhwa != null) (if (currentPage > 0) currentPage else manhwa.lastReadPage) else currentPage,
-                            scrollOffset = if (manhwa != null) (if (scrollOffset > 0) scrollOffset else manhwa.scrollOffset) else scrollOffset
+                        val savedState = getSavedPdfReadingState(manhwa.filePath, manhwa.id)
+                        val pageToUse = if (savedState.pageIndex >= 0) savedState.pageIndex else (if (currentPage > 0) currentPage else manhwa.lastReadPage)
+                        val offsetToUse = if (savedState.scrollOffset >= 0) savedState.scrollOffset else (if (scrollOffset > 0) scrollOffset else manhwa.scrollOffset)
+                        manhwa = manhwa.copy(lastReadPage = pageToUse, scrollOffset = offsetToUse)
+                        restoredTabs.add(
+                            UltraTab(
+                                id = id,
+                                title = manhwa.title,
+                                type = type,
+                                manhwa = manhwa,
+                                currentPage = pageToUse,
+                                scrollOffset = offsetToUse
+                            )
                         )
-                    )
+                    } else {
+                        restoredTabs.add(
+                            UltraTab(
+                                id = id,
+                                title = title,
+                                type = type,
+                                manhwa = null,
+                                currentPage = currentPage,
+                                scrollOffset = scrollOffset
+                            )
+                        )
+                    }
                 }
 
                 if (restoredTabs.isNotEmpty()) {
@@ -1579,17 +1593,29 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 return@launch
             }
 
+            val savedState = getSavedPdfReadingState(freshManhwa.filePath, freshManhwa.id)
+            val startPage = if (savedState.pageIndex >= 0) savedState.pageIndex else freshManhwa.lastReadPage
+            val startOffset = if (savedState.scrollOffset >= 0) savedState.scrollOffset else freshManhwa.scrollOffset
+            val updatedManhwa = freshManhwa.copy(
+                lastReadPage = startPage,
+                scrollOffset = startOffset,
+                lastOpened = System.currentTimeMillis()
+            )
+
             val targetTabId = "reader_${freshManhwa.id}"
             val existingList = _tabs.value.toMutableList()
 
             // Check if tab is already open
             val existingTab = existingList.find { it.id == targetTabId }
             if (existingTab != null) {
-                val updatedManhwa = freshManhwa.copy(lastOpened = System.currentTimeMillis())
                 withContext(Dispatchers.IO) { repository.updateManhwa(updatedManhwa) }
                 val tabIdx = existingList.indexOfFirst { it.id == targetTabId }
                 if (tabIdx != -1) {
-                    val refreshedTab = existingList[tabIdx].copy(manhwa = updatedManhwa)
+                    val refreshedTab = existingList[tabIdx].copy(
+                        currentPage = startPage,
+                        scrollOffset = startOffset,
+                        manhwa = updatedManhwa
+                    )
                     existingList[tabIdx] = refreshedTab
                     _tabs.value = existingList
                 }
@@ -1609,22 +1635,22 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 // Tab 1 is empty -> Open new PDF in Tab 1
                 val newTab = UltraTab(
                     id = targetTabId,
-                    title = freshManhwa.title,
+                    title = updatedManhwa.title,
                     type = TabType.READER,
-                    manhwa = freshManhwa,
-                    currentPage = freshManhwa.lastReadPage,
-                    scrollOffset = freshManhwa.scrollOffset
+                    manhwa = updatedManhwa,
+                    currentPage = startPage,
+                    scrollOffset = startOffset
                 )
                 existingList.add(newTab)
             } else if (readerTabs.size == 1) {
                 // Tab 1 is occupied, Tab 2 is empty -> Open new PDF in Tab 2
                 val newTab = UltraTab(
                     id = targetTabId,
-                    title = freshManhwa.title,
+                    title = updatedManhwa.title,
                     type = TabType.READER,
-                    manhwa = freshManhwa,
-                    currentPage = freshManhwa.lastReadPage,
-                    scrollOffset = freshManhwa.scrollOffset
+                    manhwa = updatedManhwa,
+                    currentPage = startPage,
+                    scrollOffset = startOffset
                 )
                 existingList.add(newTab)
             } else {
@@ -1651,11 +1677,11 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 val nonReaderTabs = existingList.filter { it.type != TabType.READER }
                 val newTab = UltraTab(
                     id = targetTabId,
-                    title = freshManhwa.title,
+                    title = updatedManhwa.title,
                     type = TabType.READER,
-                    manhwa = freshManhwa,
-                    currentPage = freshManhwa.lastReadPage,
-                    scrollOffset = freshManhwa.scrollOffset
+                    manhwa = updatedManhwa,
+                    currentPage = startPage,
+                    scrollOffset = startOffset
                 )
 
                 existingList.clear()
