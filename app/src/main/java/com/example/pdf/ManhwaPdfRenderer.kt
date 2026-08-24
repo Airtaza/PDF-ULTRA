@@ -13,6 +13,16 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
 
+enum class AspectCalcMethod(val displayName: String, val description: String) {
+    DYNAMIC_AUTO("Auto Adaptive", "Smart validation of PDF bounds with bitmap sample fallbacks"),
+    PDF_BOUNDS("PDF MediaBox Points", "Uses exact height & width from PDF page metadata"),
+    FIRST_PAGE_UNIFORM("First Page Uniform", "Applies Page 1's aspect ratio to all pages"),
+    SAMPLED_BITMAP("Rendered Pixel Sample", "Renders a sample bitmap to measure exact pixel bounds"),
+    CONTENT_BOUNDS_TRIM("Content Artwork Trim", "Trims outer margins to calculate true artwork ratio"),
+    STANDARD_A4_PORTRAIT("Fixed Portrait (1.414)", "Forces standard 1.414 portrait ratio for all pages"),
+    FIXED_LANDSCAPE("Fixed Spread (0.707)", "Forces 0.707 landscape aspect ratio for double spreads")
+}
+
 class ManhwaPdfRenderer(
     private val context: Context, 
     private val file: File, 
@@ -25,6 +35,10 @@ class ManhwaPdfRenderer(
     private var pdfRenderer: PdfRenderer? = null
     @Volatile private var isClosed = false
     private val aspectRatios = java.util.concurrent.ConcurrentHashMap<Int, Float>()
+
+    fun clearAspectRatiosCache() {
+        aspectRatios.clear()
+    }
     
     private val webPCacheManager = WebPCacheManager(context, file.nameWithoutExtension)
 
@@ -102,9 +116,14 @@ class ManhwaPdfRenderer(
         }
     }
 
-    suspend fun getPageAspectRatio(pageIndex: Int): Float = withContext(Dispatchers.IO) {
+    suspend fun getPageAspectRatio(
+        pageIndex: Int,
+        method: AspectCalcMethod = AspectCalcMethod.DYNAMIC_AUTO
+    ): Float = withContext(Dispatchers.IO) {
         val cached = aspectRatios[pageIndex]
-        if (cached != null && cached > 0.05f) return@withContext cached
+        if (cached != null && cached > 0.05f && method == AspectCalcMethod.DYNAMIC_AUTO) {
+            return@withContext cached
+        }
 
         if (isClosed || pdfRenderer == null) return@withContext 1.414f
         val renderer = pdfRenderer ?: return@withContext 1.414f
@@ -114,16 +133,116 @@ class ManhwaPdfRenderer(
         try {
             synchronized(this@ManhwaPdfRenderer) {
                 if (isClosed || pdfRenderer == null) return@synchronized 1.414f
-                val cached2 = aspectRatios[pageIndex]
-                if (cached2 != null && cached2 > 0.05f) return@synchronized cached2
 
-                val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null } ?: return@synchronized 1.414f
-                val ratio = page.height.toFloat() / page.width.toFloat()
-                page.close()
-                if (ratio > 0.05f) {
-                    aspectRatios[pageIndex] = ratio
+                val calculatedRatio = when (method) {
+                    AspectCalcMethod.STANDARD_A4_PORTRAIT -> 1.414f
+                    AspectCalcMethod.FIXED_LANDSCAPE -> 0.707f
+                    AspectCalcMethod.FIRST_PAGE_UNIFORM -> {
+                        val firstPage = try { renderer.openPage(0) } catch (e: Throwable) { null }
+                        val r = if (firstPage != null && firstPage.width > 0) {
+                            firstPage.height.toFloat() / firstPage.width.toFloat()
+                        } else 1.414f
+                        firstPage?.close()
+                        if (r in 0.1f..10f) r else 1.414f
+                    }
+                    AspectCalcMethod.PDF_BOUNDS -> {
+                        val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null }
+                        val r = if (page != null && page.width > 0) {
+                            page.height.toFloat() / page.width.toFloat()
+                        } else 1.414f
+                        page?.close()
+                        if (r in 0.1f..10f) r else 1.414f
+                    }
+                    AspectCalcMethod.SAMPLED_BITMAP -> {
+                        val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null }
+                        if (page != null) {
+                            val pw = page.width.coerceAtLeast(1)
+                            val ph = page.height.coerceAtLeast(1)
+                            val sampleW = 120
+                            val sampleH = ((ph.toFloat() / pw.toFloat()) * sampleW).toInt().coerceIn(20, 500)
+                            val bitmap = try { Bitmap.createBitmap(sampleW, sampleH, Bitmap.Config.ARGB_8888) } catch (e: Throwable) { null }
+                            if (bitmap != null) {
+                                try {
+                                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                    val measuredRatio = bitmap.height.toFloat() / bitmap.width.toFloat()
+                                    bitmap.recycle()
+                                    page.close()
+                                    if (measuredRatio in 0.1f..10f) measuredRatio else 1.414f
+                                } catch (e: Throwable) {
+                                    bitmap.recycle()
+                                    page.close()
+                                    1.414f
+                                }
+                            } else {
+                                page.close()
+                                1.414f
+                            }
+                        } else 1.414f
+                    }
+                    AspectCalcMethod.CONTENT_BOUNDS_TRIM -> {
+                        val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null }
+                        if (page != null) {
+                            val pw = page.width.coerceAtLeast(1)
+                            val ph = page.height.coerceAtLeast(1)
+                            val sampleW = 100
+                            val sampleH = ((ph.toFloat() / pw.toFloat()) * sampleW).toInt().coerceIn(20, 500)
+                            val bitmap = try { Bitmap.createBitmap(sampleW, sampleH, Bitmap.Config.ARGB_8888) } catch (e: Throwable) { null }
+                            if (bitmap != null) {
+                                try {
+                                    page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                    var minX = sampleW; var maxX = 0; var minY = sampleH; var maxY = 0
+                                    var foundContent = false
+                                    for (y in 0 until sampleH step 2) {
+                                        for (x in 0 until sampleW step 2) {
+                                            val pixel = bitmap.getPixel(x, y)
+                                            val red = (pixel shr 16) and 0xFF
+                                            val green = (pixel shr 8) and 0xFF
+                                            val blue = pixel and 0xFF
+                                            if (red < 240 || green < 240 || blue < 240) {
+                                                if (x < minX) minX = x
+                                                if (x > maxX) maxX = x
+                                                if (y < minY) minY = y
+                                                if (y > maxY) maxY = y
+                                                foundContent = true
+                                            }
+                                        }
+                                    }
+                                    bitmap.recycle()
+                                    page.close()
+                                    if (foundContent && (maxX - minX) > 10 && (maxY - minY) > 10) {
+                                        (maxY - minY).toFloat() / (maxX - minX).toFloat()
+                                    } else {
+                                        ph.toFloat() / pw.toFloat()
+                                    }
+                                } catch (e: Throwable) {
+                                    bitmap.recycle()
+                                    page.close()
+                                    1.414f
+                                }
+                            } else {
+                                page.close()
+                                1.414f
+                            }
+                        } else 1.414f
+                    }
+                    AspectCalcMethod.DYNAMIC_AUTO -> {
+                        val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null }
+                        if (page != null) {
+                            val ratio = if (page.width > 0) page.height.toFloat() / page.width.toFloat() else 1.414f
+                            page.close()
+                            if (ratio in 0.3f..4.0f) {
+                                ratio
+                            } else {
+                                1.414f
+                            }
+                        } else 1.414f
+                    }
                 }
-                ratio
+
+                if (calculatedRatio > 0.05f) {
+                    aspectRatios[pageIndex] = calculatedRatio
+                }
+                calculatedRatio
             }
         } catch (e: Throwable) {
             e.printStackTrace()

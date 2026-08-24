@@ -1668,6 +1668,7 @@ fun ComicReaderScreen(
     val eyeRestReminderEnabled by viewModel.eyeRestReminderEnabled.collectAsStateWithLifecycle()
     val eyeRestIntervalMinutes by viewModel.eyeRestIntervalMinutes.collectAsStateWithLifecycle()
     val volumeKeyNavigation by viewModel.volumeKeyNavigation.collectAsStateWithLifecycle()
+    val aspectCalcMethod by viewModel.aspectCalcMethod.collectAsStateWithLifecycle()
     val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsStateWithLifecycle()
     val leftTapAction by viewModel.leftTapAction.collectAsStateWithLifecycle()
     val rightTapAction by viewModel.rightTapAction.collectAsStateWithLifecycle()
@@ -2884,6 +2885,12 @@ fun ComicReaderScreen(
                     viewModel.pushViewSettingsSnapshotBeforeChange()
                     viewModel.setHapticFeedbackEnabled(it) 
                 },
+                aspectCalcMethod = aspectCalcMethod,
+                onAspectCalcMethodChange = {
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.setAspectCalcMethod(it)
+                },
+                onPruneOldHistory = { viewModel.pruneReadingHistoryOlderThan90Days() },
                 onResetSettings = { viewModel.resetViewEnhancerSettings() },
                 onClose = { showDisplayThemePopup = false }
             )
@@ -3206,8 +3213,9 @@ fun PdfPageItem(
     val exposure by viewModel.exposure.collectAsStateWithLifecycle()
     val highlights by viewModel.highlights.collectAsStateWithLifecycle()
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
+    val aspectCalcMethod by viewModel.aspectCalcMethod.collectAsStateWithLifecycle()
 
-    LaunchedEffect(pageIndex, viewModel, landscapeSplitMode) {
+    LaunchedEffect(pageIndex, viewModel, landscapeSplitMode, aspectCalcMethod) {
         isLoadingAspect = true
         val baseAspect = viewModel.getPageAspectRatio(pageIndex)
         aspectRatio = if (landscapeSplitMode != "NONE") baseAspect * 2f else baseAspect
@@ -4064,6 +4072,9 @@ fun DisplayThemeCanvasPopup(
     onToggleKeepScreenOn: (Boolean) -> Unit,
     hapticFeedbackEnabled: Boolean,
     onToggleHapticFeedback: (Boolean) -> Unit,
+    aspectCalcMethod: com.example.pdf.AspectCalcMethod = com.example.pdf.AspectCalcMethod.DYNAMIC_AUTO,
+    onAspectCalcMethodChange: (com.example.pdf.AspectCalcMethod) -> Unit = {},
+    onPruneOldHistory: () -> Unit = {},
     onResetSettings: () -> Unit,
     onClose: () -> Unit
 ) {
@@ -4916,6 +4927,66 @@ fun DisplayThemeCanvasPopup(
                                 onToggleHdMode()
                             }
                         )
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Text("PAGE ASPECT RATIO CALCULATION METHOD", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        com.example.pdf.AspectCalcMethod.values().forEach { method ->
+                            val isSelected = aspectCalcMethod == method
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(if (isSelected) MaterialTheme.colorScheme.primary.copy(alpha = 0.2f) else Color.White.copy(alpha = 0.05f))
+                                    .border(1.dp, if (isSelected) MaterialTheme.colorScheme.primary else Color.Transparent, RoundedCornerShape(8.dp))
+                                    .clickable {
+                                        onRecordSnapshot()
+                                        onAspectCalcMethodChange(method)
+                                    }
+                                    .padding(horizontal = 12.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.SpaceBetween
+                            ) {
+                                Column(modifier = Modifier.weight(1f)) {
+                                    Text(
+                                        text = method.displayName,
+                                        fontSize = 12.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isSelected) MaterialTheme.colorScheme.primary else Color.White
+                                    )
+                                    Text(
+                                        text = method.description,
+                                        fontSize = 10.sp,
+                                        color = Color.Gray
+                                    )
+                                }
+                                if (isSelected) {
+                                    Icon(
+                                        imageVector = Icons.Default.Check,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                        }
+
+                        Spacer(modifier = Modifier.height(14.dp))
+
+                        Text("3-MONTH HISTORY RETENTION", fontSize = 10.sp, fontWeight = FontWeight.Black, color = Color.Gray, letterSpacing = 0.5.sp)
+                        Spacer(modifier = Modifier.height(6.dp))
+
+                        Button(
+                            onClick = { onPruneOldHistory() },
+                            modifier = Modifier.fillMaxWidth(),
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.errorContainer)
+                        ) {
+                            Text("Prune Scroll Positions Older Than 90 Days", fontSize = 11.sp, color = MaterialTheme.colorScheme.onErrorContainer, fontWeight = FontWeight.Bold)
+                        }
 
                         Spacer(modifier = Modifier.height(24.dp))
                     }

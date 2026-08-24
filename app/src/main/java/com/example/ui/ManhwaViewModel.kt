@@ -451,6 +451,28 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _pdfEngineSetting = MutableStateFlow(sharedPrefs.getString("pdf_engine_setting", "PDFIUM") ?: "PDFIUM") // "PDFIUM" or "NATIVE"
     val pdfEngineSetting: StateFlow<String> = _pdfEngineSetting.asStateFlow()
 
+    private val _aspectCalcMethod = MutableStateFlow(
+        try {
+            com.example.pdf.AspectCalcMethod.valueOf(
+                sharedPrefs.getString("aspect_calc_method", com.example.pdf.AspectCalcMethod.DYNAMIC_AUTO.name)
+                    ?: com.example.pdf.AspectCalcMethod.DYNAMIC_AUTO.name
+            )
+        } catch (e: Exception) {
+            com.example.pdf.AspectCalcMethod.DYNAMIC_AUTO
+        }
+    )
+    val aspectCalcMethod: StateFlow<com.example.pdf.AspectCalcMethod> = _aspectCalcMethod.asStateFlow()
+
+    fun setAspectCalcMethod(method: com.example.pdf.AspectCalcMethod) {
+        _aspectCalcMethod.value = method
+        sharedPrefs.edit().putString("aspect_calc_method", method.name).apply()
+        synchronized(renderers) {
+            renderers.values.forEach { r ->
+                r.clearAspectRatiosCache()
+            }
+        }
+    }
+
     fun setPdfEngineSetting(engine: String) {
         _pdfEngineSetting.value = engine
         sharedPrefs.edit().putString("pdf_engine_setting", engine).apply()
@@ -1099,6 +1121,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     init {
         restoreTabsStateFromPrefs()
+        pruneReadingHistoryOlderThan90Days()
         viewModelScope.launch {
             _activeZoomScale.collectLatest { zoom ->
                 kotlinx.coroutines.delay(50)
@@ -1361,8 +1384,30 @@ class ManhwaViewModel(private val application: Application, private val reposito
         }
     }
 
+    fun flushActiveTabToDb() {
+        val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return
+        val manhwa = tab.manhwa ?: return
+        viewModelScope.launch(Dispatchers.IO) {
+            repository.updateManhwa(
+                manhwa.copy(
+                    lastReadPage = tab.currentPage,
+                    scrollOffset = tab.scrollOffset,
+                    lastOpened = System.currentTimeMillis()
+                )
+            )
+        }
+    }
+
+    fun pruneReadingHistoryOlderThan90Days() {
+        viewModelScope.launch(Dispatchers.IO) {
+            val ninetyDaysAgo = System.currentTimeMillis() - (90L * 24 * 60 * 60 * 1000L)
+            repository.pruneOldReadingPositions(ninetyDaysAgo)
+        }
+    }
+
     // --- Tab management operations ---
     fun selectTabId(tabId: String) {
+        flushActiveTabToDb()
         _activeTabId.value = tabId
         val tab = _tabs.value.find { it.id == tabId }
         if (tab != null) {
@@ -1392,6 +1437,18 @@ class ManhwaViewModel(private val application: Application, private val reposito
             // Check if tab is already open
             val existingTab = existingList.find { it.id == targetTabId }
             if (existingTab != null) {
+                val updatedManhwa = freshManhwa.copy(lastOpened = System.currentTimeMillis())
+                withContext(Dispatchers.IO) { repository.updateManhwa(updatedManhwa) }
+                val tabIdx = existingList.indexOfFirst { it.id == targetTabId }
+                if (tabIdx != -1) {
+                    val refreshedTab = existingList[tabIdx].copy(manhwa = updatedManhwa)
+                    existingList[tabIdx] = refreshedTab
+                    _tabs.value = existingList
+                }
+                synchronized(renderers) {
+                    renderers[freshManhwa.id]?.clearMemoryCache()
+                    renderers[freshManhwa.id]?.clearAspectRatiosCache()
+                }
                 selectTabId(targetTabId)
                 _importingState.value = ImportState.Idle
                 return@launch

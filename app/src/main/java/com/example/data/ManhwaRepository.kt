@@ -18,6 +18,8 @@ class ManhwaRepository(private val context: Context, private val dao: ManhwaDao)
 
     suspend fun updateManhwa(manhwa: Manhwa) = dao.updateManhwa(manhwa)
 
+    suspend fun pruneOldReadingPositions(thresholdTimestamp: Long): Int = dao.pruneOldReadingPositions(thresholdTimestamp)
+
     fun getBookmarksForManhwa(manhwaId: Long): Flow<List<Bookmark>> = dao.getBookmarksForManhwa(manhwaId)
 
     suspend fun getBookmarkByPage(manhwaId: Long, pageIndex: Int): Bookmark? = dao.getBookmarkByPage(manhwaId, pageIndex)
