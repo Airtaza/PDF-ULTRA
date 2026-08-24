@@ -1621,20 +1621,28 @@ fun ComicReaderScreen(
     var showAddBookmarkDialog by remember { mutableStateOf(false) }
     var bookmarkTitleInput by remember { mutableStateOf("") }
     var showDisplayThemePopup by remember { mutableStateOf(false) }
+    var showAutoScrollSpeedPopup by remember { mutableStateOf(false) }
 
     val isOutlineDrawerOpen by viewModel.isOutlineDrawerOpen.collectAsStateWithLifecycle()
-    val isAnyMenuOrSettingsOpen = showDisplayThemePopup || isOutlineDrawerOpen || showAddBookmarkDialog
+    val isAnyMenuOrSettingsOpen = showDisplayThemePopup || isOutlineDrawerOpen || showAddBookmarkDialog || showAutoScrollSpeedPopup
 
     val activeManhwaIdKey = activeManhwa?.id ?: 0L
+    val activeFilePathKey = activeManhwa?.filePath ?: ""
+    val initialPdfState = remember(activeManhwaIdKey, activeFilePathKey) {
+        viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey)
+    }
+
     val lazyListState = rememberSaveable(
         activeManhwaIdKey,
         saver = LazyListState.Saver
     ) {
+        val initVirtualPage = viewModel.getVirtualIndexForPhysicalPage(initialPdfState.pageIndex)
         LazyListState(
-            firstVisibleItemIndex = activeManhwa?.lastReadPage ?: 0,
-            firstVisibleItemScrollOffset = activeManhwa?.scrollOffset ?: 0
+            firstVisibleItemIndex = initVirtualPage,
+            firstVisibleItemScrollOffset = initialPdfState.scrollOffset
         )
     }
+    var isScrollRestored by remember(activeManhwaIdKey) { mutableStateOf(false) }
 
     LaunchedEffect(lazyListState.isScrollInProgress) {
         viewModel.setUserScrolling(lazyListState.isScrollInProgress)
@@ -1737,13 +1745,21 @@ fun ComicReaderScreen(
             doubleTapZoomScale,
             doubleTapResetEnabled,
             hapticFeedbackEnabled,
-            pdfEngineSetting
+            pdfEngineSetting,
+            isAnyMenuOrSettingsOpen
         ) {
             val touchSlop = viewConfiguration.touchSlop
             awaitEachGesture {
                 val firstDown = awaitFirstDown(requireUnconsumed = false)
                 val firstDownTime = System.currentTimeMillis()
                 val startPosition = firstDown.position
+
+                if (isAnyMenuOrSettingsOpen || isScreenLocked) {
+                    do {
+                        val event = awaitPointerEvent()
+                    } while (event.changes.any { it.pressed })
+                    return@awaitEachGesture
+                }
 
                 var isPinchActive = false
                 var multiTouchOccurred = false
@@ -2013,33 +2029,90 @@ fun ComicReaderScreen(
         }
     }
 
-    // Chapter navigation position memory restorer (Index + Offset)
-    val activeManhwaId = activeManhwa?.id ?: 0L
-    LaunchedEffect(activeManhwaId, virtualPages) {
-        if (activeManhwaId > 0 && virtualPages.isNotEmpty()) {
-            val lastPage = activeManhwa?.lastReadPage ?: 0
-            val lastOffset = activeManhwa?.scrollOffset ?: 0
-            val virtualLastPage = viewModel.getVirtualIndexForPhysicalPage(lastPage)
-            
-            if (lazyListState.firstVisibleItemIndex != virtualLastPage || lazyListState.firstVisibleItemScrollOffset != lastOffset) {
-                try {
-                    lazyListState.scrollToItem(virtualLastPage, lastOffset)
-                } catch (e: Exception) {
-                    // Ignore any instant scroll conflicts
+    // 1. Chapter navigation / initial load scroll restoration (Index + Offset + Zoom)
+    LaunchedEffect(activeManhwaIdKey, activeFilePathKey, virtualPages) {
+        if (activeManhwaIdKey > 0 && virtualPages.isNotEmpty() && !isScrollRestored) {
+            val state = viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey)
+            val virtualLastPage = viewModel.getVirtualIndexForPhysicalPage(state.pageIndex)
+            try {
+                lazyListState.scrollToItem(virtualLastPage, state.scrollOffset)
+                if (state.zoomLevel > 1.05f) {
+                    zoomScaleTarget = state.zoomLevel
+                    viewModel.setActiveZoomScale(state.zoomLevel)
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+            isScrollRestored = true
+        }
+    }
+
+    // 2. Real-time scroll state synchronization & persistent save on SCROLL_STATE_IDLE
+    LaunchedEffect(lazyListState, activeManhwaIdKey, activeFilePathKey, isScrollRestored) {
+        if (!isScrollRestored) return@LaunchedEffect
+        snapshotFlow {
+            Triple(
+                lazyListState.firstVisibleItemIndex,
+                lazyListState.firstVisibleItemScrollOffset,
+                lazyListState.isScrollInProgress
+            )
+        }
+        .distinctUntilChanged()
+        .collect { (virtualIndex, offset, isScrolling) ->
+            if (activeManhwaIdKey > 0) {
+                val vp = virtualPages.getOrNull(virtualIndex)
+                val physicalPage = vp?.physicalPageIndex ?: virtualIndex
+                viewModel.setCurrentVirtualPageAndOffsetInMemory(virtualIndex, offset)
+
+                // Save when scrolling is IDLE (stopped)
+                if (!isScrolling) {
+                    viewModel.savePdfReadingState(
+                        filePath = activeFilePathKey,
+                        manhwaId = activeManhwaIdKey,
+                        pageIndex = physicalPage,
+                        scrollOffset = offset,
+                        zoomLevel = zoomScaleTarget
+                    )
                 }
             }
         }
     }
 
-    // Continuous scroll position synchronization to ViewModel
-    LaunchedEffect(lazyListState, activeManhwaId) {
-        snapshotFlow {
-            lazyListState.firstVisibleItemIndex to lazyListState.firstVisibleItemScrollOffset
+    // 3. Lifecycle state persistence on ON_PAUSE, ON_STOP, and onDispose
+    val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner, activeManhwaIdKey, activeFilePathKey) {
+        val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
+            if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
+                if (activeManhwaIdKey > 0 && isScrollRestored) {
+                    val virtualIndex = lazyListState.firstVisibleItemIndex
+                    val offset = lazyListState.firstVisibleItemScrollOffset
+                    val vp = virtualPages.getOrNull(virtualIndex)
+                    val physicalPage = vp?.physicalPageIndex ?: virtualIndex
+                    viewModel.savePdfReadingState(
+                        filePath = activeFilePathKey,
+                        manhwaId = activeManhwaIdKey,
+                        pageIndex = physicalPage,
+                        scrollOffset = offset,
+                        zoomLevel = zoomScaleTarget
+                    )
+                }
+            }
         }
-        .distinctUntilChanged()
-        .collect { (virtualIndex, offset) ->
-            if (activeManhwaId > 0 && (virtualIndex > 0 || offset > 0 || lazyListState.isScrollInProgress)) {
-                viewModel.setCurrentVirtualPageAndOffset(virtualIndex, offset)
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose {
+            lifecycleOwner.lifecycle.removeObserver(observer)
+            if (activeManhwaIdKey > 0 && isScrollRestored) {
+                val virtualIndex = lazyListState.firstVisibleItemIndex
+                val offset = lazyListState.firstVisibleItemScrollOffset
+                val vp = virtualPages.getOrNull(virtualIndex)
+                val physicalPage = vp?.physicalPageIndex ?: virtualIndex
+                viewModel.savePdfReadingState(
+                    filePath = activeFilePathKey,
+                    manhwaId = activeManhwaIdKey,
+                    pageIndex = physicalPage,
+                    scrollOffset = offset,
+                    zoomLevel = zoomScaleTarget
+                )
             }
         }
     }
@@ -2557,7 +2630,6 @@ fun ComicReaderScreen(
 
         // Floating Auto-Scroll Play/Pause Controller FAB at Bottom Right Corner
         if ((autoScrollSpeed > 0f || pausedAutoScrollSpeed != null) && pdfEngineSetting != "NATIVE") {
-            var showAutoScrollSpeedPopup by remember { mutableStateOf(false) }
 
             Box(
                 modifier = Modifier

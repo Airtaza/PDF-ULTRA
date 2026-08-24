@@ -1398,10 +1398,150 @@ class ManhwaViewModel(private val application: Application, private val reposito
         }
     }
 
+    data class PdfReadingState(
+        val pageIndex: Int,
+        val scrollOffset: Int,
+        val zoomLevel: Float = 1.0f,
+        val timestamp: Long = System.currentTimeMillis()
+    )
+
+    fun getPdfReadingStateKey(filePath: String?, manhwaId: Long): String {
+        val pathKey = filePath?.trim()?.takeIf { it.isNotBlank() }
+        return if (pathKey != null) {
+            "pdf_state_${pathKey.hashCode()}_${pathKey.replace('/', '_').replace(':', '_')}"
+        } else {
+            "pdf_state_id_${manhwaId}"
+        }
+    }
+
+    fun savePdfReadingState(
+        filePath: String?,
+        manhwaId: Long,
+        pageIndex: Int,
+        scrollOffset: Int,
+        zoomLevel: Float = 1.0f
+    ) {
+        if (manhwaId <= 0 && filePath.isNullOrBlank()) return
+        val key = getPdfReadingStateKey(filePath, manhwaId)
+        val now = System.currentTimeMillis()
+
+        sharedPrefs.edit()
+            .putInt("${key}_page", pageIndex)
+            .putInt("${key}_scroll", scrollOffset)
+            .putFloat("${key}_zoom", zoomLevel)
+            .putLong("${key}_lastOpened", now)
+            .apply()
+
+        if (manhwaId > 0) {
+            val idKey = "pdf_state_id_${manhwaId}"
+            sharedPrefs.edit()
+                .putInt("${idKey}_page", pageIndex)
+                .putInt("${idKey}_scroll", scrollOffset)
+                .putFloat("${idKey}_zoom", zoomLevel)
+                .putLong("${idKey}_lastOpened", now)
+                .apply()
+        }
+
+        val tab = _tabs.value.find { it.id == _activeTabId.value }
+        val manhwa = tab?.manhwa
+        if (manhwa != null && (manhwa.id == manhwaId || manhwa.filePath == filePath)) {
+            val updatedManhwa = manhwa.copy(
+                lastReadPage = pageIndex,
+                scrollOffset = scrollOffset,
+                lastOpened = now
+            )
+            val updatedTabs = _tabs.value.map { t ->
+                if (t.id == _activeTabId.value) {
+                    t.copy(currentPage = pageIndex, scrollOffset = scrollOffset, manhwa = updatedManhwa)
+                } else t
+            }
+            _tabs.value = updatedTabs
+            saveTabsStateToPrefs()
+
+            viewModelScope.launch(Dispatchers.IO) {
+                repository.updateManhwa(updatedManhwa)
+            }
+        }
+    }
+
+    fun getSavedPdfReadingState(filePath: String?, manhwaId: Long): PdfReadingState {
+        val key = getPdfReadingStateKey(filePath, manhwaId)
+        var prefPage = sharedPrefs.getInt("${key}_page", -1)
+        var prefScroll = sharedPrefs.getInt("${key}_scroll", -1)
+        var prefZoom = sharedPrefs.getFloat("${key}_zoom", 1.0f)
+        var prefTimestamp = sharedPrefs.getLong("${key}_lastOpened", 0L)
+
+        if (prefPage < 0 && manhwaId > 0) {
+            val idKey = "pdf_state_id_${manhwaId}"
+            prefPage = sharedPrefs.getInt("${idKey}_page", -1)
+            prefScroll = sharedPrefs.getInt("${idKey}_scroll", -1)
+            prefZoom = sharedPrefs.getFloat("${idKey}_zoom", 1.0f)
+            prefTimestamp = sharedPrefs.getLong("${idKey}_lastOpened", 0L)
+        }
+
+        if (prefPage >= 0 && prefScroll >= 0) {
+            return PdfReadingState(prefPage, prefScroll, prefZoom, prefTimestamp)
+        }
+
+        val tab = _tabs.value.find { it.id == _activeTabId.value }
+        val manhwa = tab?.manhwa
+        if (manhwa != null && (manhwa.id == manhwaId || manhwa.filePath == filePath)) {
+            return PdfReadingState(
+                pageIndex = manhwa.lastReadPage,
+                scrollOffset = manhwa.scrollOffset,
+                zoomLevel = 1.0f,
+                timestamp = manhwa.lastOpened
+            )
+        }
+
+        return PdfReadingState(0, 0, 1.0f, 0L)
+    }
+
+    fun setCurrentVirtualPageAndOffsetInMemory(virtualIndex: Int, offset: Int) {
+        val list = _virtualPages.value
+        val vp = list.getOrNull(virtualIndex)
+        val physicalPage = vp?.physicalPageIndex ?: virtualIndex
+        _currentVirtualPageIndex.value = virtualIndex
+
+        val currentId = _activeTabId.value
+        val updatedList = _tabs.value.map { tab ->
+            if (tab.id == currentId) {
+                val updatedManhwa = tab.manhwa?.copy(lastReadPage = physicalPage, scrollOffset = offset)
+                tab.copy(currentPage = physicalPage, scrollOffset = offset, manhwa = updatedManhwa)
+            } else {
+                tab
+            }
+        }
+        _tabs.value = updatedList
+        checkAndTrimMemoryIfNeeded(physicalPage)
+    }
+
     fun pruneReadingHistoryOlderThan90Days() {
         viewModelScope.launch(Dispatchers.IO) {
             val ninetyDaysAgo = System.currentTimeMillis() - (90L * 24 * 60 * 60 * 1000L)
             repository.pruneOldReadingPositions(ninetyDaysAgo)
+
+            try {
+                val allEntries = sharedPrefs.all
+                val keysToRemove = mutableListOf<String>()
+                allEntries.keys.filter { it.endsWith("_lastOpened") }.forEach { key ->
+                    val timestamp = (allEntries[key] as? Long) ?: 0L
+                    if (timestamp > 0L && timestamp < ninetyDaysAgo) {
+                        val baseKey = key.removeSuffix("_lastOpened")
+                        keysToRemove.add("${baseKey}_page")
+                        keysToRemove.add("${baseKey}_scroll")
+                        keysToRemove.add("${baseKey}_zoom")
+                        keysToRemove.add("${baseKey}_lastOpened")
+                    }
+                }
+                if (keysToRemove.isNotEmpty()) {
+                    val editor = sharedPrefs.edit()
+                    keysToRemove.forEach { editor.remove(it) }
+                    editor.apply()
+                }
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
         }
     }
 
@@ -1748,6 +1888,19 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     fun deleteManhwa(manhwa: Manhwa) {
         viewModelScope.launch {
+            val key = getPdfReadingStateKey(manhwa.filePath, manhwa.id)
+            val idKey = "pdf_state_id_${manhwa.id}"
+            sharedPrefs.edit()
+                .remove("${key}_page")
+                .remove("${key}_scroll")
+                .remove("${key}_zoom")
+                .remove("${key}_lastOpened")
+                .remove("${idKey}_page")
+                .remove("${idKey}_scroll")
+                .remove("${idKey}_zoom")
+                .remove("${idKey}_lastOpened")
+                .apply()
+
             val tabId = "reader_${manhwa.id}"
             closeTab(tabId)
             repository.deleteManhwa(manhwa)
