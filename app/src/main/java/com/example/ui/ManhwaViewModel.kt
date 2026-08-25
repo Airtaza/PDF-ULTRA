@@ -463,6 +463,55 @@ class ManhwaViewModel(private val application: Application, private val reposito
     )
     val aspectCalcMethod: StateFlow<com.example.pdf.AspectCalcMethod> = _aspectCalcMethod.asStateFlow()
 
+    private val _customBaseRatioSource = MutableStateFlow(sharedPrefs.getString("custom_base_ratio_source", "PDF_BOUNDS") ?: "PDF_BOUNDS")
+    val customBaseRatioSource: StateFlow<String> = _customBaseRatioSource.asStateFlow()
+
+    private val _customFixedRatio = MutableStateFlow(sharedPrefs.getFloat("custom_fixed_ratio", 1.414f))
+    val customFixedRatio: StateFlow<Float> = _customFixedRatio.asStateFlow()
+
+    private val _customAspectMultiplier = MutableStateFlow(sharedPrefs.getFloat("custom_aspect_multiplier", 1.0f))
+    val customAspectMultiplier: StateFlow<Float> = _customAspectMultiplier.asStateFlow()
+
+    private val _customScaleMode = MutableStateFlow(sharedPrefs.getString("custom_scale_mode", "FIT_WIDTH") ?: "FIT_WIDTH")
+    val customScaleMode: StateFlow<String> = _customScaleMode.asStateFlow()
+
+    private val _customMaxAspectLimit = MutableStateFlow(sharedPrefs.getFloat("custom_max_aspect_limit", 15.0f))
+    val customMaxAspectLimit: StateFlow<Float> = _customMaxAspectLimit.asStateFlow()
+
+    fun updateCustomTuning(
+        baseSource: String = _customBaseRatioSource.value,
+        fixedRatio: Float = _customFixedRatio.value,
+        multiplier: Float = _customAspectMultiplier.value,
+        scaleMode: String = _customScaleMode.value,
+        maxLimit: Float = _customMaxAspectLimit.value
+    ) {
+        _customBaseRatioSource.value = baseSource
+        _customFixedRatio.value = fixedRatio
+        _customAspectMultiplier.value = multiplier
+        _customScaleMode.value = scaleMode
+        _customMaxAspectLimit.value = maxLimit
+
+        sharedPrefs.edit()
+            .putString("custom_base_ratio_source", baseSource)
+            .putFloat("custom_fixed_ratio", fixedRatio)
+            .putFloat("custom_aspect_multiplier", multiplier)
+            .putString("custom_scale_mode", scaleMode)
+            .putFloat("custom_max_aspect_limit", maxLimit)
+            .apply()
+
+        synchronized(renderers) {
+            renderers.values.forEach { r ->
+                r.updateCustomTuning(baseSource, fixedRatio, multiplier, scaleMode, maxLimit)
+            }
+        }
+        val currentManhwa = activeManhwa.value
+        if (currentManhwa != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                updateVirtualPagesForManhwa(currentManhwa, _readingDirection.value)
+            }
+        }
+    }
+
     fun setAspectCalcMethod(method: com.example.pdf.AspectCalcMethod) {
         _aspectCalcMethod.value = method
         sharedPrefs.edit().putString("aspect_calc_method", method.name).apply()
@@ -1298,6 +1347,13 @@ class ManhwaViewModel(private val application: Application, private val reposito
             onOOM = { triggerMemoryPressure() }
         )
         renderer.setAspectCalcMethod(_aspectCalcMethod.value)
+        renderer.updateCustomTuning(
+            _customBaseRatioSource.value,
+            _customFixedRatio.value,
+            _customAspectMultiplier.value,
+            _customScaleMode.value,
+            _customMaxAspectLimit.value
+        )
         return renderer
     }
 

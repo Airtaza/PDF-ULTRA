@@ -1682,6 +1682,11 @@ fun ComicReaderScreen(
     val eyeRestIntervalMinutes by viewModel.eyeRestIntervalMinutes.collectAsStateWithLifecycle()
     val volumeKeyNavigation by viewModel.volumeKeyNavigation.collectAsStateWithLifecycle()
     val aspectCalcMethod by viewModel.aspectCalcMethod.collectAsStateWithLifecycle()
+    val customBaseRatioSource by viewModel.customBaseRatioSource.collectAsStateWithLifecycle()
+    val customFixedRatio by viewModel.customFixedRatio.collectAsStateWithLifecycle()
+    val customAspectMultiplier by viewModel.customAspectMultiplier.collectAsStateWithLifecycle()
+    val customScaleMode by viewModel.customScaleMode.collectAsStateWithLifecycle()
+    val customMaxAspectLimit by viewModel.customMaxAspectLimit.collectAsStateWithLifecycle()
     val hapticFeedbackEnabled by viewModel.hapticFeedbackEnabled.collectAsStateWithLifecycle()
     val leftTapAction by viewModel.leftTapAction.collectAsStateWithLifecycle()
     val rightTapAction by viewModel.rightTapAction.collectAsStateWithLifecycle()
@@ -2974,9 +2979,18 @@ fun ComicReaderScreen(
                     viewModel.setHapticFeedbackEnabled(it) 
                 },
                 aspectCalcMethod = aspectCalcMethod,
+                customBaseRatioSource = customBaseRatioSource,
+                customFixedRatio = customFixedRatio,
+                customAspectMultiplier = customAspectMultiplier,
+                customScaleMode = customScaleMode,
+                customMaxAspectLimit = customMaxAspectLimit,
                 onAspectCalcMethodChange = {
                     viewModel.pushViewSettingsSnapshotBeforeChange()
                     viewModel.setAspectCalcMethod(it)
+                },
+                onUpdateCustomTuning = { baseSource, fixedRatio, multiplier, scaleMode, maxLimit ->
+                    viewModel.pushViewSettingsSnapshotBeforeChange()
+                    viewModel.updateCustomTuning(baseSource, fixedRatio, multiplier, scaleMode, maxLimit)
                 },
                 onPruneOldHistory = { viewModel.pruneReadingHistoryOlderThan90Days() },
                 onResetSettings = { viewModel.resetViewEnhancerSettings() },
@@ -4161,7 +4175,13 @@ fun DisplayThemeCanvasPopup(
     hapticFeedbackEnabled: Boolean,
     onToggleHapticFeedback: (Boolean) -> Unit,
     aspectCalcMethod: com.example.pdf.AspectCalcMethod = com.example.pdf.AspectCalcMethod.DYNAMIC_AUTO,
+    customBaseRatioSource: String = "PDF_BOUNDS",
+    customFixedRatio: Float = 1.414f,
+    customAspectMultiplier: Float = 1.0f,
+    customScaleMode: String = "FIT_WIDTH",
+    customMaxAspectLimit: Float = 15.0f,
     onAspectCalcMethodChange: (com.example.pdf.AspectCalcMethod) -> Unit = {},
+    onUpdateCustomTuning: (String, Float, Float, String, Float) -> Unit = { _, _, _, _, _ -> },
     onPruneOldHistory: () -> Unit = {},
     onResetSettings: () -> Unit,
     onClose: () -> Unit
@@ -5056,6 +5076,141 @@ fun DisplayThemeCanvasPopup(
                                         contentDescription = null,
                                         tint = MaterialTheme.colorScheme.primary,
                                         modifier = Modifier.size(16.dp)
+                                    )
+                                }
+                            }
+
+                            if (isSelected && method == com.example.pdf.AspectCalcMethod.CUSTOM_TUNING) {
+                                Column(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(top = 6.dp, bottom = 4.dp)
+                                        .background(Color.Black.copy(alpha = 0.4f), RoundedCornerShape(8.dp))
+                                        .border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.5f), RoundedCornerShape(8.dp))
+                                        .padding(10.dp)
+                                ) {
+                                    Text(
+                                        text = "CUSTOM ENGINE TUNING PARAMETERS",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Black,
+                                        color = MaterialTheme.colorScheme.primary,
+                                        letterSpacing = 0.5.sp
+                                    )
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    // 1. Base Aspect Ratio Calculation Source
+                                    Text("1. Base Ratio Source", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.LightGray)
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        val sources = listOf(
+                                            "PDF_BOUNDS" to "PDF Bounds",
+                                            "FIXED_CUSTOM" to "Fixed Ratio",
+                                            "FIRST_PAGE" to "First Page",
+                                            "SAMPLED_BITMAP" to "Pixel Sample"
+                                        )
+                                        sources.forEach { (key, label) ->
+                                            val active = customBaseRatioSource == key
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(if (active) MaterialTheme.colorScheme.primary else Color.White.copy(alpha = 0.1f))
+                                                    .clickable {
+                                                        onRecordSnapshot()
+                                                        onUpdateCustomTuning(key, customFixedRatio, customAspectMultiplier, customScaleMode, customMaxAspectLimit)
+                                                    }
+                                                    .padding(vertical = 5.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = label,
+                                                    fontSize = 9.sp,
+                                                    fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                                                    color = if (active) Color.Black else Color.White
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    // 2. Fixed Custom Aspect Ratio Slider (if FIXED_CUSTOM selected)
+                                    if (customBaseRatioSource == "FIXED_CUSTOM") {
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        CanvasSliderRow(
+                                            label = "Fixed Ratio",
+                                            value = customFixedRatio,
+                                            range = 0.2f..5.0f,
+                                            onValueChange = { newFixed ->
+                                                onUpdateCustomTuning(customBaseRatioSource, newFixed, customAspectMultiplier, customScaleMode, customMaxAspectLimit)
+                                            },
+                                            format = "%.2f"
+                                        )
+                                    }
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    // 3. Aspect Ratio Multiplier Slider
+                                    CanvasSliderRow(
+                                        label = "Multiplier",
+                                        value = customAspectMultiplier,
+                                        range = 0.2f..3.0f,
+                                        onValueChange = { newMult ->
+                                            onUpdateCustomTuning(customBaseRatioSource, customFixedRatio, newMult, customScaleMode, customMaxAspectLimit)
+                                        },
+                                        format = "%.2fx"
+                                    )
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    // 4. Matrix Scale Mode Selection
+                                    Text("4. Canvas Matrix Scale Mode", fontSize = 9.sp, fontWeight = FontWeight.Bold, color = Color.LightGray)
+                                    Spacer(modifier = Modifier.height(3.dp))
+                                    Row(
+                                        modifier = Modifier.fillMaxWidth(),
+                                        horizontalArrangement = Arrangement.spacedBy(4.dp)
+                                    ) {
+                                        val scaleModes = listOf(
+                                            "FIT_WIDTH" to "Fit Width",
+                                            "FIT_PAGE_STRETCH" to "Stretch XY",
+                                            "CONTAIN_BOUNDS" to "Contain"
+                                        )
+                                        scaleModes.forEach { (key, label) ->
+                                            val active = customScaleMode == key
+                                            Box(
+                                                modifier = Modifier
+                                                    .weight(1f)
+                                                    .clip(RoundedCornerShape(6.dp))
+                                                    .background(if (active) MaterialTheme.colorScheme.secondary else Color.White.copy(alpha = 0.1f))
+                                                    .clickable {
+                                                        onRecordSnapshot()
+                                                        onUpdateCustomTuning(customBaseRatioSource, customFixedRatio, customAspectMultiplier, key, customMaxAspectLimit)
+                                                    }
+                                                    .padding(vertical = 5.dp),
+                                                contentAlignment = Alignment.Center
+                                            ) {
+                                                Text(
+                                                    text = label,
+                                                    fontSize = 9.sp,
+                                                    fontWeight = if (active) FontWeight.Bold else FontWeight.Normal,
+                                                    color = if (active) Color.Black else Color.White
+                                                )
+                                            }
+                                        }
+                                    }
+
+                                    Spacer(modifier = Modifier.height(6.dp))
+
+                                    // 5. Max Aspect Limit Slider
+                                    CanvasSliderRow(
+                                        label = "Max Clamp",
+                                        value = customMaxAspectLimit,
+                                        range = 1.0f..30.0f,
+                                        onValueChange = { newMax ->
+                                            onUpdateCustomTuning(customBaseRatioSource, customFixedRatio, customAspectMultiplier, customScaleMode, newMax)
+                                        },
+                                        format = "%.1f"
                                     )
                                 }
                             }

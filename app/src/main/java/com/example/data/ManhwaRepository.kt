@@ -106,131 +106,157 @@ class ManhwaRepository(private val context: Context, private val dao: ManhwaDao)
         val dir = File(context.filesDir, "manhwas")
         if (!dir.exists()) dir.mkdirs()
 
-        val destFile = File(dir, "Dummy_Test_Comic_${System.currentTimeMillis()}.pdf")
+        val destFile = File(dir, "Multi_Aspect_Test_Suite_${System.currentTimeMillis()}.pdf")
 
         val pdfDocument = android.graphics.pdf.PdfDocument()
 
-        val pageConfigs = listOf(
-            Triple(android.graphics.Color.parseColor("#E53935"), "PAGE 1 - VIVID CORAL RED", "Welcome to PDF ULTRA testing!\nTest zoom, scrollbar, auto-scroll, and reading ruler here."),
-            Triple(android.graphics.Color.parseColor("#1E88E5"), "PAGE 2 - OCEAN BLUE", "Sample Chapter 1: High Contrast View\nFont size 36sp, 28sp, 20sp, 14sp testing."),
-            Triple(android.graphics.Color.parseColor("#43A047"), "PAGE 3 - EMERALD GREEN", "Sample Chapter 2: Gapless Vertical Continuous Layout\nSmooth swipe speed and gesture physics."),
-            Triple(android.graphics.Color.parseColor("#FB8C00"), "PAGE 4 - SUNSET ORANGE", "Sample Chapter 3: HD Page Rendering Engine\nWebP Caching & Memory Optimizations."),
-            Triple(android.graphics.Color.parseColor("#8E24AA"), "PAGE 5 - ROYAL PURPLE", "Sample Chapter 4: Hands-Free Auto Scroll & Ruler\nTry toggling the floating auto-scroll button."),
-            Triple(android.graphics.Color.parseColor("#00ACC1"), "PAGE 6 - CYAN TEAL", "Sample Chapter 5: Custom Tab Management\nMultiple PDFs can be open at once."),
-            Triple(android.graphics.Color.parseColor("#263238"), "PAGE 7 - CHARCOAL DARK", "Sample Chapter 6: Dark Mode Contrast Test\nCheck text legibility and ruler highlights."),
-            Triple(android.graphics.Color.parseColor("#D81B60"), "PAGE 8 - PASTEL MAGENTA", "Sample Chapter 7: Drawing & Annotation Test\nTry drawing or bookmarking this page."),
-            Triple(android.graphics.Color.parseColor("#FDD835"), "PAGE 9 - BOLD YELLOW", "Sample Chapter 8: Multi-touch Pinch Zoom\nTest zooming in and out seamlessly."),
-            Triple(android.graphics.Color.parseColor("#3E2723"), "PAGE 10 - DEEP MAHOGANY", "Sample Chapter 9: End of Test Comic!\nDouble-tap tabs to close or return to shelf.")
+        data class DemoPageSpec(
+            val widthPt: Int,
+            val heightPt: Int,
+            val bgColorHex: String,
+            val titleText: String,
+            val descText: String
         )
 
-        pageConfigs.forEachIndexed { index, (bgColor, titleText, descText) ->
-            val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(720, 1280, index + 1).create()
+        val pageSpecs = listOf(
+            DemoPageSpec(720, 1018, "#E53935", "PAGE 1 - STANDARD A4 PORTRAIT", "Aspect Ratio: ~1.414 (720x1018 pt)\nFormat: Standard Book / Document Page\nTests: Standard vertical scaling, text sharpness & reading ruler."),
+            DemoPageSpec(720, 5040, "#0D47A1", "PAGE 2 - ULTRA-TALL LONG-STRIP MANHWA", "Aspect Ratio: 7.000 (720x5040 pt)\nFormat: Webtoon Long-Strip Continuous Comic\nTests: Slicing engine, gapless vertical scrolling & custom aspect tuning."),
+            DemoPageSpec(1280, 720, "#2E7D32", "PAGE 3 - 16:9 WIDESCREEN DOUBLE SPREAD", "Aspect Ratio: 0.562 (1280x720 pt)\nFormat: Double Page Spread / Landscape\nTests: Landscape split mode (Left/Right half) & widescreen canvas fit."),
+            DemoPageSpec(720, 720, "#E65100", "PAGE 4 - 1:1 SQUARE SPLASH PANEL", "Aspect Ratio: 1.000 (720x720 pt)\nFormat: Square Splash Artwork\nTests: 1:1 aspect calculation & concentric target calibration."),
+            DemoPageSpec(720, 2160, "#6A1B9A", "PAGE 5 - 3:1 MEDIUM WEBTOON STRIP", "Aspect Ratio: 3.000 (720x2160 pt)\nFormat: Medium Webtoon Strip (3 Panels)\nTests: Multi-slice rendering & custom multiplier fine tuning."),
+            DemoPageSpec(600, 6000, "#212121", "PAGE 6 - EXTREME ULTRA-LONG STRIP", "Aspect Ratio: 10.000 (600x6000 pt)\nFormat: 10:1 Continuous Battle Scene\nTests: Max aspect clamp & memory slice allocation under stress."),
+            DemoPageSpec(720, 930, "#00838F", "PAGE 7 - US GRAPHIC NOVEL PAGE", "Aspect Ratio: 1.291 (720x930 pt)\nFormat: Standard US Comic Book\nTests: 6-panel grid layout, artwork trim, & custom engine tuning.")
+        )
+
+        pageSpecs.forEachIndexed { index, spec ->
+            val pageInfo = android.graphics.pdf.PdfDocument.PageInfo.Builder(spec.widthPt, spec.heightPt, index + 1).create()
             val page = pdfDocument.startPage(pageInfo)
             val canvas = page.canvas
 
+            val w = spec.widthPt.toFloat()
+            val h = spec.heightPt.toFloat()
+
             // 1. Draw Background
             val bgPaint = android.graphics.Paint().apply {
-                color = bgColor
+                color = android.graphics.Color.parseColor(spec.bgColorHex)
                 style = android.graphics.Paint.Style.FILL
             }
-            canvas.drawRect(0f, 0f, 720f, 1280f, bgPaint)
+            canvas.drawRect(0f, 0f, w, h, bgPaint)
 
-            // 2. Draw Grid Lines
+            // 2. Draw Grid & Measurement Ruler Lines
             val gridPaint = android.graphics.Paint().apply {
                 color = android.graphics.Color.argb(40, 255, 255, 255)
                 strokeWidth = 2f
                 style = android.graphics.Paint.Style.STROKE
             }
-            for (y in 100..1200 step 100) {
-                canvas.drawLine(0f, y.toFloat(), 720f, y.toFloat(), gridPaint)
+            var gridY = 200f
+            while (gridY < h) {
+                canvas.drawLine(0f, gridY, w, gridY, gridPaint)
+                gridY += 200f
             }
-            for (x in 100..700 step 100) {
-                canvas.drawLine(x.toFloat(), 0f, x.toFloat(), 1280f, gridPaint)
+            var gridX = 100f
+            while (gridX < w) {
+                canvas.drawLine(gridX, 0f, gridX, h, gridPaint)
+                gridX += 100f
             }
 
-            val isYellow = (bgColor == android.graphics.Color.parseColor("#FDD835"))
-            val textColor = if (isYellow) android.graphics.Color.BLACK else android.graphics.Color.WHITE
+            // Height Ruler Markings on Right Edge
+            val rulerPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.argb(180, 255, 255, 255)
+                textSize = 14f
+                isAntiAlias = true
+            }
+            var tickY = 500f
+            while (tickY < h) {
+                canvas.drawLine(w - 40f, tickY, w, tickY, gridPaint)
+                canvas.drawText("${tickY.toInt()}pt", w - 90f, tickY - 6f, rulerPaint)
+                tickY += 500f
+            }
+
+            val textColor = android.graphics.Color.WHITE
 
             // 3. Draw Header Title
             val titlePaint = android.graphics.Paint().apply {
                 color = textColor
-                textSize = 36f
+                textSize = 32f
                 isFakeBoldText = true
                 isAntiAlias = true
             }
-            canvas.drawText(titleText, 40f, 120f, titlePaint)
+            canvas.drawText(spec.titleText, 40f, 80f, titlePaint)
 
             // 4. Draw Subtitle / Badge
             val badgePaint = android.graphics.Paint().apply {
-                color = if (isYellow) android.graphics.Color.argb(60, 0, 0, 0) else android.graphics.Color.argb(60, 255, 255, 255)
+                color = android.graphics.Color.argb(60, 255, 255, 255)
                 style = android.graphics.Paint.Style.FILL
             }
-            canvas.drawRoundRect(40f, 150f, 420f, 200f, 25f, 25f, badgePaint)
+            canvas.drawRoundRect(40f, 100f, 480f, 145f, 12f, 12f, badgePaint)
 
             val badgeTextPaint = android.graphics.Paint().apply {
                 color = textColor
-                textSize = 20f
+                textSize = 16f
                 isFakeBoldText = true
                 isAntiAlias = true
             }
-            canvas.drawText("PDF ULTRA TEST SUITE", 60f, 183f, badgeTextPaint)
+            canvas.drawText("ASPECT RATIO TEST SUITE", 55f, 130f, badgeTextPaint)
 
-            // 5. Draw Various Text Sizes for Check
-            val textSizes = listOf(
-                Pair(38f, "Header 38sp (Extra Large)"),
-                Pair(30f, "Section Title 30sp (Large)"),
-                Pair(22f, "Body Text Paragraph 22sp (Medium)"),
-                Pair(16f, "Caption & Small Details 16sp (Small)"),
-                Pair(12f, "Tiny Footnote & Metadata 12sp (Extra Small)")
-            )
-
-            var currentY = 270f
-            val bodyPaint = android.graphics.Paint().apply {
-                color = textColor
-                isAntiAlias = true
-            }
-
-            textSizes.forEach { (sz, sampleStr) ->
-                bodyPaint.textSize = sz
-                bodyPaint.isFakeBoldText = (sz >= 26f)
-                canvas.drawText(sampleStr, 40f, currentY, bodyPaint)
-                currentY += sz + 24f
-            }
-
-            // 6. Draw Description Box
-            currentY += 10f
+            // 5. Draw Description Box
             val descBoxPaint = android.graphics.Paint().apply {
-                color = if (isYellow) android.graphics.Color.argb(40, 0, 0, 0) else android.graphics.Color.argb(40, 255, 255, 255)
+                color = android.graphics.Color.argb(50, 0, 0, 0)
                 style = android.graphics.Paint.Style.FILL
             }
-            canvas.drawRoundRect(40f, currentY, 680f, currentY + 140f, 16f, 16f, descBoxPaint)
+            canvas.drawRoundRect(40f, 160f, (w - 40f).coerceAtLeast(300f), 300f, 16f, 16f, descBoxPaint)
 
-            bodyPaint.textSize = 18f
-            bodyPaint.isFakeBoldText = false
-            val lines = descText.split("\n")
-            var lineY = currentY + 45f
+            val bodyPaint = android.graphics.Paint().apply {
+                color = textColor
+                textSize = 18f
+                isAntiAlias = true
+            }
+            val lines = spec.descText.split("\n")
+            var lineY = 195f
             for (line in lines) {
                 canvas.drawText(line, 60f, lineY, bodyPaint)
-                lineY += 32f
+                lineY += 28f
             }
 
-            // 7. Draw Visual Target Circles for Zoom Testing
-            val circlePaint = android.graphics.Paint().apply {
-                color = textColor
+            // 6. Draw Comic Panel Boxes & Target Calibration Circles
+            var panelY = 340f
+            val panelBorderPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.WHITE
                 style = android.graphics.Paint.Style.STROKE
                 strokeWidth = 4f
                 isAntiAlias = true
             }
-            canvas.drawCircle(360f, 1020f, 120f, circlePaint)
-            canvas.drawCircle(360f, 1020f, 80f, circlePaint)
-            canvas.drawCircle(360f, 1020f, 40f, circlePaint)
-
-            val centerPaint = android.graphics.Paint().apply {
-                color = textColor
+            val panelFillPaint = android.graphics.Paint().apply {
+                color = android.graphics.Color.argb(30, 255, 255, 255)
                 style = android.graphics.Paint.Style.FILL
-                isAntiAlias = true
             }
-            canvas.drawCircle(360f, 1020f, 10f, centerPaint)
+
+            var panelNum = 1
+            while (panelY + 280f < h - 100f) {
+                val panelRect = android.graphics.RectF(50f, panelY, w - 50f, panelY + 280f)
+                canvas.drawRoundRect(panelRect, 12f, 12f, panelFillPaint)
+                canvas.drawRoundRect(panelRect, 12f, 12f, panelBorderPaint)
+
+                bodyPaint.textSize = 22f
+                bodyPaint.isFakeBoldText = true
+                canvas.drawText("Panel $panelNum - Scene Artwork Block (Y: ${panelY.toInt()}pt)", 70f, panelY + 50f, bodyPaint)
+
+                // Calibration Target
+                val centerX = w / 2f
+                val centerY = panelY + 160f
+                val circlePaint = android.graphics.Paint().apply {
+                    color = android.graphics.Color.WHITE
+                    style = android.graphics.Paint.Style.STROKE
+                    strokeWidth = 3f
+                    isAntiAlias = true
+                }
+                canvas.drawCircle(centerX, centerY, 60f, circlePaint)
+                canvas.drawCircle(centerX, centerY, 30f, circlePaint)
+                canvas.drawCircle(centerX, centerY, 6f, circlePaint)
+
+                panelY += 340f
+                panelNum++
+            }
 
             pdfDocument.finishPage(page)
         }
@@ -241,9 +267,9 @@ class ManhwaRepository(private val context: Context, private val dao: ManhwaDao)
         pdfDocument.close()
 
         val manhwa = Manhwa(
-            title = "Dummy Test Comic (10 Colors)",
+            title = "Multi-Aspect Test Suite (7 Types)",
             filePath = destFile.absolutePath,
-            totalPages = pageConfigs.size
+            totalPages = pageSpecs.size
         )
         dao.insertManhwa(manhwa)
     }

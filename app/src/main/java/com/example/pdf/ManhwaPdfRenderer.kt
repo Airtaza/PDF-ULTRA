@@ -15,7 +15,7 @@ import java.io.File
 
 enum class AspectCalcMethod(val displayName: String, val description: String) {
     DYNAMIC_AUTO("Auto Adaptive", "Smart validation of PDF bounds for tall long-strip manhwa"),
-    STRETCH_FIT_PAGE("Exact Fit Page (No Overflow)", "Fits aspect ratio strictly to page dimensions without vertical overflow"),
+    CUSTOM_TUNING("Custom Engine Fine-Tuning", "User-customizable base ratio, scale matrix, multipliers & limits"),
     PDF_BOUNDS("PDF MediaBox Points", "Uses exact height & width from PDF page metadata"),
     FIRST_PAGE_UNIFORM("First Page Uniform", "Applies Page 1's aspect ratio to all pages"),
     SAMPLED_BITMAP("Rendered Pixel Sample", "Renders a sample bitmap to measure exact pixel bounds"),
@@ -37,6 +37,28 @@ class ManhwaPdfRenderer(
     @Volatile private var isClosed = false
     private val aspectRatios = java.util.concurrent.ConcurrentHashMap<String, Float>()
     @Volatile var activeAspectCalcMethod: AspectCalcMethod = AspectCalcMethod.DYNAMIC_AUTO
+
+    @Volatile var customBaseRatioSource: String = "PDF_BOUNDS"
+    @Volatile var customFixedRatio: Float = 1.414f
+    @Volatile var customAspectMultiplier: Float = 1.0f
+    @Volatile var customScaleMode: String = "FIT_WIDTH"
+    @Volatile var customMaxAspectLimit: Float = 15.0f
+
+    fun updateCustomTuning(
+        baseSource: String,
+        fixedRatio: Float,
+        multiplier: Float,
+        scaleMode: String,
+        maxLimit: Float
+    ) {
+        this.customBaseRatioSource = baseSource
+        this.customFixedRatio = fixedRatio
+        this.customAspectMultiplier = multiplier
+        this.customScaleMode = scaleMode
+        this.customMaxAspectLimit = maxLimit
+        clearAspectRatiosCache()
+        clearMemoryCache()
+    }
 
     fun setAspectCalcMethod(method: AspectCalcMethod) {
         this.activeAspectCalcMethod = method
@@ -112,7 +134,6 @@ class ManhwaPdfRenderer(
                                 val ratio = page.height.toFloat() / page.width.toFloat()
                                 aspectRatios["${i}_${AspectCalcMethod.DYNAMIC_AUTO.name}"] = ratio
                                 aspectRatios["${i}_${AspectCalcMethod.PDF_BOUNDS.name}"] = ratio
-                                aspectRatios["${i}_${AspectCalcMethod.STRETCH_FIT_PAGE.name}"] = ratio
                             }
                             page.close()
                         } catch (e: Throwable) {
@@ -130,7 +151,11 @@ class ManhwaPdfRenderer(
         pageIndex: Int,
         method: AspectCalcMethod = activeAspectCalcMethod
     ): Float = withContext(Dispatchers.IO) {
-        val cacheKey = "${pageIndex}_${method.name}"
+        val cacheKey = if (method == AspectCalcMethod.CUSTOM_TUNING) {
+            "${pageIndex}_CUSTOM_${customBaseRatioSource}_${customFixedRatio}_${customAspectMultiplier}_${customScaleMode}_${customMaxAspectLimit}"
+        } else {
+            "${pageIndex}_${method.name}"
+        }
         val cached = aspectRatios[cacheKey]
         if (cached != null && cached > 0.05f) {
             return@withContext cached
@@ -156,14 +181,61 @@ class ManhwaPdfRenderer(
                         firstPage?.close()
                         if (r in 0.1f..15f) r else 1.414f
                     }
-                    AspectCalcMethod.PDF_BOUNDS,
-                    AspectCalcMethod.STRETCH_FIT_PAGE -> {
+                    AspectCalcMethod.PDF_BOUNDS -> {
                         val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null }
                         val r = if (page != null && page.width > 0) {
                             page.height.toFloat() / page.width.toFloat()
                         } else 1.414f
                         page?.close()
                         if (r in 0.1f..15f) r else 1.414f
+                    }
+                    AspectCalcMethod.CUSTOM_TUNING -> {
+                        val baseRatio = when (customBaseRatioSource) {
+                            "FIXED_CUSTOM" -> customFixedRatio
+                            "FIRST_PAGE" -> {
+                                val firstPage = try { renderer.openPage(0) } catch (e: Throwable) { null }
+                                val r = if (firstPage != null && firstPage.width > 0) {
+                                    firstPage.height.toFloat() / firstPage.width.toFloat()
+                                } else 1.414f
+                                firstPage?.close()
+                                r
+                            }
+                            "SAMPLED_BITMAP" -> {
+                                val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null }
+                                if (page != null) {
+                                    val pw = page.width.coerceAtLeast(1)
+                                    val ph = page.height.coerceAtLeast(1)
+                                    val sampleW = 120
+                                    val sampleH = ((ph.toFloat() / pw.toFloat()) * sampleW).toInt().coerceIn(20, 500)
+                                    val bitmap = try { Bitmap.createBitmap(sampleW, sampleH, Bitmap.Config.ARGB_8888) } catch (e: Throwable) { null }
+                                    if (bitmap != null) {
+                                        try {
+                                            page.render(bitmap, null, null, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                                            val measuredRatio = bitmap.height.toFloat() / bitmap.width.toFloat()
+                                            bitmap.recycle()
+                                            page.close()
+                                            measuredRatio
+                                        } catch (e: Throwable) {
+                                            bitmap.recycle()
+                                            page.close()
+                                            1.414f
+                                        }
+                                    } else {
+                                        page.close()
+                                        1.414f
+                                    }
+                                } else 1.414f
+                            }
+                            else -> { // "PDF_BOUNDS"
+                                val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null }
+                                val r = if (page != null && page.width > 0) {
+                                    page.height.toFloat() / page.width.toFloat()
+                                } else 1.414f
+                                page?.close()
+                                r
+                            }
+                        }
+                        (baseRatio * customAspectMultiplier).coerceIn(0.1f, customMaxAspectLimit)
                     }
                     AspectCalcMethod.SAMPLED_BITMAP -> {
                         val page = try { renderer.openPage(pageIndex) } catch (e: Throwable) { null }
@@ -386,15 +458,23 @@ class ManhwaPdfRenderer(
                     val canvas = android.graphics.Canvas(bmp)
                     canvas.drawColor(android.graphics.Color.WHITE)
 
-                    // Calculate scale factors precisely to fit bitmap canvas exactly without vertical overflow
+                    // Calculate scale factors based on active aspect calculation method & custom scale mode
                     val pdfRenderWidth = if (isSplit) widthPt / 2f else widthPt.toFloat()
                     val pdfRenderHeight = heightPt.toFloat()
 
-                    val scaleX = totalWidth.toFloat() / pdfRenderWidth
-                    val scaleY = totalHeight.toFloat() / pdfRenderHeight
-
                     val matrix = Matrix()
-                    matrix.postScale(scaleX, scaleY)
+                    if (activeAspectCalcMethod == AspectCalcMethod.CUSTOM_TUNING && customScaleMode == "FIT_PAGE_STRETCH") {
+                        val scaleX = totalWidth.toFloat() / pdfRenderWidth
+                        val scaleY = totalHeight.toFloat() / pdfRenderHeight
+                        matrix.postScale(scaleX, scaleY)
+                    } else if (activeAspectCalcMethod == AspectCalcMethod.CUSTOM_TUNING && customScaleMode == "CONTAIN_BOUNDS") {
+                        val scale = minOf(totalWidth.toFloat() / pdfRenderWidth, totalHeight.toFloat() / pdfRenderHeight)
+                        matrix.postScale(scale, scale)
+                    } else {
+                        // FIT_WIDTH (Standard uniform aspect scale)
+                        val scale = totalWidth.toFloat() / pdfRenderWidth
+                        matrix.postScale(scale, scale)
+                    }
                     
                     val translateX = if (landscapeSplitMode == "RIGHT_HALF") -totalWidth.toFloat() else 0f
                     matrix.postTranslate(translateX, -pixelSliceY.toFloat())
