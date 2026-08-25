@@ -3195,6 +3195,14 @@ fun PdfPageSliceItem(
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
     val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
 
+    val configuration = androidx.compose.ui.platform.LocalConfiguration.current
+    val density = LocalDensity.current
+    val screenHeightPx = remember(configuration, density) {
+        with(density) { configuration.screenHeightDp.dp.toPx() }
+    }
+
+    var isNearViewport by remember { mutableStateOf(numSlices <= 1) }
+
     val renderZoomStep = remember(zoomScale) {
         (Math.round(zoomScale * 2f) / 2f).coerceIn(1.0f, 4.0f)
     }
@@ -3208,9 +3216,18 @@ fun PdfPageSliceItem(
         }
     }
 
-    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, renderZoomStep, qualityLevel, viewModel, landscapeSplitMode) {
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, renderZoomStep, qualityLevel, viewModel, landscapeSplitMode, isNearViewport, isScrollInProgress) {
         if (sliceBitmap != null) {
             return@LaunchedEffect
+        }
+        // Lazy Viewport Tiling: Skip rendering slices far outside the viewport for tall pages
+        if (!isNearViewport && numSlices > 1) {
+            return@LaunchedEffect
+        }
+
+        // Fast Scroll Throttling: If scrolling rapidly and low-res preview is visible, debounce high-res rendering
+        if (isScrollInProgress && hasLowResPreview) {
+            kotlinx.coroutines.delay(180L + hdScrollDelay.coerceAtLeast(0L))
         }
 
         isRendering = true
@@ -3233,6 +3250,15 @@ fun PdfPageSliceItem(
 
     Box(
         modifier = modifier
+            .onGloballyPositioned { coordinates ->
+                val top = coordinates.positionInWindow().y
+                val bottom = top + coordinates.size.height
+                // Buffer of 600px above and below viewport
+                val isVisibleOrBuffered = (bottom >= -600f && top <= screenHeightPx + 600f)
+                if (isNearViewport != isVisibleOrBuffered) {
+                    isNearViewport = isVisibleOrBuffered
+                }
+            }
     ) {
         val bitmap = sliceBitmap
         if (bitmap != null) {
@@ -3338,47 +3364,21 @@ fun PdfPageItem(
                 }
             }
         } else {
-            var pageBitmap by remember(pageIndex) { mutableStateOf<Bitmap?>(null) }
+            val sliceHeight by viewModel.sliceHeight.collectAsStateWithLifecycle()
+            val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
+            val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
+            val basePageHeight = (targetWidth * aspect).coerceAtLeast(10f)
+            val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
+
             var lowResBitmap by remember(pageIndex) { mutableStateOf<Bitmap?>(null) }
-
-            val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
-                getAdjustedColorMatrix(
-                    brightness = brightness,
-                    contrast = contrast,
-                    saturation = saturation,
-                    warmth = warmth,
-                    gamma = gamma,
-                    autoGammaEnabled = autoGammaEnabled,
-                    customTint = customTint,
-                    autoNightShift = autoNightShift,
-                    mangaScanCrisper = mangaScanCrisper,
-                    mode = colorMode,
-                    exposure = exposure,
-                    highlights = highlights,
-                    shadows = shadows,
-                    presetFilter = presetFilter
-                )
-            }
-
-            LaunchedEffect(pageIndex, targetWidth, scaleFactor, renderZoomStep, qualityLevel) {
-                // First attempt fast low-res preview if full bitmap isn't ready
-                if (pageBitmap == null && lowResBitmap == null) {
-                    lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth)
-                }
-                val bmp = viewModel.renderPage(
-                    pageIndex = pageIndex,
-                    targetWidth = targetWidth,
-                    scaleFactor = scaleFactor * renderZoomStep
-                )
-                if (bmp != null) {
-                    pageBitmap = bmp
-                }
-            }
-
             DisposableEffect(pageIndex) {
                 onDispose {
-                    pageBitmap = null
                     lowResBitmap = null
+                }
+            }
+            LaunchedEffect(pageIndex, targetWidth, viewModel) {
+                if (lowResBitmap == null) {
+                    lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth)
                 }
             }
 
@@ -3388,24 +3388,70 @@ fun PdfPageItem(
                     .aspectRatio(1f / aspect)
                     .background(Color.White)
             ) {
-                val currentDisplayBmp = pageBitmap ?: lowResBitmap
-                if (currentDisplayBmp != null) {
+                val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
+                    getAdjustedColorMatrix(
+                        brightness = brightness,
+                        contrast = contrast,
+                        saturation = saturation,
+                        warmth = warmth,
+                        gamma = gamma,
+                        autoGammaEnabled = autoGammaEnabled,
+                        customTint = customTint,
+                        autoNightShift = autoNightShift,
+                        mangaScanCrisper = mangaScanCrisper,
+                        mode = colorMode,
+                        exposure = exposure,
+                        highlights = highlights,
+                        shadows = shadows,
+                        presetFilter = presetFilter
+                    )
+                }
+
+                // Instant low-res blurry background so page is never blank while tiles render
+                lowResBitmap?.let { bmp ->
                     Image(
-                        bitmap = currentDisplayBmp.asImageBitmap(),
-                        contentDescription = "Page ${pageIndex + 1}",
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "Page ${pageIndex + 1} Preview",
                         contentScale = ContentScale.FillBounds,
                         colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
-                        filterQuality = if (pageBitmap != null) androidx.compose.ui.graphics.FilterQuality.High else androidx.compose.ui.graphics.FilterQuality.None,
+                        filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
                         modifier = Modifier.fillMaxSize()
                     )
-                } else {
-                    Box(
-                        modifier = Modifier.fillMaxSize(),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        CircularProgressIndicator(
-                            color = MaterialTheme.colorScheme.primary,
-                            modifier = Modifier.size(28.dp)
+                }
+
+                // Column of high-performance, seamless vertical tiles
+                Column(
+                    modifier = Modifier.fillMaxSize()
+                ) {
+                    for (sliceIndex in 0 until numSlices) {
+                        PdfPageSliceItem(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .weight(1f, fill = true),
+                            pageIndex = pageIndex,
+                            targetWidth = targetWidth,
+                            sliceIndex = sliceIndex,
+                            sliceHeight = sliceHeight,
+                            totalHeight = totalHeight,
+                            totalWidth = totalWidth,
+                            scaleFactor = scaleFactor,
+                            qualityLevel = qualityLevel,
+                            zoomScale = zoomScale,
+                            isScrollInProgress = isScrollInProgress,
+                            hasLowResPreview = (lowResBitmap != null),
+                            viewModel = viewModel,
+                            brightness = brightness,
+                            contrast = contrast,
+                            saturation = saturation,
+                            warmth = warmth,
+                            gamma = gamma,
+                            autoGammaEnabled = autoGammaEnabled,
+                            customTint = customTint,
+                            autoNightShift = autoNightShift,
+                            mangaScanCrisper = mangaScanCrisper,
+                            colorMode = colorMode,
+                            landscapeSplitMode = "NONE",
+                            numSlices = numSlices
                         )
                     }
                 }

@@ -1255,6 +1255,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     fun freeRamExceptCurrentPage(targetPageIndex: Int? = null, keepAdjacent: Boolean = false) {
+        if (!keepAdjacent) {
+            com.example.pdf.BitmapPool.clear()
+        }
         val tab = _tabs.value.find { it.id == _activeTabId.value }
         val activePage = targetPageIndex ?: tab?.currentPage ?: 0
         synchronized(renderers) {
