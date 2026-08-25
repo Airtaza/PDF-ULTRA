@@ -3161,6 +3161,7 @@ fun ComicReaderScreen(
 // --- COMPOSABLE: HD PDF Page Renderer Item ---
 @Composable
 fun PdfPageSliceItem(
+    modifier: Modifier = Modifier,
     pageIndex: Int,
     targetWidth: Int,
     sliceIndex: Int,
@@ -3230,25 +3231,8 @@ fun PdfPageSliceItem(
         isRendering = false
     }
 
-    val basePageHeight = targetWidth * (totalHeight.toFloat() / totalWidth.toFloat())
-    val baseSliceY = sliceIndex * sliceHeight
-    val baseSliceHeightPx = if (sliceIndex == numSlices - 1) {
-        (basePageHeight - baseSliceY).coerceAtLeast(1f)
-    } else {
-        sliceHeight.toFloat()
-    }
-    val displaySliceHeightPx = baseSliceHeightPx * zoomScale
-    
-    if (displaySliceHeightPx <= 0f || totalWidth <= 0) {
-        Spacer(modifier = Modifier.height(1.dp))
-        return
-    }
-    
-    val density = LocalDensity.current
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .height(with(density) { displaySliceHeightPx.toDp() })
+        modifier = modifier
     ) {
         val bitmap = sliceBitmap
         if (bitmap != null) {
@@ -3316,12 +3300,12 @@ fun PdfPageItem(
     val highlights by viewModel.highlights.collectAsStateWithLifecycle()
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
     val aspectCalcMethod by viewModel.aspectCalcMethod.collectAsStateWithLifecycle()
+    val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
 
-    LaunchedEffect(pageIndex, viewModel, landscapeSplitMode, aspectCalcMethod) {
+    LaunchedEffect(pageIndex, viewModel, aspectCalcMethod) {
         isLoadingAspect = true
         val baseAspect = viewModel.getPageAspectRatio(pageIndex)
-        aspectRatio = if (landscapeSplitMode != "NONE") baseAspect * 2f else baseAspect
-        if (aspectRatio == null || (aspectRatio ?: 0f) <= 0.01f) aspectRatio = 1.0f 
+        aspectRatio = if (baseAspect > 0.01f) baseAspect else 1.0f
         isLoadingAspect = false
     }
 
@@ -3354,164 +3338,75 @@ fun PdfPageItem(
                 }
             }
         } else {
-            val pdfEngineSetting by viewModel.pdfEngineSetting.collectAsStateWithLifecycle()
+            var pageBitmap by remember(pageIndex) { mutableStateOf<Bitmap?>(null) }
+            var lowResBitmap by remember(pageIndex) { mutableStateOf<Bitmap?>(null) }
 
-            if (pdfEngineSetting == "NATIVE") {
-                var nativePageBitmap by remember(pageIndex, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
+            val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
+                getAdjustedColorMatrix(
+                    brightness = brightness,
+                    contrast = contrast,
+                    saturation = saturation,
+                    warmth = warmth,
+                    gamma = gamma,
+                    autoGammaEnabled = autoGammaEnabled,
+                    customTint = customTint,
+                    autoNightShift = autoNightShift,
+                    mangaScanCrisper = mangaScanCrisper,
+                    mode = colorMode,
+                    exposure = exposure,
+                    highlights = highlights,
+                    shadows = shadows,
+                    presetFilter = presetFilter
+                )
+            }
 
-                val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
-                val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
-                    getAdjustedColorMatrix(
-                        brightness = brightness,
-                        contrast = contrast,
-                        saturation = saturation,
-                        warmth = warmth,
-                        gamma = gamma,
-                        autoGammaEnabled = autoGammaEnabled,
-                        customTint = customTint,
-                        autoNightShift = autoNightShift,
-                        mangaScanCrisper = mangaScanCrisper,
-                        mode = colorMode,
-                        exposure = exposure,
-                        highlights = highlights,
-                        shadows = shadows,
-                        presetFilter = presetFilter
-                    )
+            LaunchedEffect(pageIndex, targetWidth, scaleFactor, renderZoomStep, qualityLevel) {
+                // First attempt fast low-res preview if full bitmap isn't ready
+                if (pageBitmap == null && lowResBitmap == null) {
+                    lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth)
                 }
-
-                LaunchedEffect(pageIndex, targetWidth, scaleFactor, renderZoomStep, qualityLevel, landscapeSplitMode) {
-                    val bmp = viewModel.renderPage(
-                        pageIndex = pageIndex,
-                        targetWidth = targetWidth,
-                        scaleFactor = scaleFactor * renderZoomStep,
-                        landscapeSplitMode = landscapeSplitMode
-                    )
-                    if (bmp != null) {
-                        nativePageBitmap = bmp
-                    }
+                val bmp = viewModel.renderPage(
+                    pageIndex = pageIndex,
+                    targetWidth = targetWidth,
+                    scaleFactor = scaleFactor * renderZoomStep
+                )
+                if (bmp != null) {
+                    pageBitmap = bmp
                 }
+            }
 
-                DisposableEffect(pageIndex, landscapeSplitMode) {
-                    onDispose {
-                        // Directly unload page bitmap when scrolled off view in Native mode
-                        nativePageBitmap = null
-                    }
+            DisposableEffect(pageIndex) {
+                onDispose {
+                    pageBitmap = null
+                    lowResBitmap = null
                 }
+            }
 
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f / aspect)
-                        .background(Color.White)
-                ) {
-                    nativePageBitmap?.let { bmp ->
-                        Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = "Page ${pageIndex + 1} Native Quality",
-                            contentScale = ContentScale.Fit,
-                            colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
-                            filterQuality = androidx.compose.ui.graphics.FilterQuality.High,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    } ?: run {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            CircularProgressIndicator(
-                                color = MaterialTheme.colorScheme.primary,
-                                modifier = Modifier.size(28.dp)
-                            )
-                        }
-                    }
-                }
-            } else {
-                val sliceHeight by viewModel.sliceHeight.collectAsStateWithLifecycle()
-                val lowResScrollDelay by viewModel.lowResScrollDelay.collectAsStateWithLifecycle()
-                val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
-
-                val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
-                val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
-                val basePageHeight = targetWidth * aspect
-                val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
-
-                var lowResBitmap by remember(pageIndex, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
-                DisposableEffect(pageIndex, landscapeSplitMode) {
-                    onDispose {
-                        lowResBitmap = null
-                    }
-                }
-                LaunchedEffect(pageIndex, targetWidth, viewModel, landscapeSplitMode) {
-                    if (lowResBitmap == null) {
-                        lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth, landscapeSplitMode)
-                    }
-                }
-
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .aspectRatio(1f / aspect)
-                ) {
-                    lowResBitmap?.let { bmp ->
-                        val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
-                            getAdjustedColorMatrix(
-                                brightness = brightness,
-                                contrast = contrast,
-                                saturation = saturation,
-                                warmth = warmth,
-                                gamma = gamma,
-                                autoGammaEnabled = autoGammaEnabled,
-                                customTint = customTint,
-                                autoNightShift = autoNightShift,
-                                mangaScanCrisper = mangaScanCrisper,
-                                mode = colorMode,
-                                exposure = exposure,
-                                highlights = highlights,
-                                shadows = shadows,
-                                presetFilter = presetFilter
-                            )
-                        }
-                        Image(
-                            bitmap = bmp.asImageBitmap(),
-                            contentDescription = "Page ${pageIndex + 1} Low-res Preview",
-                            contentScale = ContentScale.Fit,
-                            colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
-                            filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
-                            modifier = Modifier.fillMaxSize()
-                        )
-                    }
-
-                    Column(
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .aspectRatio(1f / aspect)
+                    .background(Color.White)
+            ) {
+                val currentDisplayBmp = pageBitmap ?: lowResBitmap
+                if (currentDisplayBmp != null) {
+                    Image(
+                        bitmap = currentDisplayBmp.asImageBitmap(),
+                        contentDescription = "Page ${pageIndex + 1}",
+                        contentScale = ContentScale.FillBounds,
+                        colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
+                        filterQuality = if (pageBitmap != null) androidx.compose.ui.graphics.FilterQuality.High else androidx.compose.ui.graphics.FilterQuality.None,
                         modifier = Modifier.fillMaxSize()
+                    )
+                } else {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
                     ) {
-                        for (sliceIndex in 0 until numSlices) {
-                            PdfPageSliceItem(
-                                pageIndex = pageIndex,
-                                targetWidth = targetWidth,
-                                sliceIndex = sliceIndex,
-                                sliceHeight = sliceHeight,
-                                totalHeight = totalHeight,
-                                totalWidth = totalWidth,
-                                scaleFactor = scaleFactor,
-                                qualityLevel = qualityLevel,
-                                zoomScale = zoomScale,
-                                isScrollInProgress = isScrollInProgress,
-                                hasLowResPreview = (lowResBitmap != null),
-                                viewModel = viewModel,
-                                brightness = brightness,
-                                contrast = contrast,
-                                saturation = saturation,
-                                warmth = warmth,
-                                gamma = gamma,
-                                autoGammaEnabled = autoGammaEnabled,
-                                customTint = customTint,
-                                autoNightShift = autoNightShift,
-                                mangaScanCrisper = mangaScanCrisper,
-                                colorMode = colorMode,
-                                landscapeSplitMode = landscapeSplitMode,
-                                numSlices = numSlices
-                            )
-                        }
+                        CircularProgressIndicator(
+                            color = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(28.dp)
+                        )
                     }
                 }
             }

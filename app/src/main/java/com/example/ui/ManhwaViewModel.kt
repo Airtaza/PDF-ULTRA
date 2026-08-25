@@ -1207,44 +1207,20 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     private suspend fun updateVirtualPagesForManhwa(manhwa: Manhwa, direction: String) {
-        val file = File(manhwa.filePath)
-        if (!file.exists()) {
-            _virtualPages.value = (0 until manhwa.totalPages).map { VirtualPage(it, "NONE", it) }
-            return
-        }
-        val renderer = try {
-            synchronized(renderers) {
-                renderers.getOrPut(manhwa.id) {
-                    createRenderer(file)
-                }
-            }
-        } catch (e: Throwable) {
-            null
-        }
-        if (renderer == null) {
-            _virtualPages.value = (0 until manhwa.totalPages).map { VirtualPage(it, "NONE", it) }
-            return
-        }
+        _virtualPages.value = (0 until manhwa.totalPages).map { VirtualPage(it, "NONE", it) }
+    }
 
-        val list = mutableListOf<VirtualPage>()
-        var virtualIdx = 0
-        val isRtl = direction == "Right-to-Left"
+    private val _splitLandscapeSpreads = MutableStateFlow(false)
+    val splitLandscapeSpreads: StateFlow<Boolean> = _splitLandscapeSpreads.asStateFlow()
 
-        for (i in 0 until manhwa.totalPages) {
-            val aspect = renderer.getPageAspectRatio(i)
-            if (aspect < 1.0f) { // Landscape page spread!
-                if (isRtl) {
-                    list.add(VirtualPage(i, "RIGHT_HALF", virtualIdx++))
-                    list.add(VirtualPage(i, "LEFT_HALF", virtualIdx++))
-                } else {
-                    list.add(VirtualPage(i, "LEFT_HALF", virtualIdx++))
-                    list.add(VirtualPage(i, "RIGHT_HALF", virtualIdx++))
-                }
-            } else {
-                list.add(VirtualPage(i, "NONE", virtualIdx++))
+    fun setSplitLandscapeSpreads(enabled: Boolean) {
+        _splitLandscapeSpreads.value = false
+        val currentManhwa = activeManhwa.value
+        if (currentManhwa != null) {
+            viewModelScope.launch(Dispatchers.IO) {
+                updateVirtualPagesForManhwa(currentManhwa, _readingDirection.value)
             }
         }
-        _virtualPages.value = list
     }
 
     // --- State: Manhwa Sketch Editor Plugin Properties ---

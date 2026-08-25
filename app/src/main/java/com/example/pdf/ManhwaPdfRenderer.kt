@@ -314,7 +314,7 @@ class ManhwaPdfRenderer(
                         if (page != null) {
                             val ratio = if (page.width > 0) page.height.toFloat() / page.width.toFloat() else 1.414f
                             page.close()
-                            if (ratio in 0.1f..15.0f) {
+                            if (ratio in 0.05f..100.0f) {
                                 ratio
                             } else {
                                 1.414f
@@ -323,7 +323,7 @@ class ManhwaPdfRenderer(
                     }
                 }
 
-                if (calculatedRatio > 0.05f) {
+                if (calculatedRatio > 0.01f) {
                     aspectRatios[cacheKey] = calculatedRatio
                 }
                 calculatedRatio
@@ -351,7 +351,7 @@ class ManhwaPdfRenderer(
         if (!this@withContext.isActive) return@withContext null
 
         val aspect = getPageAspectRatio(pageIndex)
-        val halfPageAspectRatio = if (landscapeSplitMode != "NONE") 2 * aspect else aspect
+        val halfPageAspectRatio = aspect
 
         var safeScaleFactor = scaleFactor
         val basePixels = targetWidth * (targetWidth * halfPageAspectRatio)
@@ -362,9 +362,9 @@ class ManhwaPdfRenderer(
 
         val scaleStr = String.format(java.util.Locale.US, "%.2f", safeScaleFactor)
         val cacheKey = if (isLowResPlaceholder) {
-            "${pageIndex}_low_${landscapeSplitMode}"
+            "${pageIndex}_low"
         } else {
-            "${pageIndex}_s${sliceIndex}_h${sliceHeight}_sc${scaleStr}_q${qualityLevel}_${bitmapConfig}_${landscapeSplitMode}"
+            "${pageIndex}_s${sliceIndex}_h${sliceHeight}_sc${scaleStr}_q${qualityLevel}_${bitmapConfig}"
         }
         val cached = memoryCache.get(cacheKey)
         if (cached != null && !cached.isRecycled) {
@@ -405,13 +405,29 @@ class ManhwaPdfRenderer(
                 try {
                     val widthPt = page.width
                     val heightPt = page.height
-                    val pageAspectRatio = heightPt.toFloat() / widthPt.toFloat()
+                    val pdfRenderWidth = widthPt.toFloat()
+                    val pdfRenderHeight = heightPt.toFloat()
 
-                    val isSplit = landscapeSplitMode != "NONE"
-
-                    // Use targetWidth as base for all calculations to maintain consistency between slices
+                    // Use targetWidth as base for all calculations to maintain consistency
                     val totalWidth = (targetWidth * safeScaleFactor).toInt().coerceAtLeast(400)
-                    val totalHeight = (totalWidth * halfPageAspectRatio).toInt().coerceAtLeast(400)
+                    
+                    val matrix = Matrix()
+                    val totalHeight: Int
+                    if (activeAspectCalcMethod == AspectCalcMethod.CUSTOM_TUNING && customScaleMode == "FIT_PAGE_STRETCH") {
+                        totalHeight = (totalWidth * halfPageAspectRatio).toInt().coerceAtLeast(400)
+                        val scaleX = totalWidth.toFloat() / pdfRenderWidth
+                        val scaleY = totalHeight.toFloat() / pdfRenderHeight
+                        matrix.postScale(scaleX, scaleY)
+                    } else if (activeAspectCalcMethod == AspectCalcMethod.CUSTOM_TUNING && customScaleMode == "CONTAIN_BOUNDS") {
+                        totalHeight = (totalWidth * halfPageAspectRatio).toInt().coerceAtLeast(400)
+                        val scale = minOf(totalWidth.toFloat() / pdfRenderWidth, totalHeight.toFloat() / pdfRenderHeight)
+                        matrix.postScale(scale, scale)
+                    } else {
+                        // Standard exact uniform aspect scale
+                        val scale = totalWidth.toFloat() / pdfRenderWidth
+                        totalHeight = (pdfRenderHeight * scale).toInt().coerceAtLeast(10)
+                        matrix.postScale(scale, scale)
+                    }
 
                     // Calculate slices based on the base page height (at scale 1.0) to keep numSlices stable
                     val basePageHeight = targetWidth * halfPageAspectRatio
@@ -458,26 +474,7 @@ class ManhwaPdfRenderer(
                     val canvas = android.graphics.Canvas(bmp)
                     canvas.drawColor(android.graphics.Color.WHITE)
 
-                    // Calculate scale factors based on active aspect calculation method & custom scale mode
-                    val pdfRenderWidth = if (isSplit) widthPt / 2f else widthPt.toFloat()
-                    val pdfRenderHeight = heightPt.toFloat()
-
-                    val matrix = Matrix()
-                    if (activeAspectCalcMethod == AspectCalcMethod.CUSTOM_TUNING && customScaleMode == "FIT_PAGE_STRETCH") {
-                        val scaleX = totalWidth.toFloat() / pdfRenderWidth
-                        val scaleY = totalHeight.toFloat() / pdfRenderHeight
-                        matrix.postScale(scaleX, scaleY)
-                    } else if (activeAspectCalcMethod == AspectCalcMethod.CUSTOM_TUNING && customScaleMode == "CONTAIN_BOUNDS") {
-                        val scale = minOf(totalWidth.toFloat() / pdfRenderWidth, totalHeight.toFloat() / pdfRenderHeight)
-                        matrix.postScale(scale, scale)
-                    } else {
-                        // FIT_WIDTH (Standard uniform aspect scale)
-                        val scale = totalWidth.toFloat() / pdfRenderWidth
-                        matrix.postScale(scale, scale)
-                    }
-                    
-                    val translateX = if (landscapeSplitMode == "RIGHT_HALF") -totalWidth.toFloat() else 0f
-                    matrix.postTranslate(translateX, -pixelSliceY.toFloat())
+                    matrix.postTranslate(0f, -pixelSliceY.toFloat())
 
                     if (!this@withContext.isActive) {
                         return@synchronized null
@@ -532,17 +529,16 @@ class ManhwaPdfRenderer(
         landscapeSplitMode: String = "NONE"
     ): Bitmap? {
         val aspect = getPageAspectRatio(pageIndex)
-        val halfAspect = if (landscapeSplitMode != "NONE") 2 * aspect else aspect
 
         var safeScaleFactor = scaleFactor
-        val basePixels = targetWidth * (targetWidth * halfAspect)
+        val basePixels = targetWidth * (targetWidth * aspect)
         val maxPixels = 4500000f
         if (basePixels * safeScaleFactor * safeScaleFactor > maxPixels) {
             safeScaleFactor = kotlin.math.sqrt(maxPixels / basePixels)
         }
 
         val totalWidth = (targetWidth * safeScaleFactor).toInt().coerceAtLeast(400)
-        val totalHeight = (totalWidth * halfAspect).toInt().coerceAtLeast(400)
+        val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
         return renderPageSlice(
             pageIndex, targetWidth, 0, totalHeight, safeScaleFactor,
             qualitySelectionEnabled, qualityLevel, qualityCompression, maxStorageAllocationMb,
@@ -558,10 +554,9 @@ class ManhwaPdfRenderer(
         landscapeSplitMode: String = "NONE"
     ): Bitmap? {
         val aspect = getPageAspectRatio(pageIndex)
-        val halfAspect = if (landscapeSplitMode != "NONE") 2 * aspect else aspect
         val lowResScale = 0.4f
         val totalWidth = (targetWidth * lowResScale).toInt().coerceAtLeast(200)
-        val totalHeight = (totalWidth * halfAspect).toInt().coerceAtLeast(200)
+        val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(200)
         return renderPageSlice(
             pageIndex = pageIndex,
             targetWidth = targetWidth,

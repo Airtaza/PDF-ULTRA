@@ -121,7 +121,7 @@ class ManhwaRepository(private val context: Context, private val dao: ManhwaDao)
         val pageSpecs = listOf(
             DemoPageSpec(720, 1018, "#E53935", "PAGE 1 - STANDARD A4 PORTRAIT", "Aspect Ratio: ~1.414 (720x1018 pt)\nFormat: Standard Book / Document Page\nTests: Standard vertical scaling, text sharpness & reading ruler."),
             DemoPageSpec(720, 5040, "#0D47A1", "PAGE 2 - ULTRA-TALL LONG-STRIP MANHWA", "Aspect Ratio: 7.000 (720x5040 pt)\nFormat: Webtoon Long-Strip Continuous Comic\nTests: Slicing engine, gapless vertical scrolling & custom aspect tuning."),
-            DemoPageSpec(1280, 720, "#2E7D32", "PAGE 3 - 16:9 WIDESCREEN DOUBLE SPREAD", "Aspect Ratio: 0.562 (1280x720 pt)\nFormat: Double Page Spread / Landscape\nTests: Landscape split mode (Left/Right half) & widescreen canvas fit."),
+            DemoPageSpec(1280, 720, "#2E7D32", "PAGE 3 - 16:9 WIDESCREEN DOUBLE SPREAD", "Aspect Ratio: 0.562 (1280x720 pt)\nFormat: Double Page Spread / Landscape\nTests: Full widescreen unified display, zero splitting & true-ratio fit."),
             DemoPageSpec(720, 720, "#E65100", "PAGE 4 - 1:1 SQUARE SPLASH PANEL", "Aspect Ratio: 1.000 (720x720 pt)\nFormat: Square Splash Artwork\nTests: 1:1 aspect calculation & concentric target calibration."),
             DemoPageSpec(720, 2160, "#6A1B9A", "PAGE 5 - 3:1 MEDIUM WEBTOON STRIP", "Aspect Ratio: 3.000 (720x2160 pt)\nFormat: Medium Webtoon Strip (3 Panels)\nTests: Multi-slice rendering & custom multiplier fine tuning."),
             DemoPageSpec(600, 6000, "#212121", "PAGE 6 - EXTREME ULTRA-LONG STRIP", "Aspect Ratio: 10.000 (600x6000 pt)\nFormat: 10:1 Continuous Battle Scene\nTests: Max aspect clamp & memory slice allocation under stress."),
