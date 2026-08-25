@@ -13,11 +13,79 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
     private val cacheDir = File(context.cacheDir, "webp_cache/$pdfIdentifier").apply {
         if (!exists()) mkdirs()
     }
+    private val thumbDir = File(cacheDir, "thumbnails").apply {
+        if (!exists()) mkdirs()
+    }
 
-    // Memory Cache for recently viewed pages (capped to ~30MB)
+    // Memory Cache for recently viewed full slices / pages (capped to ~30MB)
     private val memoryCache = object : LruCache<String, Bitmap>(30 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap): Int {
             return value.byteCount
+        }
+    }
+
+    // Dedicated Fast Memory Cache for tiny WebP low-res thumbnails (~6MB holds 200+ thumbnails)
+    private val thumbnailCache = object : LruCache<Int, Bitmap>(6 * 1024 * 1024) {
+        override fun sizeOf(key: Int, value: Bitmap): Int {
+            return value.byteCount
+        }
+    }
+
+    fun hasThumbnail(pageIndex: Int): Boolean {
+        if (thumbnailCache.get(pageIndex) != null) return true
+        val file = File(thumbDir, "thumb_$pageIndex.webp")
+        return file.exists() && file.length() > 0
+    }
+
+    fun getThumbnailFromMemory(pageIndex: Int): Bitmap? {
+        val cached = thumbnailCache.get(pageIndex)
+        if (cached != null && !cached.isRecycled) {
+            return cached
+        }
+        return null
+    }
+
+    suspend fun getThumbnail(pageIndex: Int): Bitmap? = withContext(Dispatchers.IO) {
+        thumbnailCache.get(pageIndex)?.let {
+            if (!it.isRecycled) return@withContext it
+        }
+
+        try {
+            val file = File(thumbDir, "thumb_$pageIndex.webp")
+            if (file.exists() && file.length() > 0) {
+                val options = BitmapFactory.Options().apply {
+                    inPreferredConfig = Bitmap.Config.ARGB_8888
+                    inMutable = false
+                }
+                val bmp = BitmapFactory.decodeFile(file.absolutePath, options)
+                if (bmp != null) {
+                    thumbnailCache.put(pageIndex, bmp)
+                }
+                bmp
+            } else {
+                null
+            }
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    suspend fun saveThumbnail(pageIndex: Int, bitmap: Bitmap, quality: Int = 20) = withContext(Dispatchers.IO) {
+        thumbnailCache.put(pageIndex, bitmap)
+        try {
+            val file = File(thumbDir, "thumb_$pageIndex.webp")
+            val tempFile = File(thumbDir, "thumb_$pageIndex.webp.tmp")
+            FileOutputStream(tempFile).use { out ->
+                if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.R) {
+                    bitmap.compress(Bitmap.CompressFormat.WEBP_LOSSY, quality, out)
+                } else {
+                    @Suppress("DEPRECATION")
+                    bitmap.compress(Bitmap.CompressFormat.WEBP, quality, out)
+                }
+            }
+            tempFile.renameTo(file)
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 
@@ -86,6 +154,7 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
 
     fun clearMemoryCache() {
         memoryCache.evictAll()
+        thumbnailCache.evictAll()
     }
 
     suspend fun clearCache() = withContext(Dispatchers.IO) {

@@ -3261,7 +3261,7 @@ fun PdfPageSliceItem(
             }
     ) {
         val bitmap = sliceBitmap
-        if (bitmap != null) {
+        if (bitmap != null && !bitmap.isRecycled) {
             val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
                 getAdjustedColorMatrix(
                     brightness = brightness,
@@ -3315,8 +3315,10 @@ fun PdfPageItem(
 ) {
     val scaleFactor by viewModel.activeScaleFactor.collectAsStateWithLifecycle()
     val qualityLevel by viewModel.qualityLevel.collectAsStateWithLifecycle()
-    var aspectRatio by remember { mutableStateOf<Float?>(null) }
-    var isLoadingAspect by remember { mutableStateOf(true) }
+    val aspectCalcMethod by viewModel.aspectCalcMethod.collectAsStateWithLifecycle()
+
+    val initialCachedAspect = remember(pageIndex, aspectCalcMethod) { viewModel.getCachedPageAspectRatio(pageIndex) }
+    var aspectRatio by remember(pageIndex, aspectCalcMethod) { mutableStateOf(initialCachedAspect) }
 
     val renderZoomStep = remember(zoomScale) {
         (Math.round(zoomScale * 2f) / 2f).coerceIn(1.0f, 4.0f)
@@ -3325,136 +3327,109 @@ fun PdfPageItem(
     val exposure by viewModel.exposure.collectAsStateWithLifecycle()
     val highlights by viewModel.highlights.collectAsStateWithLifecycle()
     val shadows by viewModel.shadows.collectAsStateWithLifecycle()
-    val aspectCalcMethod by viewModel.aspectCalcMethod.collectAsStateWithLifecycle()
     val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
 
     LaunchedEffect(pageIndex, viewModel, aspectCalcMethod) {
-        isLoadingAspect = true
-        val baseAspect = viewModel.getPageAspectRatio(pageIndex)
-        aspectRatio = if (baseAspect > 0.01f) baseAspect else 1.0f
-        isLoadingAspect = false
+        if (aspectRatio == null) {
+            val baseAspect = viewModel.getPageAspectRatio(pageIndex)
+            aspectRatio = if (baseAspect > 0.01f) baseAspect else 1.414f
+        }
+    }
+
+    val aspect = aspectRatio ?: 1.414f
+    val sliceHeight by viewModel.sliceHeight.collectAsStateWithLifecycle()
+    val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
+    val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
+    val basePageHeight = (targetWidth * aspect).coerceAtLeast(10f)
+    val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
+
+    val initialThumbnail = remember(pageIndex) { viewModel.getLowResThumbnailFromMemory(pageIndex) }
+    var lowResBitmap by remember(pageIndex) { mutableStateOf(initialThumbnail) }
+
+    DisposableEffect(pageIndex) {
+        onDispose {
+            lowResBitmap = null
+        }
+    }
+    LaunchedEffect(pageIndex, targetWidth, viewModel) {
+        if (lowResBitmap == null) {
+            lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth)
+        }
     }
 
     Box(
         modifier = Modifier
             .fillMaxWidth()
+            .aspectRatio(1f / aspect)
             .background(Color.White)
     ) {
-        val aspect = aspectRatio
-        if (isLoadingAspect || aspect == null) {
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(0.7f)
-                    .background(Color.White),
-                contentAlignment = Alignment.Center
-            ) {
-                Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                    CircularProgressIndicator(
-                        color = MaterialTheme.colorScheme.primary,
-                        modifier = Modifier.size(36.dp)
-                    )
-                    Spacer(modifier = Modifier.height(8.dp))
-                    Text(
-                        text = "Calculating layout for page ${pageIndex + 1}...",
-                        fontSize = 11.sp,
-                        color = Color.DarkGray,
-                        fontWeight = FontWeight.Medium
-                    )
-                }
-            }
-        } else {
-            val sliceHeight by viewModel.sliceHeight.collectAsStateWithLifecycle()
-            val totalWidth = (targetWidth * scaleFactor).toInt().coerceAtLeast(400)
-            val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(400)
-            val basePageHeight = (targetWidth * aspect).coerceAtLeast(10f)
-            val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
+        val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
+            getAdjustedColorMatrix(
+                brightness = brightness,
+                contrast = contrast,
+                saturation = saturation,
+                warmth = warmth,
+                gamma = gamma,
+                autoGammaEnabled = autoGammaEnabled,
+                customTint = customTint,
+                autoNightShift = autoNightShift,
+                mangaScanCrisper = mangaScanCrisper,
+                mode = colorMode,
+                exposure = exposure,
+                highlights = highlights,
+                shadows = shadows,
+                presetFilter = presetFilter
+            )
+        }
 
-            var lowResBitmap by remember(pageIndex) { mutableStateOf<Bitmap?>(null) }
-            DisposableEffect(pageIndex) {
-                onDispose {
-                    lowResBitmap = null
-                }
-            }
-            LaunchedEffect(pageIndex, targetWidth, viewModel) {
-                if (lowResBitmap == null) {
-                    lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth)
-                }
-            }
-
-            Box(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .aspectRatio(1f / aspect)
-                    .background(Color.White)
-            ) {
-                val adjustedMatrix = remember(brightness, contrast, saturation, warmth, gamma, autoGammaEnabled, customTint, autoNightShift, mangaScanCrisper, colorMode, exposure, highlights, shadows, presetFilter) {
-                    getAdjustedColorMatrix(
-                        brightness = brightness,
-                        contrast = contrast,
-                        saturation = saturation,
-                        warmth = warmth,
-                        gamma = gamma,
-                        autoGammaEnabled = autoGammaEnabled,
-                        customTint = customTint,
-                        autoNightShift = autoNightShift,
-                        mangaScanCrisper = mangaScanCrisper,
-                        mode = colorMode,
-                        exposure = exposure,
-                        highlights = highlights,
-                        shadows = shadows,
-                        presetFilter = presetFilter
-                    )
-                }
-
-                // Instant low-res blurry background so page is never blank while tiles render
-                lowResBitmap?.let { bmp ->
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = "Page ${pageIndex + 1} Preview",
-                        contentScale = ContentScale.FillBounds,
-                        colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
-                        filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
-
-                // Column of high-performance, seamless vertical tiles
-                Column(
+        // Instant low-res WebP preview so page is never blank even while fast scrolling
+        lowResBitmap?.let { bmp ->
+            if (!bmp.isRecycled) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "Page ${pageIndex + 1} Preview",
+                    contentScale = ContentScale.FillBounds,
+                    colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
+                    filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
                     modifier = Modifier.fillMaxSize()
-                ) {
-                    for (sliceIndex in 0 until numSlices) {
-                        PdfPageSliceItem(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .weight(1f, fill = true),
-                            pageIndex = pageIndex,
-                            targetWidth = targetWidth,
-                            sliceIndex = sliceIndex,
-                            sliceHeight = sliceHeight,
-                            totalHeight = totalHeight,
-                            totalWidth = totalWidth,
-                            scaleFactor = scaleFactor,
-                            qualityLevel = qualityLevel,
-                            zoomScale = zoomScale,
-                            isScrollInProgress = isScrollInProgress,
-                            hasLowResPreview = (lowResBitmap != null),
-                            viewModel = viewModel,
-                            brightness = brightness,
-                            contrast = contrast,
-                            saturation = saturation,
-                            warmth = warmth,
-                            gamma = gamma,
-                            autoGammaEnabled = autoGammaEnabled,
-                            customTint = customTint,
-                            autoNightShift = autoNightShift,
-                            mangaScanCrisper = mangaScanCrisper,
-                            colorMode = colorMode,
-                            landscapeSplitMode = "NONE",
-                            numSlices = numSlices
-                        )
-                    }
-                }
+                )
+            }
+        }
+
+        // Column of high-performance, seamless vertical tiles
+        Column(
+            modifier = Modifier.fillMaxSize()
+        ) {
+            for (sliceIndex in 0 until numSlices) {
+                PdfPageSliceItem(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .weight(1f, fill = true),
+                    pageIndex = pageIndex,
+                    targetWidth = targetWidth,
+                    sliceIndex = sliceIndex,
+                    sliceHeight = sliceHeight,
+                    totalHeight = totalHeight,
+                    totalWidth = totalWidth,
+                    scaleFactor = scaleFactor,
+                    qualityLevel = qualityLevel,
+                    zoomScale = zoomScale,
+                    isScrollInProgress = isScrollInProgress,
+                    hasLowResPreview = (lowResBitmap != null),
+                    viewModel = viewModel,
+                    brightness = brightness,
+                    contrast = contrast,
+                    saturation = saturation,
+                    warmth = warmth,
+                    gamma = gamma,
+                    autoGammaEnabled = autoGammaEnabled,
+                    customTint = customTint,
+                    autoNightShift = autoNightShift,
+                    mangaScanCrisper = mangaScanCrisper,
+                    colorMode = colorMode,
+                    landscapeSplitMode = "NONE",
+                    numSlices = numSlices
+                )
             }
         }
     }

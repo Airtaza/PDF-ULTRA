@@ -1255,9 +1255,6 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     fun freeRamExceptCurrentPage(targetPageIndex: Int? = null, keepAdjacent: Boolean = false) {
-        if (!keepAdjacent) {
-            com.example.pdf.BitmapPool.clear()
-        }
         val tab = _tabs.value.find { it.id == _activeTabId.value }
         val activePage = targetPageIndex ?: tab?.currentPage ?: 0
         synchronized(renderers) {
@@ -1763,29 +1760,31 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private fun startAotPreload(manhwa: Manhwa, renderer: ManhwaPdfRenderer, startPage: Int) {
         aotJob?.cancel()
         aotJob = viewModelScope.launch(Dispatchers.IO) {
+            // 1. Immediately pre-generate ultra low-res WebP thumbnails for the entire PDF
+            // This ensures every page has an instant, lightweight 2-4KB preview during fast scrolling
+            try {
+                renderer.preloadAllThumbnails(startPage = startPage)
+            } catch (e: Throwable) {
+                e.printStackTrace()
+            }
+
+            if (!isActive) return@launch
+
             val totalPages = renderer.pageCount
             val targetWidth = 1080 // Assumption for standard screens. A real target width is dynamically passed in renderPageSlice, but for AOT, 1080 is a safe baseline.
             
-            // Limit background preload to 3 pages ahead to prevent memory exhaustion and thread contention
-            val endPage = (startPage + 3).coerceAtMost(totalPages)
+            // 2. Limit subsequent high-res slice preloads to 2 pages ahead to prevent memory exhaustion
+            val endPage = (startPage + 2).coerceAtMost(totalPages)
             for (i in startPage until endPage) {
                 if (!isActive) break
                 try {
-                    // Pre-generate the low-res placeholder instantly
-                    renderer.renderPageLowRes(
-                        pageIndex = i,
-                        targetWidth = targetWidth,
-                        bitmapConfig = _bitmapConfigSetting.value
-                    )
-                    kotlinx.coroutines.delay(50) // Yield CPU to avoid UI stutters
-
                     val aspect = renderer.getPageAspectRatio(i)
                     val scaleFactor = getQualityScaleFactor(_qualityLevel.value)
                     val sliceHeight = _sliceHeight.value
                     val basePageHeight = targetWidth * aspect
                     val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
                     
-                    // Pre-render actual slices sequentially to avoid high peak memory allocation and thread contention
+                    // Pre-render actual slices sequentially
                     for (slice in 0 until numSlices) {
                         if (!isActive) break
                         renderer.renderPageSlice(
@@ -1800,9 +1799,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
                             maxStorageAllocationMb = _maxStorageAllocation.value,
                             bitmapConfig = _bitmapConfigSetting.value
                         )
-                        kotlinx.coroutines.delay(30) // Yield CPU between slices
+                        kotlinx.coroutines.delay(20) // Yield CPU between slices
                     }
-                    kotlinx.coroutines.delay(100) // Yield CPU heavily between pages
+                    kotlinx.coroutines.delay(60) // Yield CPU between pages
                 } catch (e: Exception) {
                     e.printStackTrace()
                 }
@@ -2002,6 +2001,22 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val pageCount = getPageCountForActiveManhwa()
         if (pageIndex >= 0 && pageIndex < pageCount) {
             updateActiveTabCurrentPageAndOffset(pageIndex, offset, getVirtualIndexForPhysicalPage(pageIndex))
+        }
+    }
+
+    fun getCachedPageAspectRatio(pageIndex: Int): Float? {
+        val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return null
+        val manhwa = tab.manhwa ?: return null
+        return synchronized(renderers) {
+            renderers[manhwa.id]?.getCachedPageAspectRatio(pageIndex, _aspectCalcMethod.value)
+        }
+    }
+
+    fun getLowResThumbnailFromMemory(pageIndex: Int): Bitmap? {
+        val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return null
+        val manhwa = tab.manhwa ?: return null
+        return synchronized(renderers) {
+            renderers[manhwa.id]?.getLowResThumbnailFromMemory(pageIndex)
         }
     }
 

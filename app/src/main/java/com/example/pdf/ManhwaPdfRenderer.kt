@@ -82,13 +82,6 @@ class ManhwaPdfRenderer(
             override fun sizeOf(key: String, value: Bitmap): Int {
                 return value.byteCount
             }
-
-            override fun entryRemoved(evicted: Boolean, key: String, oldValue: Bitmap, newValue: Bitmap?) {
-                super.entryRemoved(evicted, key, oldValue, newValue)
-                if (evicted && !oldValue.isRecycled && oldValue.isMutable) {
-                    BitmapPool.put(oldValue)
-                }
-            }
         }
     }
 
@@ -99,13 +92,11 @@ class ManhwaPdfRenderer(
 
     fun clearMemoryCache() {
         memoryCache.evictAll()
-        BitmapPool.clear()
         webPCacheManager.clearMemoryCache()
     }
 
     suspend fun clearDiskCache() {
         memoryCache.evictAll()
-        BitmapPool.clear()
         webPCacheManager.clearCache()
     }
 
@@ -123,7 +114,6 @@ class ManhwaPdfRenderer(
             }
         }
         webPCacheManager.freeRamExceptCurrentPage(currentPageIndex, keepAdjacent)
-        System.gc()
     }
 
     val pageCount: Int
@@ -462,22 +452,20 @@ class ManhwaPdfRenderer(
 
                     // PdfRenderer strictly requires ARGB_8888 format
                     val config = Bitmap.Config.ARGB_8888
-                    val bmp = BitmapPool.get(totalWidth, pixelRenderHeight, config)
-                        ?: try {
-                            Bitmap.createBitmap(totalWidth, pixelRenderHeight, config)
-                        } catch (e: OutOfMemoryError) {
-                            onOOM()
-                            BitmapPool.clear()
-                            freeRamExceptCurrentPage(pageIndex, keepAdjacent = false)
-                            System.gc()
-                            try {
-                                val lowerWidth = (totalWidth * 0.75f).toInt().coerceAtLeast(200)
-                                val lowerHeight = (pixelRenderHeight * 0.75f).toInt().coerceAtLeast(200)
-                                Bitmap.createBitmap(lowerWidth, lowerHeight, config)
-                            } catch (e2: OutOfMemoryError) {
-                                return@synchronized null
-                            }
+                    val bmp = try {
+                        Bitmap.createBitmap(totalWidth, pixelRenderHeight, config)
+                    } catch (e: OutOfMemoryError) {
+                        onOOM()
+                        freeRamExceptCurrentPage(pageIndex, keepAdjacent = false)
+                        System.gc()
+                        try {
+                            val lowerWidth = (totalWidth * 0.75f).toInt().coerceAtLeast(200)
+                            val lowerHeight = (pixelRenderHeight * 0.75f).toInt().coerceAtLeast(200)
+                            Bitmap.createBitmap(lowerWidth, lowerHeight, config)
+                        } catch (e2: OutOfMemoryError) {
+                            return@synchronized null
                         }
+                    }
                     
                     // Fill with white background, as PdfRenderer draws on top and many PDFs have transparent backgrounds
                     val canvas = android.graphics.Canvas(bmp)
@@ -556,30 +544,105 @@ class ManhwaPdfRenderer(
         )
     }
 
+    fun getCachedPageAspectRatio(pageIndex: Int, method: AspectCalcMethod = activeAspectCalcMethod): Float? {
+        val cacheKey = if (method == AspectCalcMethod.CUSTOM_TUNING) {
+            "${pageIndex}_CUSTOM_${customBaseRatioSource}_${customFixedRatio}_${customAspectMultiplier}_${customScaleMode}_${customMaxAspectLimit}"
+        } else {
+            "${pageIndex}_${method.name}"
+        }
+        return aspectRatios[cacheKey] ?: aspectRatios["${pageIndex}_DYNAMIC_AUTO"] ?: aspectRatios["${pageIndex}_PDF_BOUNDS"]
+    }
+
+    fun getLowResThumbnailFromMemory(pageIndex: Int): Bitmap? {
+        return webPCacheManager.getThumbnailFromMemory(pageIndex)
+    }
+
+    suspend fun getOrGenerateThumbnail(pageIndex: Int): Bitmap? = withContext(Dispatchers.IO) {
+        if (isClosed || pdfRenderer == null) return@withContext null
+        // 1. Check memory & disk WebP thumbnail cache first
+        val cached = webPCacheManager.getThumbnail(pageIndex)
+        if (cached != null && !cached.isRecycled) {
+            return@withContext cached
+        }
+
+        // 2. Render extremely low quality, low bitrate WebP thumbnail (160px width, quality 20, ~2-4KB)
+        renderLowResThumbnail(pageIndex)
+    }
+
+    suspend fun renderLowResThumbnail(pageIndex: Int): Bitmap? = withContext(Dispatchers.IO) {
+        if (isClosed || pdfRenderer == null) return@withContext null
+        val renderer = pdfRenderer ?: return@withContext null
+
+        try {
+            val (bmp, aspect) = synchronized(this@ManhwaPdfRenderer) {
+                if (isClosed || pdfRenderer == null) return@synchronized null
+                val count = renderer.pageCount
+                if (pageIndex < 0 || pageIndex >= count) return@synchronized null
+
+                val page = renderer.openPage(pageIndex)
+                try {
+                    val pw = page.width.coerceAtLeast(1)
+                    val ph = page.height.coerceAtLeast(1)
+                    val aspect = ph.toFloat() / pw.toFloat()
+                    aspectRatios["${pageIndex}_DYNAMIC_AUTO"] = aspect
+                    aspectRatios["${pageIndex}_PDF_BOUNDS"] = aspect
+
+                    val thumbWidth = 160
+                    val thumbHeight = ((thumbWidth * aspect).toInt()).coerceIn(40, 1200)
+
+                    val b = Bitmap.createBitmap(thumbWidth, thumbHeight, Bitmap.Config.ARGB_8888)
+                    val canvas = android.graphics.Canvas(b)
+                    canvas.drawColor(android.graphics.Color.WHITE)
+
+                    val matrix = Matrix()
+                    matrix.postScale(thumbWidth.toFloat() / pw, thumbHeight.toFloat() / ph)
+                    page.render(b, null, matrix, PdfRenderer.Page.RENDER_MODE_FOR_DISPLAY)
+                    Pair(b, aspect)
+                } finally {
+                    page.close()
+                }
+            } ?: return@withContext null
+
+            // Save to ultra low bitrate WebP thumbnail cache (~2-4KB file size)
+            webPCacheManager.saveThumbnail(pageIndex, bmp, quality = 20)
+            bmp
+        } catch (e: Throwable) {
+            null
+        }
+    }
+
+    suspend fun preloadAllThumbnails(startPage: Int = 0, onProgress: (Int, Int) -> Unit = { _, _ -> }) = withContext(Dispatchers.IO) {
+        if (isClosed || pdfRenderer == null) return@withContext
+        val count = pageCount
+        if (count <= 0) return@withContext
+
+        // Create prioritization order: starting from startPage outward
+        val order = mutableListOf<Int>()
+        var left = startPage
+        var right = startPage + 1
+        while (left >= 0 || right < count) {
+            if (left >= 0) order.add(left--)
+            if (right < count) order.add(right++)
+        }
+
+        var processed = 0
+        for (pageIndex in order) {
+            if (isClosed || !isActive) break
+            if (!webPCacheManager.hasThumbnail(pageIndex)) {
+                renderLowResThumbnail(pageIndex)
+            }
+            processed++
+            onProgress(processed, count)
+        }
+    }
+
     suspend fun renderPageLowRes(
         pageIndex: Int,
         targetWidth: Int,
         bitmapConfig: String = "ARGB_8888",
         landscapeSplitMode: String = "NONE"
     ): Bitmap? {
-        val aspect = getPageAspectRatio(pageIndex)
-        val lowResScale = 0.4f
-        val totalWidth = (targetWidth * lowResScale).toInt().coerceAtLeast(200)
-        val totalHeight = (totalWidth * aspect).toInt().coerceAtLeast(200)
-        return renderPageSlice(
-            pageIndex = pageIndex,
-            targetWidth = targetWidth,
-            sliceIndex = 0,
-            sliceHeight = totalHeight,
-            scaleFactor = lowResScale,
-            qualitySelectionEnabled = true,
-            qualityLevel = "LOW",
-            qualityCompression = 60,
-            maxStorageAllocationMb = 100,
-            isLowResPlaceholder = true,
-            bitmapConfig = bitmapConfig,
-            landscapeSplitMode = landscapeSplitMode
-        )
+        return getOrGenerateThumbnail(pageIndex)
     }
 
     fun clearCache() {
@@ -597,7 +660,6 @@ class ManhwaPdfRenderer(
     fun close() {
         isClosed = true
         clearCache()
-        BitmapPool.clear()
         try {
             synchronized(this) {
                 pdfRenderer?.close()
@@ -608,55 +670,6 @@ class ManhwaPdfRenderer(
         } finally {
             pdfRenderer = null
             parcelFileDescriptor = null
-        }
-    }
-}
-
-object BitmapPool {
-    private val pool = ArrayDeque<Bitmap>()
-    private const val MAX_POOL_SIZE = 6
-    private const val MAX_POOL_BYTES = 24 * 1024 * 1024 // 24MB maximum pool size
-
-    fun get(width: Int, height: Int, config: Bitmap.Config = Bitmap.Config.ARGB_8888): Bitmap? {
-        synchronized(pool) {
-            val iterator = pool.iterator()
-            while (iterator.hasNext()) {
-                val bmp = iterator.next()
-                if (!bmp.isRecycled && bmp.isMutable && bmp.width == width && bmp.height == height && bmp.config == config) {
-                    iterator.remove()
-                    bmp.eraseColor(android.graphics.Color.WHITE)
-                    return bmp
-                }
-            }
-        }
-        return null
-    }
-
-    fun put(bitmap: Bitmap) {
-        if (bitmap.isRecycled || !bitmap.isMutable) return
-        synchronized(pool) {
-            var currentBytes = pool.sumOf { if (!it.isRecycled) it.byteCount else 0 }
-            while ((pool.size >= MAX_POOL_SIZE || currentBytes + bitmap.byteCount > MAX_POOL_BYTES) && pool.isNotEmpty()) {
-                val oldest = pool.removeFirst()
-                if (!oldest.isRecycled) {
-                    oldest.recycle()
-                }
-                currentBytes = pool.sumOf { if (!it.isRecycled) it.byteCount else 0 }
-            }
-            if (pool.size < MAX_POOL_SIZE) {
-                pool.addLast(bitmap)
-            }
-        }
-    }
-
-    fun clear() {
-        synchronized(pool) {
-            while (pool.isNotEmpty()) {
-                val bmp = pool.removeFirst()
-                if (!bmp.isRecycled) {
-                    bmp.recycle()
-                }
-            }
         }
     }
 }
