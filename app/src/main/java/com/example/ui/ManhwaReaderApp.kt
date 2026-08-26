@@ -2179,33 +2179,70 @@ fun ComicReaderScreen(
         }
     }
 
-    // Dynamic scroll tracking to update reading progress & velocity-based cache warming
+    // Dynamic scroll tracking to update speed detection, reading progress & directional prefetching
     var lastScrollTime by remember { mutableLongStateOf(0L) }
     var lastScrollIndex by remember { mutableIntStateOf(0) }
     var lastScrollOffset by remember { mutableIntStateOf(0) }
+    var currentPrefetchDirection by remember { mutableIntStateOf(1) } // 1 for DOWN, -1 for UP
+    var directionalAccumulatedDistance by remember { mutableFloatStateOf(0f) }
+    var lastPrefetchedPage by remember { mutableIntStateOf(-1) }
+    var lastPrefetchedDir by remember { mutableIntStateOf(0) }
+
+    val readerScreenConfig = androidx.compose.ui.platform.LocalConfiguration.current
+    val readerDensity = LocalDensity.current
+    val halfScreenHeightPx = remember(readerScreenConfig, readerDensity) {
+        with(readerDensity) { (readerScreenConfig.screenHeightDp.dp / 2f).toPx() }.coerceAtLeast(300f)
+    }
+
+    LaunchedEffect(lazyListState.isScrollInProgress) {
+        if (!lazyListState.isScrollInProgress) {
+            viewModel.updateScrollVelocity(0f)
+            directionalAccumulatedDistance = 0f
+        }
+    }
 
     LaunchedEffect(lazyListState.firstVisibleItemIndex, lazyListState.firstVisibleItemScrollOffset) {
         val now = System.currentTimeMillis()
         val timeDelta = (now - lastScrollTime).coerceAtLeast(1L)
         
-        // Calculate velocity (approximate 1 page as 3000px height)
+        // Calculate scroll velocity (approximate 1 page as 3000px height)
         val indexDiff = lazyListState.firstVisibleItemIndex - lastScrollIndex
         val offsetDiff = lazyListState.firstVisibleItemScrollOffset - lastScrollOffset
         val pixelsScrolled = (indexDiff * 3000 + offsetDiff)
         val velocity = pixelsScrolled.toFloat() / timeDelta.toFloat() // pixels per millisecond
 
-        // Update database with index and offset
+        // Update velocity in ViewModel so HD slice renderers react dynamically
+        viewModel.updateScrollVelocity(velocity)
+
+        // Update in-memory page and offset
         viewModel.setCurrentVirtualPageAndOffset(
             lazyListState.firstVisibleItemIndex,
             lazyListState.firstVisibleItemScrollOffset
         )
 
-        // Pre-render pages if scrolling fast (Reading Velocity Cache Warming)
-        if (componentWidth > 0 && lazyListState.firstVisibleItemIndex != lastScrollIndex) {
-            viewModel.warmCacheForVelocity(
-                currentPage = lazyListState.firstVisibleItemIndex,
+        // Direction Detection: Only change prefetch direction if user scrolled up/down by half screen area
+        if (pixelsScrolled != 0) {
+            val rawDirection = if (pixelsScrolled > 0) 1 else -1
+            if (rawDirection != currentPrefetchDirection) {
+                directionalAccumulatedDistance += kotlin.math.abs(pixelsScrolled.toFloat())
+                if (directionalAccumulatedDistance >= halfScreenHeightPx) {
+                    currentPrefetchDirection = rawDirection
+                    directionalAccumulatedDistance = 0f
+                }
+            } else {
+                directionalAccumulatedDistance = 0f
+            }
+        }
+
+        // Trigger prefetching 2 pages ahead in detected direction
+        val currentPage = lazyListState.firstVisibleItemIndex
+        if (componentWidth > 0 && (currentPage != lastPrefetchedPage || currentPrefetchDirection != lastPrefetchedDir)) {
+            lastPrefetchedPage = currentPage
+            lastPrefetchedDir = currentPrefetchDirection
+            viewModel.warmCacheForDirectionalScroll(
+                currentPage = currentPage,
                 targetWidth = componentWidth,
-                velocity = velocity
+                direction = currentPrefetchDirection
             )
         }
 
@@ -3176,6 +3213,7 @@ fun PdfPageSliceItem(
 ) {
     val hdScrollDelay by viewModel.hdScrollDelay.collectAsStateWithLifecycle()
     val staggerDelay by viewModel.staggerDelay.collectAsStateWithLifecycle()
+    val scrollVelocity by viewModel.scrollVelocity.collectAsStateWithLifecycle()
 
     val exposure by viewModel.exposure.collectAsStateWithLifecycle()
     val highlights by viewModel.highlights.collectAsStateWithLifecycle()
@@ -3203,7 +3241,7 @@ fun PdfPageSliceItem(
         }
     }
 
-    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, renderZoomStep, qualityLevel, viewModel, landscapeSplitMode, isNearViewport, isScrollInProgress) {
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, renderZoomStep, qualityLevel, viewModel, landscapeSplitMode, isNearViewport, isScrollInProgress, scrollVelocity) {
         if (sliceBitmap != null) {
             return@LaunchedEffect
         }
@@ -3212,14 +3250,25 @@ fun PdfPageSliceItem(
             return@LaunchedEffect
         }
 
-        // Fast Scroll Throttling: If scrolling rapidly and low-res preview is visible, debounce high-res rendering
-        if (isScrollInProgress && hasLowResPreview) {
-            kotlinx.coroutines.delay(180L + hdScrollDelay.coerceAtLeast(0L))
+        // Speed-based HD rendering delay adjustment:
+        // Slow scroll (< 0.8px/ms) or stopped -> 0ms delay (HD renders IMMEDIATELY).
+        // Medium scroll -> 50ms delay.
+        // Fast scroll -> Throttled delay to avoid CPU lock during flinging.
+        val absVelocity = kotlin.math.abs(scrollVelocity)
+        val effectiveHdDelay = when {
+            !isScrollInProgress -> 0L
+            absVelocity < 0.8f -> 0L // Slow scroll -> 0ms delay, HD rendering starts instantly!
+            absVelocity < 2.5f -> 50L // Medium scroll -> 50ms delay
+            else -> (200L + hdScrollDelay.coerceAtLeast(0L)).coerceAtMost(450L) // Fast scroll -> throttle
+        }
+
+        if (hasLowResPreview && effectiveHdDelay > 0L) {
+            kotlinx.coroutines.delay(effectiveHdDelay)
         }
 
         isRendering = true
-        if (sliceIndex > 0 && staggerDelay > 0) {
-            kotlinx.coroutines.delay(sliceIndex * staggerDelay)
+        if (sliceIndex > 0 && staggerDelay > 0 && isScrollInProgress) {
+            kotlinx.coroutines.delay((sliceIndex * staggerDelay).coerceAtMost(100L))
         }
         val bitmap = viewModel.renderPageSlice(
             pageIndex = pageIndex,

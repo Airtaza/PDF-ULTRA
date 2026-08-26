@@ -591,6 +591,13 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _lowResScrollDelay = MutableStateFlow(sharedPrefs.getLong("low_res_scroll_delay", 60L))
     val lowResScrollDelay: StateFlow<Long> = _lowResScrollDelay.asStateFlow()
 
+    private val _scrollVelocity = MutableStateFlow(0f)
+    val scrollVelocity: StateFlow<Float> = _scrollVelocity.asStateFlow()
+
+    fun updateScrollVelocity(velocity: Float) {
+        _scrollVelocity.value = velocity
+    }
+
     private val _hdScrollDelay = MutableStateFlow(sharedPrefs.getLong("hd_scroll_delay", 150L))
     val hdScrollDelay: StateFlow<Long> = _hdScrollDelay.asStateFlow()
 
@@ -3070,10 +3077,10 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     private var prefetchJob: kotlinx.coroutines.Job? = null
 
-    fun warmCacheForVelocity(currentPage: Int, targetWidth: Int, velocity: Float) {
-        val countToPreload = 3
-        val direction = if (velocity > 0) 1 else -1
-        
+    fun warmCacheForDirectionalScroll(currentPage: Int, targetWidth: Int, direction: Int) {
+        val countToPreload = 2 // Exactly 2 pages in the detected direction
+        val dir = if (direction >= 0) 1 else -1
+
         prefetchJob?.cancel()
         prefetchJob = viewModelScope.launch(Dispatchers.IO) {
             val tab = _tabs.value.find { it.id == _activeTabId.value }
@@ -3083,62 +3090,53 @@ class ManhwaViewModel(private val application: Application, private val reposito
             } ?: return@launch
 
             val totalPages = renderer.pageCount
-            
-            // Only preload if velocity isn't crazy high (prevent CPU choke)
-            if (Math.abs(velocity) < 5.0f) {
-                for (i in 1..countToPreload) {
-                    val pageToLoad = currentPage + (i * direction)
-                    if (pageToLoad in 0 until totalPages) {
-                        // Preload low-res thumbnail first
-                        renderer.renderPageLowRes(
+
+            for (i in 1..countToPreload) {
+                if (!isActive) break
+                val pageToLoad = currentPage + (i * dir)
+                if (pageToLoad in 0 until totalPages) {
+                    // Preload low-res thumbnail first
+                    renderer.renderPageLowRes(
+                        pageIndex = pageToLoad,
+                        targetWidth = targetWidth,
+                        bitmapConfig = _bitmapConfigSetting.value
+                    )
+
+                    kotlinx.coroutines.delay(40)
+                    if (!isActive) break
+
+                    // Pre-render webp page slices for instant HD view
+                    val aspect = renderer.getPageAspectRatio(pageToLoad)
+                    val scaleFactor = getQualityScaleFactor(_qualityLevel.value)
+                    val sliceHeight = _sliceHeight.value
+                    val basePageHeight = targetWidth * aspect
+                    val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
+
+                    val slicesToPreload = minOf(numSlices, 3)
+                    for (slice in 0 until slicesToPreload) {
+                        if (!isActive) break
+                        renderer.renderPageSlice(
                             pageIndex = pageToLoad,
                             targetWidth = targetWidth,
-                            bitmapConfig = _bitmapConfigSetting.value
-                        )
-
-                        // Yield before heavy work
-                        kotlinx.coroutines.delay(100)
-
-                        // Then preload full page slices (let's assume first few slices)
-                        // This uses renderPageSlice which saves to WebP Cache
-                        val aspect = renderer.getPageAspectRatio(pageToLoad)
-                        val scaleFactor = getQualityScaleFactor(_qualityLevel.value)
-                        val sliceHeight = _sliceHeight.value
-                        val basePageHeight = targetWidth * aspect
-                        val numSlices = Math.ceil(basePageHeight.toDouble() / sliceHeight).toInt().coerceAtLeast(1)
-                        
-                        // Just preload the first 3 slices to save memory and CPU
-                        val slicesToPreload = minOf(numSlices, 3)
-                        for (slice in 0 until slicesToPreload) {
-                            renderer.renderPageSlice(
-                                pageIndex = pageToLoad,
-                                targetWidth = targetWidth,
-                                sliceIndex = slice,
-                                sliceHeight = sliceHeight,
-                                scaleFactor = scaleFactor,
-                                qualitySelectionEnabled = _qualitySelectionEnabled.value,
-                                qualityLevel = _qualityLevel.value,
-                                qualityCompression = _webpQuality.value,
-                                maxStorageAllocationMb = _maxStorageAllocation.value,
-                                bitmapConfig = _bitmapConfigSetting.value
-                            )
-                        }
-                    }
-                }
-            } else {
-                // If scrolling extremely fast, JUST preload low-res thumbnails
-                for (i in 1..(countToPreload + 2)) {
-                    val pageToLoad = currentPage + (i * direction)
-                    if (pageToLoad in 0 until totalPages) {
-                        renderer.renderPageLowRes(
-                            pageIndex = pageToLoad,
-                            targetWidth = targetWidth,
+                            sliceIndex = slice,
+                            sliceHeight = sliceHeight,
+                            scaleFactor = scaleFactor,
+                            qualitySelectionEnabled = _qualitySelectionEnabled.value,
+                            qualityLevel = _qualityLevel.value,
+                            qualityCompression = _webpQuality.value,
+                            maxStorageAllocationMb = _maxStorageAllocation.value,
                             bitmapConfig = _bitmapConfigSetting.value
                         )
                     }
                 }
             }
+            // Job finishes & stops after 2 pages are done
         }
+    }
+
+    fun warmCacheForVelocity(currentPage: Int, targetWidth: Int, velocity: Float) {
+        val direction = if (velocity >= 0) 1 else -1
+        warmCacheForDirectionalScroll(currentPage, targetWidth, direction)
     }
 
     private fun calculateStreak(events: List<ReadingEvent>): Int {
