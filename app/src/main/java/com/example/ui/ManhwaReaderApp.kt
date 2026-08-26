@@ -1628,19 +1628,21 @@ fun ComicReaderScreen(
 
     val activeManhwaIdKey = activeManhwa?.id ?: 0L
     val activeFilePathKey = activeManhwa?.filePath ?: ""
-    val initialPdfState = remember(activeManhwaIdKey, activeFilePathKey) {
-        viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey)
+    val activeTitleKey = activeManhwa?.title ?: ""
+    val initialPdfState = remember(activeManhwaIdKey, activeFilePathKey, activeTitleKey) {
+        viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey, activeTitleKey)
     }
 
     val lazyListState = rememberSaveable(
         activeManhwaIdKey,
+        activeFilePathKey,
         saver = LazyListState.Saver
     ) {
         val initVirtualPage = viewModel.getVirtualIndexForPhysicalPage(initialPdfState.pageIndex)
         val initialPage = if (initVirtualPage > 0) initVirtualPage else initialPdfState.pageIndex
         LazyListState(
-            firstVisibleItemIndex = initialPage,
-            firstVisibleItemScrollOffset = initialPdfState.scrollOffset
+            firstVisibleItemIndex = initialPage.coerceAtLeast(0),
+            firstVisibleItemScrollOffset = initialPdfState.scrollOffset.coerceAtLeast(0)
         )
     }
     var isScrollRestored by remember(activeManhwaIdKey) { mutableStateOf(false) }
@@ -2040,9 +2042,9 @@ fun ComicReaderScreen(
     }
 
     // 1. Chapter navigation / initial load scroll restoration (Index + Offset + Zoom)
-    LaunchedEffect(activeManhwaIdKey, activeFilePathKey, virtualPages) {
+    LaunchedEffect(activeManhwaIdKey, activeFilePathKey, activeTitleKey, virtualPages) {
         if (activeManhwaIdKey > 0 && virtualPages.isNotEmpty() && !isScrollRestored) {
-            val state = viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey)
+            val state = viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey, activeTitleKey)
             val virtualLastPage = viewModel.getVirtualIndexForPhysicalPage(state.pageIndex)
             val targetVirtualPage = virtualLastPage.coerceIn(0, (virtualPages.size - 1).coerceAtLeast(0))
             val targetOffset = state.scrollOffset.coerceAtLeast(0)
@@ -2056,48 +2058,31 @@ fun ComicReaderScreen(
             } catch (e: Exception) {
                 e.printStackTrace()
             }
-            kotlinx.coroutines.delay(100)
+            kotlinx.coroutines.delay(50)
             isScrollRestored = true
         }
     }
 
-    // 2. Real-time scroll state synchronization & persistent save on SCROLL_STATE_IDLE
+    // 2. Real-time scroll state synchronization in memory
     LaunchedEffect(lazyListState, activeManhwaIdKey, activeFilePathKey, isScrollRestored) {
         if (!isScrollRestored) return@LaunchedEffect
         snapshotFlow {
-            Triple(
+            Pair(
                 lazyListState.firstVisibleItemIndex,
-                lazyListState.firstVisibleItemScrollOffset,
-                lazyListState.isScrollInProgress
+                lazyListState.firstVisibleItemScrollOffset
             )
         }
         .distinctUntilChanged()
-        .collect { (virtualIndex, offset, isScrolling) ->
+        .collect { (virtualIndex, offset) ->
             if (activeManhwaIdKey > 0) {
-                val vp = virtualPages.getOrNull(virtualIndex)
-                val physicalPage = vp?.physicalPageIndex ?: virtualIndex
                 viewModel.setCurrentVirtualPageAndOffsetInMemory(virtualIndex, offset)
-
-                // Save when scrolling is IDLE (stopped)
-                if (!isScrolling) {
-                    val savedState = viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey)
-                    if (physicalPage > 0 || offset > 0 || userHasScrolled || savedState.pageIndex == 0) {
-                        viewModel.savePdfReadingState(
-                            filePath = activeFilePathKey,
-                            manhwaId = activeManhwaIdKey,
-                            pageIndex = physicalPage,
-                            scrollOffset = offset,
-                            zoomLevel = zoomScaleTarget
-                        )
-                    }
-                }
             }
         }
     }
 
-    // 3. Lifecycle state persistence on ON_PAUSE, ON_STOP, and onDispose
+    // 3. Lifecycle state persistence on ON_PAUSE, ON_STOP, and onDispose (saved when changing tab or closing)
     val lifecycleOwner = androidx.lifecycle.compose.LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner, activeManhwaIdKey, activeFilePathKey) {
+    DisposableEffect(lifecycleOwner, activeManhwaIdKey, activeFilePathKey, activeTitleKey) {
         val observer = androidx.lifecycle.LifecycleEventObserver { _, event ->
             if (event == androidx.lifecycle.Lifecycle.Event.ON_PAUSE || event == androidx.lifecycle.Lifecycle.Event.ON_STOP) {
                 if (activeManhwaIdKey > 0 && isScrollRestored) {
@@ -2105,15 +2090,14 @@ fun ComicReaderScreen(
                     val offset = lazyListState.firstVisibleItemScrollOffset
                     val vp = virtualPages.getOrNull(virtualIndex)
                     val physicalPage = vp?.physicalPageIndex ?: virtualIndex
-                    if (physicalPage > 0 || offset > 0 || userHasScrolled) {
-                        viewModel.savePdfReadingState(
-                            filePath = activeFilePathKey,
-                            manhwaId = activeManhwaIdKey,
-                            pageIndex = physicalPage,
-                            scrollOffset = offset,
-                            zoomLevel = zoomScaleTarget
-                        )
-                    }
+                    viewModel.savePdfReadingState(
+                        filePath = activeFilePathKey,
+                        manhwaId = activeManhwaIdKey,
+                        pageIndex = physicalPage,
+                        scrollOffset = offset,
+                        zoomLevel = zoomScaleTarget,
+                        title = activeTitleKey
+                    )
                 }
             }
         }
@@ -2125,15 +2109,14 @@ fun ComicReaderScreen(
                 val offset = lazyListState.firstVisibleItemScrollOffset
                 val vp = virtualPages.getOrNull(virtualIndex)
                 val physicalPage = vp?.physicalPageIndex ?: virtualIndex
-                if (physicalPage > 0 || offset > 0 || userHasScrolled) {
-                    viewModel.savePdfReadingState(
-                        filePath = activeFilePathKey,
-                        manhwaId = activeManhwaIdKey,
-                        pageIndex = physicalPage,
-                        scrollOffset = offset,
-                        zoomLevel = zoomScaleTarget
-                    )
-                }
+                viewModel.savePdfReadingState(
+                    filePath = activeFilePathKey,
+                    manhwaId = activeManhwaIdKey,
+                    pageIndex = physicalPage,
+                    scrollOffset = offset,
+                    zoomLevel = zoomScaleTarget,
+                    title = activeTitleKey
+                )
             }
         }
     }
@@ -3070,7 +3053,11 @@ fun ComicReaderScreen(
                 onExposureChange = { viewModel.setExposure(it) },
                 onHighlightsChange = { viewModel.setHighlights(it) },
                 onShadowsChange = { viewModel.setShadows(it) },
-                onResetViewEnhancerSettings = { viewModel.resetViewEnhancerSettings() }
+                onResetViewEnhancerSettings = { viewModel.resetViewEnhancerSettings() },
+                onLockAndFullScreen = {
+                    isScreenLocked = true
+                    areControlsVisible = false
+                }
             )
         }
 
@@ -5289,7 +5276,8 @@ fun HUDBottomBar(
     onExposureChange: (Float) -> Unit,
     onHighlightsChange: (Float) -> Unit,
     onShadowsChange: (Float) -> Unit,
-    onResetViewEnhancerSettings: () -> Unit
+    onResetViewEnhancerSettings: () -> Unit,
+    onLockAndFullScreen: () -> Unit = {}
 ) {
     var showZoomControls by remember { mutableStateOf(false) }
     var showScrollControls by remember { mutableStateOf(false) }
@@ -5683,19 +5671,30 @@ fun HUDBottomBar(
                     }
                 }
 
-                // Chapter Bookmarker button
-                if (isOutlineEnabled) {
-                    IconButton(
-                        onClick = { if (pdfEngineSetting != "NATIVE") onAddBookmarkClick() },
-                        enabled = pdfEngineSetting != "NATIVE",
-                        modifier = Modifier
-                            .alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
-                            .testTag("add_bookmark_hud")
-                    ) {
-                        Icon(Icons.Default.Add, contentDescription = "Add Chapter Mark", tint = Color.White)
+                // Chapter Bookmarker button & Quick Full Screen Lock button
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    if (isOutlineEnabled) {
+                        IconButton(
+                            onClick = { if (pdfEngineSetting != "NATIVE") onAddBookmarkClick() },
+                            enabled = pdfEngineSetting != "NATIVE",
+                            modifier = Modifier
+                                .alpha(if (pdfEngineSetting == "NATIVE") 0.35f else 1.0f)
+                                .testTag("add_bookmark_hud")
+                        ) {
+                            Icon(Icons.Default.Add, contentDescription = "Add Chapter Mark", tint = Color.White)
+                        }
                     }
-                } else {
-                    Spacer(modifier = Modifier.width(48.dp))
+
+                    IconButton(
+                        onClick = onLockAndFullScreen,
+                        modifier = Modifier.testTag("lock_and_fullscreen_bottom_bar_button")
+                    ) {
+                        Icon(
+                            imageVector = Icons.Default.Lock,
+                            contentDescription = "Lock and Full Screen",
+                            tint = Color.White
+                        )
+                    }
                 }
             }
         }

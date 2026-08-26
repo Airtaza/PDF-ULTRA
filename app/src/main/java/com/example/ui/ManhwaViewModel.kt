@@ -1441,6 +1441,13 @@ class ManhwaViewModel(private val application: Application, private val reposito
     fun flushActiveTabToDb() {
         val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return
         val manhwa = tab.manhwa ?: return
+        savePdfReadingState(
+            filePath = manhwa.filePath,
+            manhwaId = manhwa.id,
+            pageIndex = tab.currentPage,
+            scrollOffset = tab.scrollOffset,
+            title = manhwa.title
+        )
         viewModelScope.launch(Dispatchers.IO) {
             repository.updateManhwa(
                 manhwa.copy(
@@ -1459,6 +1466,18 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val timestamp: Long = System.currentTimeMillis()
     )
 
+    fun getPdfNameKey(filePath: String?, title: String? = null): String {
+        val name = when {
+            !filePath.isNullOrBlank() -> {
+                val fName = File(filePath).name
+                if (fName.isNotBlank()) fName else (title ?: "unknown_pdf")
+            }
+            !title.isNullOrBlank() -> title
+            else -> "unknown_pdf"
+        }
+        return "pdf_name_${name.trim().lowercase().replace(Regex("[^a-zA-Z0-9_.-]"), "_")}"
+    }
+
     fun getPdfReadingStateKey(filePath: String?, manhwaId: Long): String {
         val pathKey = filePath?.trim()?.takeIf { it.isNotBlank() }
         return if (pathKey != null) {
@@ -1473,28 +1492,37 @@ class ManhwaViewModel(private val application: Application, private val reposito
         manhwaId: Long,
         pageIndex: Int,
         scrollOffset: Int,
-        zoomLevel: Float = 1.0f
+        zoomLevel: Float = 1.0f,
+        title: String? = null
     ) {
-        if (manhwaId <= 0 && filePath.isNullOrBlank()) return
-        val key = getPdfReadingStateKey(filePath, manhwaId)
+        if (manhwaId <= 0 && filePath.isNullOrBlank() && title.isNullOrBlank()) return
         val now = System.currentTimeMillis()
+        val editor = sharedPrefs.edit()
 
-        sharedPrefs.edit()
-            .putInt("${key}_page", pageIndex)
-            .putInt("${key}_scroll", scrollOffset)
-            .putFloat("${key}_zoom", zoomLevel)
-            .putLong("${key}_lastOpened", now)
-            .apply()
+        // 1. Primary: Save by PDF name
+        val nameKey = getPdfNameKey(filePath, title)
+        editor.putInt("${nameKey}_page", pageIndex)
+            .putInt("${nameKey}_scroll", scrollOffset)
+            .putFloat("${nameKey}_zoom", zoomLevel)
+            .putLong("${nameKey}_lastOpened", now)
 
+        // 2. Secondary: Save by exact file path
+        val pathKey = getPdfReadingStateKey(filePath, manhwaId)
+        editor.putInt("${pathKey}_page", pageIndex)
+            .putInt("${pathKey}_scroll", scrollOffset)
+            .putFloat("${pathKey}_zoom", zoomLevel)
+            .putLong("${pathKey}_lastOpened", now)
+
+        // 3. Save by manhwaId
         if (manhwaId > 0) {
             val idKey = "pdf_state_id_${manhwaId}"
-            sharedPrefs.edit()
-                .putInt("${idKey}_page", pageIndex)
+            editor.putInt("${idKey}_page", pageIndex)
                 .putInt("${idKey}_scroll", scrollOffset)
                 .putFloat("${idKey}_zoom", zoomLevel)
                 .putLong("${idKey}_lastOpened", now)
-                .apply()
         }
+
+        editor.apply()
 
         val tab = _tabs.value.find { it.id == _activeTabId.value }
         val manhwa = tab?.manhwa
@@ -1518,25 +1546,40 @@ class ManhwaViewModel(private val application: Application, private val reposito
         }
     }
 
-    fun getSavedPdfReadingState(filePath: String?, manhwaId: Long): PdfReadingState {
-        val key = getPdfReadingStateKey(filePath, manhwaId)
-        var prefPage = sharedPrefs.getInt("${key}_page", -1)
-        var prefScroll = sharedPrefs.getInt("${key}_scroll", -1)
-        var prefZoom = sharedPrefs.getFloat("${key}_zoom", 1.0f)
-        var prefTimestamp = sharedPrefs.getLong("${key}_lastOpened", 0L)
-
-        if (prefPage < 0 && manhwaId > 0) {
-            val idKey = "pdf_state_id_${manhwaId}"
-            prefPage = sharedPrefs.getInt("${idKey}_page", -1)
-            prefScroll = sharedPrefs.getInt("${idKey}_scroll", -1)
-            prefZoom = sharedPrefs.getFloat("${idKey}_zoom", 1.0f)
-            prefTimestamp = sharedPrefs.getLong("${idKey}_lastOpened", 0L)
+    fun getSavedPdfReadingState(filePath: String?, manhwaId: Long, title: String? = null): PdfReadingState {
+        // 1. Primary: Check by PDF name
+        val nameKey = getPdfNameKey(filePath, title)
+        val namePage = sharedPrefs.getInt("${nameKey}_page", -1)
+        val nameScroll = sharedPrefs.getInt("${nameKey}_scroll", -1)
+        val nameZoom = sharedPrefs.getFloat("${nameKey}_zoom", 1.0f)
+        val nameTimestamp = sharedPrefs.getLong("${nameKey}_lastOpened", 0L)
+        if (namePage >= 0 && nameScroll >= 0) {
+            return PdfReadingState(namePage, nameScroll, nameZoom, nameTimestamp)
         }
 
+        // 2. Secondary: Check by file path
+        val pathKey = getPdfReadingStateKey(filePath, manhwaId)
+        val prefPage = sharedPrefs.getInt("${pathKey}_page", -1)
+        val prefScroll = sharedPrefs.getInt("${pathKey}_scroll", -1)
+        val prefZoom = sharedPrefs.getFloat("${pathKey}_zoom", 1.0f)
+        val prefTimestamp = sharedPrefs.getLong("${pathKey}_lastOpened", 0L)
         if (prefPage >= 0 && prefScroll >= 0) {
             return PdfReadingState(prefPage, prefScroll, prefZoom, prefTimestamp)
         }
 
+        // 3. Check by manhwa ID
+        if (manhwaId > 0) {
+            val idKey = "pdf_state_id_${manhwaId}"
+            val idPage = sharedPrefs.getInt("${idKey}_page", -1)
+            val idScroll = sharedPrefs.getInt("${idKey}_scroll", -1)
+            val idZoom = sharedPrefs.getFloat("${idKey}_zoom", 1.0f)
+            val idTimestamp = sharedPrefs.getLong("${idKey}_lastOpened", 0L)
+            if (idPage >= 0 && idScroll >= 0) {
+                return PdfReadingState(idPage, idScroll, idZoom, idTimestamp)
+            }
+        }
+
+        // 4. Check active tab or database lastReadPage
         val tab = _tabs.value.find { it.id == _activeTabId.value }
         val manhwa = tab?.manhwa
         if (manhwa != null && (manhwa.id == manhwaId || manhwa.filePath == filePath)) {
@@ -1601,6 +1644,16 @@ class ManhwaViewModel(private val application: Application, private val reposito
 
     // --- Tab management operations ---
     fun selectTabId(tabId: String) {
+        val currentTab = _tabs.value.find { it.id == _activeTabId.value }
+        if (currentTab?.type == TabType.READER && currentTab.manhwa != null) {
+            savePdfReadingState(
+                filePath = currentTab.manhwa.filePath,
+                manhwaId = currentTab.manhwa.id,
+                pageIndex = currentTab.currentPage,
+                scrollOffset = currentTab.scrollOffset,
+                title = currentTab.manhwa.title
+            )
+        }
         flushActiveTabToDb()
         _activeTabId.value = tabId
         val tab = _tabs.value.find { it.id == tabId }
@@ -1625,7 +1678,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 return@launch
             }
 
-            val savedState = getSavedPdfReadingState(freshManhwa.filePath, freshManhwa.id)
+            val savedState = getSavedPdfReadingState(freshManhwa.filePath, freshManhwa.id, freshManhwa.title)
             val startPage = if (savedState.pageIndex >= 0) savedState.pageIndex else freshManhwa.lastReadPage
             val startOffset = if (savedState.scrollOffset >= 0) savedState.scrollOffset else freshManhwa.scrollOffset
             val updatedManhwa = freshManhwa.copy(
@@ -1692,6 +1745,13 @@ class ManhwaViewModel(private val application: Application, private val reposito
                 val tab2ToMove = readerTabs[1]
 
                 tab1ToClose.manhwa?.let { oldM ->
+                    savePdfReadingState(
+                        filePath = oldM.filePath,
+                        manhwaId = oldM.id,
+                        pageIndex = tab1ToClose.currentPage,
+                        scrollOffset = tab1ToClose.scrollOffset,
+                        title = oldM.title
+                    )
                     withContext(Dispatchers.IO) {
                         repository.updateManhwa(
                             oldM.copy(
@@ -1820,6 +1880,13 @@ class ManhwaViewModel(private val application: Application, private val reposito
             }
 
             if (tabToClose.type == TabType.READER && tabToClose.manhwa != null) {
+                savePdfReadingState(
+                    filePath = tabToClose.manhwa.filePath,
+                    manhwaId = tabToClose.manhwa.id,
+                    pageIndex = tabToClose.currentPage,
+                    scrollOffset = tabToClose.scrollOffset,
+                    title = tabToClose.manhwa.title
+                )
                 withContext(Dispatchers.IO) {
                     repository.updateManhwa(
                         tabToClose.manhwa.copy(
