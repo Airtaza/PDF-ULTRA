@@ -1766,7 +1766,7 @@ fun ComicReaderScreen(
         ) {
             val touchSlop = viewConfiguration.touchSlop
             awaitEachGesture {
-                val firstDown = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
+                val firstDown = awaitFirstDown(requireUnconsumed = false)
                 val firstDownTime = System.currentTimeMillis()
                 val startPosition = firstDown.position
 
@@ -1774,35 +1774,6 @@ fun ComicReaderScreen(
                     do {
                         val event = awaitPointerEvent()
                     } while (event.changes.any { it.pressed })
-                    return@awaitEachGesture
-                }
-
-                if (isScreenLocked) {
-                    var hasMoved = false
-                    do {
-                        val event = awaitPointerEvent(PointerEventPass.Initial)
-                        event.changes.forEach { c ->
-                            val dist = kotlin.math.hypot(
-                                (c.position.x - startPosition.x).toDouble(),
-                                (c.position.y - startPosition.y).toDouble()
-                            ).toFloat()
-                            if (dist > touchSlop) {
-                                hasMoved = true
-                            }
-                        }
-                    } while (event.changes.any { it.pressed })
-
-                    val clickDuration = System.currentTimeMillis() - firstDownTime
-                    // Do not show title toast if user clicked specifically on bottom-right lock button to unlock
-                    val isNearLockButton = startPosition.x > (size.width - 240) && startPosition.y > (size.height - 240)
-                    if (!hasMoved && clickDuration < 500 && !isNearLockButton) {
-                        showPdfTitleToast = true
-                        pdfTitleToastJob?.cancel()
-                        pdfTitleToastJob = coroutineScope.launch {
-                            kotlinx.coroutines.delay(1000L)
-                            showPdfTitleToast = false
-                        }
-                    }
                     return@awaitEachGesture
                 }
 
@@ -2020,34 +1991,43 @@ fun ComicReaderScreen(
                                         }
                                     }
                                 } else {
-                                    // --- FIRST TAP CANDIDATE ---
-                                    lastTapTime = now
-                                    lastTapPosition = startPosition
-                                    val tapX = startPosition.x
-                                    val widthPx = componentWidth.coerceAtLeast(1)
-                                    val tapActionToPerform = when {
-                                        tapX < widthPx * 0.3f -> leftTapAction
-                                        tapX > widthPx * 0.7f -> rightTapAction
-                                        else -> centerTapAction
-                                    }
-                                    coroutineScope.launch {
-                                        kotlinx.coroutines.delay(260)
-                                        if (lastTapTime == now && !isAnyMenuOrSettingsOpen) {
-                                            when (tapActionToPerform) {
-                                                "PREV_PAGE" -> {
-                                                    val currIdx = lazyListState.firstVisibleItemIndex
-                                                    if (currIdx > 0) {
-                                                        lazyListState.animateScrollToItem(currIdx - 1)
+                                    if (isScreenLocked) {
+                                        showPdfTitleToast = true
+                                        pdfTitleToastJob?.cancel()
+                                        pdfTitleToastJob = coroutineScope.launch {
+                                            kotlinx.coroutines.delay(1000L)
+                                            showPdfTitleToast = false
+                                        }
+                                    } else {
+                                        // --- FIRST TAP CANDIDATE ---
+                                        lastTapTime = now
+                                        lastTapPosition = startPosition
+                                        val tapX = startPosition.x
+                                        val widthPx = componentWidth.coerceAtLeast(1)
+                                        val tapActionToPerform = when {
+                                            tapX < widthPx * 0.3f -> leftTapAction
+                                            tapX > widthPx * 0.7f -> rightTapAction
+                                            else -> centerTapAction
+                                        }
+                                        coroutineScope.launch {
+                                            kotlinx.coroutines.delay(260)
+                                            if (lastTapTime == now && !isAnyMenuOrSettingsOpen) {
+                                                when (tapActionToPerform) {
+                                                    "PREV_PAGE" -> {
+                                                        val currIdx = lazyListState.firstVisibleItemIndex
+                                                        if (currIdx > 0) {
+                                                            lazyListState.animateScrollToItem(currIdx - 1)
+                                                        }
                                                     }
-                                                }
-                                                "NEXT_PAGE" -> {
-                                                    val currIdx = lazyListState.firstVisibleItemIndex
-                                                    if (currIdx < virtualPages.size - 1) {
-                                                        lazyListState.animateScrollToItem(currIdx + 1)
+                                                    "NEXT_PAGE" -> {
+                                                        val currIdx = lazyListState.firstVisibleItemIndex
+                                                        if (currIdx < virtualPages.size - 1) {
+                                                            lazyListState.animateScrollToItem(currIdx + 1)
+                                                        }
                                                     }
-                                                }
-                                                else -> {
-                                                    areControlsVisible = !areControlsVisible
+                                                    else -> {
+                                                        areControlsVisible = !areControlsVisible
+                                                    }
                                                 }
                                             }
                                         }
@@ -2341,7 +2321,7 @@ fun ComicReaderScreen(
 
         LazyColumn(
             state = lazyListState,
-            userScrollEnabled = !isScreenLocked && !isDrawModeOn && !isScaling && zoomScaleTarget <= 1.05f && !isDraggingScrollbar, // Freeze standard scrolling when locked, scaling, zoomed, or dragging scrollbar
+            userScrollEnabled = !isDrawModeOn && !isScaling && zoomScaleTarget <= 1.05f && !isDraggingScrollbar, // Freeze standard scrolling when scaling, zoomed, or dragging scrollbar
             modifier = Modifier
                 .width(with(LocalDensity.current) { (componentWidth * animatedZoomScale).toDp() })
                 .fillMaxHeight()
@@ -4940,6 +4920,7 @@ fun DisplayThemeCanvasPopup(
                             range = 0.5f..5.0f,
                             onValueChange = wrapSlider(onSwipeSensitivityChange),
                             format = "%.1fx",
+                            snapPoints = listOf(0.5f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f),
                             onValueChangeFinished = onSliderChangeFinished
                         )
 
@@ -4950,6 +4931,7 @@ fun DisplayThemeCanvasPopup(
                             range = 1.5f..4.0f,
                             onValueChange = wrapSlider(onDoubleTapZoomScaleChange),
                             format = "%.1fx",
+                            snapPoints = listOf(1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f),
                             onValueChangeFinished = onSliderChangeFinished
                         )
 
@@ -5387,8 +5369,29 @@ private fun CanvasSliderRow(
     onValueChange: (Float) -> Unit,
     format: String,
     enabled: Boolean = true,
+    snapPoints: List<Float>? = null,
     onValueChangeFinished: (() -> Unit)? = null
 ) {
+    val hapticFeedback = androidx.compose.ui.platform.LocalHapticFeedback.current
+    var lastSnappedValue by remember { mutableStateOf(value) }
+
+    val handleValueChange: (Float) -> Unit = { rawVal ->
+        val snapped = if (!snapPoints.isNullOrEmpty()) {
+            snapPoints.minByOrNull { kotlin.math.abs(it - rawVal) } ?: rawVal
+        } else {
+            rawVal
+        }
+        if (snapped != lastSnappedValue) {
+            lastSnappedValue = snapped
+            try {
+                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+            } catch (e: Exception) {
+                // Ignore if device does not support haptics
+            }
+        }
+        onValueChange(snapped)
+    }
+
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier
@@ -5403,7 +5406,7 @@ private fun CanvasSliderRow(
         )
         Slider(
             value = value,
-            onValueChange = onValueChange,
+            onValueChange = handleValueChange,
             onValueChangeFinished = onValueChangeFinished,
             valueRange = range,
             enabled = enabled,
@@ -6425,6 +6428,7 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
     
     var cacheSizeText by remember { mutableStateOf("0.00 MB") }
     val context = LocalContext.current
+    val hapticFeedback = androidx.compose.ui.platform.LocalHapticFeedback.current
     val specs = viewModel.getDeviceSpecs()
 
     var searchQuery by remember { mutableStateOf("") }
@@ -6979,10 +6983,36 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                         Text("TOUCH SENSITIVITY & ZOOM", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.height(4.dp))
                         Text("SWIPE FINGER SENSITIVITY: ${String.format("%.1f", swipeSensitivity)}X", fontSize = 11.sp)
-                        Slider(value = swipeSensitivity, onValueChange = { viewModel.setSwipeSensitivity(it) }, valueRange = 0.5f..5.0f)
+                        Slider(
+                            value = swipeSensitivity,
+                            onValueChange = { rawVal ->
+                                val snapPoints = listOf(0.5f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f)
+                                val snapped = snapPoints.minByOrNull { kotlin.math.abs(it - rawVal) } ?: rawVal
+                                if (snapped != swipeSensitivity) {
+                                    try {
+                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                    } catch (e: Exception) {}
+                                }
+                                viewModel.setSwipeSensitivity(snapped)
+                            },
+                            valueRange = 0.5f..5.0f
+                        )
 
                         Text("DOUBLE TAP ZOOM SCALE: ${String.format("%.1f", doubleTapZoomScale)}X", fontSize = 11.sp)
-                        Slider(value = doubleTapZoomScale, onValueChange = { viewModel.setDoubleTapZoomScale(it) }, valueRange = 1.5f..4.0f)
+                        Slider(
+                            value = doubleTapZoomScale,
+                            onValueChange = { rawVal ->
+                                val snapPoints = listOf(1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f)
+                                val snapped = snapPoints.minByOrNull { kotlin.math.abs(it - rawVal) } ?: rawVal
+                                if (snapped != doubleTapZoomScale) {
+                                    try {
+                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                    } catch (e: Exception) {}
+                                }
+                                viewModel.setDoubleTapZoomScale(snapped)
+                            },
+                            valueRange = 1.5f..4.0f
+                        )
 
                         Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                             Text("Double Tap Reset Zoom", fontWeight = FontWeight.Bold, fontSize = 12.sp)

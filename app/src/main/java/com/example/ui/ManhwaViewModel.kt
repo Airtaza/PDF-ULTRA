@@ -897,7 +897,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
     private val _shadows = MutableStateFlow(sharedPrefs.getFloat("view_shadows", 0.0f))
     val shadows: StateFlow<Float> = _shadows.asStateFlow()
 
-    private val _swipeSensitivity = MutableStateFlow(sharedPrefs.getFloat("swipe_sensitivity", 1.0f))
+    private val _swipeSensitivity = MutableStateFlow(sharedPrefs.getFloat("swipe_sensitivity", 3.0f))
     val swipeSensitivity: StateFlow<Float> = _swipeSensitivity.asStateFlow()
 
     fun setSwipeSensitivity(value: Float) {
@@ -968,7 +968,7 @@ class ManhwaViewModel(private val application: Application, private val reposito
         val autoNightShift: Boolean = false,
         val mangaScanCrisper: Boolean = false,
         val hdMode: Boolean = true,
-        val swipeSensitivity: Float = 1.0f,
+        val swipeSensitivity: Float = 3.0f,
         val doubleTapZoomScale: Float = 2.0f,
         val borderTrimEnabled: Boolean = false,
         val eyeRestReminderEnabled: Boolean = false,
