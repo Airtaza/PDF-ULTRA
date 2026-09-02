@@ -1990,27 +1990,27 @@ fun ComicReaderScreen(
                                         }
                                     }
                                 } else {
-                                    // --- FIRST TAP CANDIDATE ---
-                                    lastTapTime = now
-                                    lastTapPosition = startPosition
-                                    val tapX = startPosition.x
-                                    val widthPx = componentWidth.coerceAtLeast(1)
-                                    val tapActionToPerform = when {
-                                        tapX < widthPx * 0.3f -> leftTapAction
-                                        tapX > widthPx * 0.7f -> rightTapAction
-                                        else -> centerTapAction
-                                    }
-                                    coroutineScope.launch {
-                                        kotlinx.coroutines.delay(260)
-                                        if (lastTapTime == now) {
-                                            if (isScreenLocked) {
-                                                showPdfTitleToast = true
-                                                pdfTitleToastJob?.cancel()
-                                                pdfTitleToastJob = coroutineScope.launch {
-                                                    kotlinx.coroutines.delay(1000L)
-                                                    showPdfTitleToast = false
-                                                }
-                                            } else if (!isAnyMenuOrSettingsOpen) {
+                                    if (isScreenLocked) {
+                                        showPdfTitleToast = true
+                                        pdfTitleToastJob?.cancel()
+                                        pdfTitleToastJob = coroutineScope.launch {
+                                            kotlinx.coroutines.delay(1000L)
+                                            showPdfTitleToast = false
+                                        }
+                                    } else {
+                                        // --- FIRST TAP CANDIDATE ---
+                                        lastTapTime = now
+                                        lastTapPosition = startPosition
+                                        val tapX = startPosition.x
+                                        val widthPx = componentWidth.coerceAtLeast(1)
+                                        val tapActionToPerform = when {
+                                            tapX < widthPx * 0.3f -> leftTapAction
+                                            tapX > widthPx * 0.7f -> rightTapAction
+                                            else -> centerTapAction
+                                        }
+                                        coroutineScope.launch {
+                                                kotlinx.coroutines.delay(260)
+                                                if (lastTapTime == now && !isAnyMenuOrSettingsOpen) {
                                                 when (tapActionToPerform) {
                                                     "PREV_PAGE" -> {
                                                         val currIdx = lazyListState.firstVisibleItemIndex
@@ -3430,26 +3430,7 @@ fun PdfPageSliceItem(
             return@LaunchedEffect
         }
 
-        val absVelocity = kotlin.math.abs(scrollVelocity)
-        val isSlowScroll = !isScrollInProgress || absVelocity < 1.0f
-
-        val effectiveHdDelay = if (isSlowScroll) 0L else when {
-            absVelocity < 2.5f -> 50L
-            else -> (200L + hdScrollDelay.coerceAtLeast(0L)).coerceAtMost(450L)
-        }
-
-        if (hasLowResPreview && effectiveHdDelay > 0L) {
-            kotlinx.coroutines.delay(effectiveHdDelay)
-        }
-
-        if (isSlowScroll) {
-            viewModel.cancelPrefetching()
-        }
-
         isRendering = true
-        if (sliceIndex > 0 && staggerDelay > 0 && isScrollInProgress && !isSlowScroll) {
-            kotlinx.coroutines.delay((sliceIndex * staggerDelay).coerceAtMost(100L))
-        }
         val bitmap = viewModel.renderPageSlice(
             pageIndex = pageIndex,
             targetWidth = targetWidth,
@@ -3469,8 +3450,8 @@ fun PdfPageSliceItem(
             .onGloballyPositioned { coordinates ->
                 val top = coordinates.positionInWindow().y
                 val bottom = top + coordinates.size.height
-                // Buffer of 600px above and below viewport
-                val isVisibleOrBuffered = (bottom >= -600f && top <= screenHeightPx + 600f)
+                // Generous 1500px pre-render buffer above and below viewport so view area renders instantly
+                val isVisibleOrBuffered = (bottom >= -1500f && top <= screenHeightPx + 1500f)
                 if (isNearViewport != isVisibleOrBuffered) {
                     isNearViewport = isVisibleOrBuffered
                 }
@@ -3573,8 +3554,8 @@ fun PdfPageItem(
             lowResBitmap = null
         }
     }
-    LaunchedEffect(pageIndex, targetWidth, viewModel, isSlowScroll) {
-        if (lowResBitmap == null && !isSlowScroll) {
+    LaunchedEffect(pageIndex, targetWidth, viewModel) {
+        if (lowResBitmap == null) {
             lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth)
         }
     }
@@ -3604,19 +3585,17 @@ fun PdfPageItem(
             )
         }
 
-        // Only show low-res WebP preview if fast scrolling to ensure instant HD view area on slow scroll
-        if (!isSlowScroll) {
-            lowResBitmap?.let { bmp ->
-                if (!bmp.isRecycled) {
-                    Image(
-                        bitmap = bmp.asImageBitmap(),
-                        contentDescription = "Page ${pageIndex + 1} Preview",
-                        contentScale = ContentScale.FillBounds,
-                        colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
-                        filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
-                        modifier = Modifier.fillMaxSize()
-                    )
-                }
+        // Always display low-res WebP preview as instant background placeholder while HD slices load
+        lowResBitmap?.let { bmp ->
+            if (!bmp.isRecycled) {
+                Image(
+                    bitmap = bmp.asImageBitmap(),
+                    contentDescription = "Page ${pageIndex + 1} Preview",
+                    contentScale = ContentScale.FillBounds,
+                    colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
+                    filterQuality = androidx.compose.ui.graphics.FilterQuality.Low,
+                    modifier = Modifier.fillMaxSize()
+                )
             }
         }
 
