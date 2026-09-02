@@ -1630,7 +1630,7 @@ fun ComicReaderScreen(
     val activeFilePathKey = activeManhwa?.filePath ?: ""
     val activeTitleKey = activeManhwa?.title ?: ""
     val initialPdfState = remember(activeManhwaIdKey, activeFilePathKey, activeTitleKey) {
-        viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey, activeTitleKey)
+        viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey, activeTitleKey, activeManhwa?.lastReadPage ?: 0, activeManhwa?.scrollOffset ?: 0)
     }
 
     val lazyListState = rememberSaveable(
@@ -1658,6 +1658,9 @@ fun ComicReaderScreen(
     var componentWidth by remember { mutableStateOf(1080) }
     var areControlsVisible by remember { mutableStateOf(true) }
     var isScreenLocked by remember { mutableStateOf(false) }
+
+    var showPdfTitleToast by remember { mutableStateOf(false) }
+    var pdfTitleToastJob by remember { mutableStateOf<kotlinx.coroutines.Job?>(null) }
 
     LaunchedEffect(areControlsVisible) {
         onControlsVisibilityChanged(areControlsVisible)
@@ -2000,7 +2003,14 @@ fun ComicReaderScreen(
                                     coroutineScope.launch {
                                         kotlinx.coroutines.delay(260)
                                         if (lastTapTime == now) {
-                                            if (!isScreenLocked && !isAnyMenuOrSettingsOpen) {
+                                            if (isScreenLocked) {
+                                                showPdfTitleToast = true
+                                                pdfTitleToastJob?.cancel()
+                                                pdfTitleToastJob = coroutineScope.launch {
+                                                    kotlinx.coroutines.delay(1000L)
+                                                    showPdfTitleToast = false
+                                                }
+                                            } else if (!isAnyMenuOrSettingsOpen) {
                                                 when (tapActionToPerform) {
                                                     "PREV_PAGE" -> {
                                                         val currIdx = lazyListState.firstVisibleItemIndex
@@ -2044,7 +2054,7 @@ fun ComicReaderScreen(
     // 1. Chapter navigation / initial load scroll restoration (Index + Offset + Zoom)
     LaunchedEffect(activeManhwaIdKey, activeFilePathKey, activeTitleKey, virtualPages) {
         if (activeManhwaIdKey > 0 && virtualPages.isNotEmpty() && !isScrollRestored) {
-            val state = viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey, activeTitleKey)
+            val state = viewModel.getSavedPdfReadingState(activeFilePathKey, activeManhwaIdKey, activeTitleKey, activeManhwa?.lastReadPage ?: 0, activeManhwa?.scrollOffset ?: 0)
             val virtualLastPage = viewModel.getVirtualIndexForPhysicalPage(state.pageIndex)
             val targetVirtualPage = virtualLastPage.coerceIn(0, (virtualPages.size - 1).coerceAtLeast(0))
             val targetOffset = state.scrollOffset.coerceAtLeast(0)
@@ -2236,6 +2246,7 @@ fun ComicReaderScreen(
 
         // Trigger prefetching 2 pages ahead in detected direction
         val currentPage = lazyListState.firstVisibleItemIndex
+        val totalPagesCount = virtualPages.size
         if (componentWidth > 0 && (currentPage != lastPrefetchedPage || currentPrefetchDirection != lastPrefetchedDir)) {
             lastPrefetchedPage = currentPage
             lastPrefetchedDir = currentPrefetchDirection
@@ -2244,11 +2255,37 @@ fun ComicReaderScreen(
                 targetWidth = componentWidth,
                 direction = currentPrefetchDirection
             )
+            // Seamless Chapter Transition: Prefetch next chapter when near end
+            val nxtCh = activeManhwa?.let { viewModel.getNextChapter(it) }
+            if (nxtCh != null && currentPage >= (totalPagesCount - 2).coerceAtLeast(0)) {
+                viewModel.prefetchNextChapter(nxtCh)
+            }
         }
 
         lastScrollTime = now
         lastScrollIndex = lazyListState.firstVisibleItemIndex
         lastScrollOffset = lazyListState.firstVisibleItemScrollOffset
+    }
+
+    // Periodic auto-bookmark & reading state checkpoint every 60 seconds
+    LaunchedEffect(activeManhwaIdKey, activeFilePathKey, activeTitleKey) {
+        while (true) {
+            kotlinx.coroutines.delay(60_000L)
+            if (activeManhwaIdKey > 0 && isScrollRestored) {
+                val virtualIndex = lazyListState.firstVisibleItemIndex
+                val offset = lazyListState.firstVisibleItemScrollOffset
+                val vp = virtualPages.getOrNull(virtualIndex)
+                val physicalPage = vp?.physicalPageIndex ?: virtualIndex
+                viewModel.savePdfReadingState(
+                    filePath = activeFilePathKey,
+                    manhwaId = activeManhwaIdKey,
+                    pageIndex = physicalPage,
+                    scrollOffset = offset,
+                    zoomLevel = zoomScaleTarget,
+                    title = activeTitleKey
+                )
+            }
+        }
     }
 
     val backgroundBrushModifier = Modifier.background(Color(readerTheme.colorHex))
@@ -2424,6 +2461,43 @@ fun ComicReaderScreen(
                                     color = Color.Gray,
                                     maxLines = 1,
                                     overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                } else {
+                    item {
+                        Card(
+                            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                            shape = RoundedCornerShape(16.dp),
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp)
+                        ) {
+                            Column(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .padding(20.dp),
+                                horizontalAlignment = Alignment.CenterHorizontally
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.primary,
+                                    modifier = Modifier.size(36.dp)
+                                )
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Text(
+                                    text = "You've Completed Reading!",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = MaterialTheme.colorScheme.onSurface
+                                )
+                                Spacer(modifier = Modifier.height(4.dp))
+                                Text(
+                                    text = "Reading progress & position saved automatically",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
@@ -2641,6 +2715,112 @@ fun ComicReaderScreen(
                                 color = Color.White.copy(alpha = 0.5f),
                                 shape = RoundedCornerShape(2.dp)
                             )
+                    )
+                }
+            }
+        }
+
+        // --- FAST SCRUBBER RIBBON THUMBNAIL PREVIEW OVERLAY ---
+        AnimatedVisibility(
+            visible = isDraggingScrollbar,
+            enter = fadeIn() + slideInHorizontally(initialOffsetX = { it }),
+            exit = fadeOut() + slideOutHorizontally(targetOffsetX = { it }),
+            modifier = Modifier
+                .align(Alignment.CenterEnd)
+                .padding(end = 56.dp)
+        ) {
+            val currentVirtualIndex = lazyListState.firstVisibleItemIndex
+            val currentPhysicalPage = virtualPages.getOrNull(currentVirtualIndex)?.physicalPageIndex ?: currentVirtualIndex
+            val totalPageCount = virtualPages.size.coerceAtLeast(1)
+
+            var scrubberBitmap by remember { mutableStateOf<Bitmap?>(null) }
+            LaunchedEffect(currentPhysicalPage) {
+                scrubberBitmap = viewModel.getOrRenderThumbnail(currentPhysicalPage, targetWidth = 240)
+            }
+
+            Surface(
+                shape = RoundedCornerShape(12.dp),
+                color = Color.Black.copy(alpha = 0.88f),
+                shadowElevation = 12.dp,
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.3f)),
+                modifier = Modifier.width(135.dp)
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    modifier = Modifier.padding(8.dp)
+                ) {
+                    val bmp = scrubberBitmap
+                    if (bmp != null && !bmp.isRecycled) {
+                        Image(
+                            bitmap = bmp.asImageBitmap(),
+                            contentDescription = "Page Scrub Preview",
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(150.dp)
+                                .clip(RoundedCornerShape(8.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                    } else {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(150.dp)
+                                .background(Color.DarkGray.copy(alpha = 0.5f), RoundedCornerShape(8.dp)),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(24.dp),
+                                color = Color.White,
+                                strokeWidth = 2.dp
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Text(
+                        text = "Page ${currentPhysicalPage + 1} / $totalPageCount",
+                        style = MaterialTheme.typography.labelMedium,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+        }
+
+        // --- FULL SCREEN SINGLE CLICK PDF TITLE TOAST OVERLAY (TOP CENTER, 1 SECOND) ---
+        AnimatedVisibility(
+            visible = showPdfTitleToast && isScreenLocked && !isDrawModeOn,
+            enter = fadeIn() + slideInVertically(initialOffsetY = { -it }),
+            exit = fadeOut() + slideOutVertically(targetOffsetY = { -it }),
+            modifier = Modifier
+                .align(Alignment.TopCenter)
+                .padding(top = 28.dp)
+        ) {
+            Surface(
+                color = Color.Black.copy(alpha = 0.88f),
+                contentColor = Color.White,
+                shape = RoundedCornerShape(20.dp),
+                border = BorderStroke(1.dp, Color.White.copy(alpha = 0.35f)),
+                shadowElevation = 10.dp,
+                modifier = Modifier.padding(horizontal = 24.dp)
+            ) {
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Description,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Spacer(modifier = Modifier.width(8.dp))
+                    Text(
+                        text = activeTitleKey.ifEmpty { activeManhwa?.title ?: "PDF" },
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
                     )
                 }
             }
@@ -3226,7 +3406,7 @@ fun PdfPageSliceItem(
         with(density) { configuration.screenHeightDp.dp.toPx() }
     }
 
-    var isNearViewport by remember { mutableStateOf(numSlices <= 1) }
+    var isNearViewport by remember { mutableStateOf(true) }
 
     val renderZoomStep = remember(zoomScale) {
         (Math.round(zoomScale * 2f) / 2f).coerceIn(1.0f, 4.0f)
@@ -3250,24 +3430,24 @@ fun PdfPageSliceItem(
             return@LaunchedEffect
         }
 
-        // Speed-based HD rendering delay adjustment:
-        // Slow scroll (< 0.8px/ms) or stopped -> 0ms delay (HD renders IMMEDIATELY).
-        // Medium scroll -> 50ms delay.
-        // Fast scroll -> Throttled delay to avoid CPU lock during flinging.
         val absVelocity = kotlin.math.abs(scrollVelocity)
-        val effectiveHdDelay = when {
-            !isScrollInProgress -> 0L
-            absVelocity < 0.8f -> 0L // Slow scroll -> 0ms delay, HD rendering starts instantly!
-            absVelocity < 2.5f -> 50L // Medium scroll -> 50ms delay
-            else -> (200L + hdScrollDelay.coerceAtLeast(0L)).coerceAtMost(450L) // Fast scroll -> throttle
+        val isSlowScroll = !isScrollInProgress || absVelocity < 1.0f
+
+        val effectiveHdDelay = if (isSlowScroll) 0L else when {
+            absVelocity < 2.5f -> 50L
+            else -> (200L + hdScrollDelay.coerceAtLeast(0L)).coerceAtMost(450L)
         }
 
         if (hasLowResPreview && effectiveHdDelay > 0L) {
             kotlinx.coroutines.delay(effectiveHdDelay)
         }
 
+        if (isSlowScroll) {
+            viewModel.cancelPrefetching()
+        }
+
         isRendering = true
-        if (sliceIndex > 0 && staggerDelay > 0 && isScrollInProgress) {
+        if (sliceIndex > 0 && staggerDelay > 0 && isScrollInProgress && !isSlowScroll) {
             kotlinx.coroutines.delay((sliceIndex * staggerDelay).coerceAtMost(100L))
         }
         val bitmap = viewModel.renderPageSlice(
@@ -3352,8 +3532,14 @@ fun PdfPageItem(
     val scaleFactor by viewModel.activeScaleFactor.collectAsStateWithLifecycle()
     val qualityLevel by viewModel.qualityLevel.collectAsStateWithLifecycle()
     val aspectCalcMethod by viewModel.aspectCalcMethod.collectAsStateWithLifecycle()
+    val scrollVelocity by viewModel.scrollVelocity.collectAsStateWithLifecycle()
 
-    val initialCachedAspect = remember(pageIndex, aspectCalcMethod) { viewModel.getCachedPageAspectRatio(pageIndex) }
+    val absVelocity = kotlin.math.abs(scrollVelocity)
+    val isSlowScroll = !isScrollInProgress || absVelocity < 1.0f
+
+    val initialCachedAspect = remember(pageIndex, aspectCalcMethod) {
+        viewModel.getCachedPageAspectRatio(pageIndex) ?: viewModel.getCachedPageAspectRatio(0)
+    }
     var aspectRatio by remember(pageIndex, aspectCalcMethod) { mutableStateOf(initialCachedAspect) }
 
     val renderZoomStep = remember(zoomScale) {
@@ -3366,8 +3552,8 @@ fun PdfPageItem(
     val presetFilter by viewModel.presetFilter.collectAsStateWithLifecycle()
 
     LaunchedEffect(pageIndex, viewModel, aspectCalcMethod) {
-        if (aspectRatio == null) {
-            val baseAspect = viewModel.getPageAspectRatio(pageIndex)
+        val baseAspect = viewModel.getPageAspectRatio(pageIndex)
+        if (aspectRatio == null || kotlin.math.abs((aspectRatio ?: 0f) - baseAspect) > 0.01f) {
             aspectRatio = if (baseAspect > 0.01f) baseAspect else 1.414f
         }
     }
@@ -3387,8 +3573,8 @@ fun PdfPageItem(
             lowResBitmap = null
         }
     }
-    LaunchedEffect(pageIndex, targetWidth, viewModel) {
-        if (lowResBitmap == null) {
+    LaunchedEffect(pageIndex, targetWidth, viewModel, isSlowScroll) {
+        if (lowResBitmap == null && !isSlowScroll) {
             lowResBitmap = viewModel.renderPageLowRes(pageIndex, targetWidth)
         }
     }
@@ -3418,17 +3604,19 @@ fun PdfPageItem(
             )
         }
 
-        // Instant low-res WebP preview so page is never blank even while fast scrolling
-        lowResBitmap?.let { bmp ->
-            if (!bmp.isRecycled) {
-                Image(
-                    bitmap = bmp.asImageBitmap(),
-                    contentDescription = "Page ${pageIndex + 1} Preview",
-                    contentScale = ContentScale.FillBounds,
-                    colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
-                    filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
-                    modifier = Modifier.fillMaxSize()
-                )
+        // Only show low-res WebP preview if fast scrolling to ensure instant HD view area on slow scroll
+        if (!isSlowScroll) {
+            lowResBitmap?.let { bmp ->
+                if (!bmp.isRecycled) {
+                    Image(
+                        bitmap = bmp.asImageBitmap(),
+                        contentDescription = "Page ${pageIndex + 1} Preview",
+                        contentScale = ContentScale.FillBounds,
+                        colorFilter = ColorFilter.colorMatrix(adjustedMatrix),
+                        filterQuality = androidx.compose.ui.graphics.FilterQuality.None,
+                        modifier = Modifier.fillMaxSize()
+                    )
+                }
             }
         }
 

@@ -17,17 +17,45 @@ class WebPCacheManager(private val context: Context, private val pdfIdentifier: 
         if (!exists()) mkdirs()
     }
 
-    // Memory Cache for recently viewed full slices / pages (capped to ~30MB)
-    private val memoryCache = object : LruCache<String, Bitmap>(30 * 1024 * 1024) {
+    // Dynamic Heap-based LRU Caching based on available device RAM
+    private val maxMemoryBytes = Runtime.getRuntime().maxMemory()
+    private val memCacheLimit = ((maxMemoryBytes / 8).coerceIn(16L * 1024 * 1024, 64L * 1024 * 1024)).toInt()
+    private val thumbCacheLimit = ((maxMemoryBytes / 32).coerceIn(4L * 1024 * 1024, 16L * 1024 * 1024)).toInt()
+
+    // Memory Cache for recently viewed full slices / pages
+    private val memoryCache = object : LruCache<String, Bitmap>(memCacheLimit) {
         override fun sizeOf(key: String, value: Bitmap): Int {
             return value.byteCount
         }
     }
 
-    // Dedicated Fast Memory Cache for tiny WebP low-res thumbnails (~6MB holds 200+ thumbnails)
-    private val thumbnailCache = object : LruCache<Int, Bitmap>(6 * 1024 * 1024) {
+    // Dedicated Fast Memory Cache for tiny WebP low-res thumbnails
+    private val thumbnailCache = object : LruCache<Int, Bitmap>(thumbCacheLimit) {
         override fun sizeOf(key: Int, value: Bitmap): Int {
             return value.byteCount
+        }
+    }
+
+    suspend fun autoTrimDiskCache(maxStorageMb: Int = 150) = withContext(Dispatchers.IO) {
+        try {
+            val rootCacheDir = File(context.cacheDir, "webp_cache")
+            if (!rootCacheDir.exists()) return@withContext
+            val maxBytes = maxStorageMb.toLong() * 1024 * 1024
+            val files = rootCacheDir.walkTopDown().filter { it.isFile && it.extension == "webp" }.toList()
+            var totalSize = files.sumOf { it.length() }
+            if (totalSize > maxBytes) {
+                val sorted = files.sortedBy { it.lastModified() }
+                val targetSize = (maxBytes * 0.7f).toLong()
+                for (f in sorted) {
+                    val len = f.length()
+                    if (f.delete()) {
+                        totalSize -= len
+                        if (totalSize <= targetSize) break
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
         }
     }
 

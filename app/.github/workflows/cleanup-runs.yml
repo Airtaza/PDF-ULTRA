@@ -1,0 +1,67 @@
+name: Auto Cleanup Old Workflow Runs
+
+on:
+  workflow_run:
+    workflows: ["*"]
+    types:
+      - requested
+      - completed
+  workflow_dispatch:
+  schedule:
+    - cron: '0 0 * * *' # Daily fallback cleanup
+
+jobs:
+  prune-runs:
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+
+    steps:
+      - name: Delete Old Runs (Keep 5 Latest per Workflow)
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const KEEP_COUNT = 5;
+            const { owner, repo } = context.repo;
+
+            // Fetch all workflows in the repository
+            const { data: { workflows } } = await github.rest.actions.listRepoWorkflows({
+              owner,
+              repo,
+            });
+
+            for (const workflow of workflows) {
+              // Fetch runs for the current workflow
+              const { data: { workflow_runs } } = await github.rest.actions.listWorkflowRuns({
+                owner,
+                repo,
+                workflow_id: workflow.id,
+                per_page: 100,
+              });
+
+              // Sort runs newest to oldest
+              const sortedRuns = workflow_runs.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+
+              // Separate runs to keep vs delete
+              const runsToDelete = sortedRuns.slice(KEEP_COUNT);
+
+              if (runsToDelete.length > 0) {
+                console.log(`Workflow '${workflow.name}' has ${sortedRuns.length} runs. Deleting ${runsToDelete.length} oldest runs to keep latest ${KEEP_COUNT}.`);
+
+                for (const run of runsToDelete) {
+                  try {
+                    await github.rest.actions.deleteWorkflowRun({
+                      owner,
+                      repo,
+                      run_id: run.id,
+                    });
+                    console.log(`✓ Deleted workflow run #${run.run_number} (ID: ${run.id})`);
+                  } catch (error) {
+                    console.warn(`! Failed to delete run ID ${run.id}: ${error.message}`);
+                  }
+                }
+              } else {
+                console.log(`Workflow '${workflow.name}' has ${sortedRuns.length} runs (<= ${KEEP_COUNT}). No deletion needed.`);
+              }
+            }

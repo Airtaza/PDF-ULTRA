@@ -1553,7 +1553,13 @@ class ManhwaViewModel(private val application: Application, private val reposito
         }
     }
 
-    fun getSavedPdfReadingState(filePath: String?, manhwaId: Long, title: String? = null): PdfReadingState {
+    fun getSavedPdfReadingState(
+        filePath: String?,
+        manhwaId: Long,
+        title: String? = null,
+        fallbackPage: Int = 0,
+        fallbackOffset: Int = 0
+    ): PdfReadingState {
         // 1. Primary: Check by PDF name
         val nameKey = getPdfNameKey(filePath, title)
         val namePage = sharedPrefs.getInt("${nameKey}_page", -1)
@@ -1586,19 +1592,18 @@ class ManhwaViewModel(private val application: Application, private val reposito
             }
         }
 
-        // 4. Check active tab or database lastReadPage
-        val tab = _tabs.value.find { it.id == _activeTabId.value }
-        val manhwa = tab?.manhwa
-        if (manhwa != null && (manhwa.id == manhwaId || manhwa.filePath == filePath)) {
+        // 4. Check tabs in memory
+        val matchingTab = _tabs.value.find { it.manhwa?.id == manhwaId || (filePath != null && it.manhwa?.filePath == filePath) }
+        if (matchingTab?.manhwa != null) {
             return PdfReadingState(
-                pageIndex = manhwa.lastReadPage,
-                scrollOffset = manhwa.scrollOffset,
+                pageIndex = matchingTab.currentPage,
+                scrollOffset = matchingTab.scrollOffset,
                 zoomLevel = 1.0f,
-                timestamp = manhwa.lastOpened
+                timestamp = matchingTab.manhwa.lastOpened
             )
         }
 
-        return PdfReadingState(0, 0, 1.0f, 0L)
+        return PdfReadingState(fallbackPage.coerceAtLeast(0), fallbackOffset.coerceAtLeast(0), 1.0f, 0L)
     }
 
     fun setCurrentVirtualPageAndOffsetInMemory(virtualIndex: Int, offset: Int) {
@@ -1608,15 +1613,32 @@ class ManhwaViewModel(private val application: Application, private val reposito
         _currentVirtualPageIndex.value = virtualIndex
 
         val currentId = _activeTabId.value
+        var activeM: Manhwa? = null
         val updatedList = _tabs.value.map { tab ->
             if (tab.id == currentId) {
                 val updatedManhwa = tab.manhwa?.copy(lastReadPage = physicalPage, scrollOffset = offset)
+                activeM = updatedManhwa
                 tab.copy(currentPage = physicalPage, scrollOffset = offset, manhwa = updatedManhwa)
             } else {
                 tab
             }
         }
         _tabs.value = updatedList
+
+        if (activeM != null) {
+            savePdfReadingState(
+                filePath = activeM?.filePath,
+                manhwaId = activeM?.id ?: 0L,
+                pageIndex = physicalPage,
+                scrollOffset = offset,
+                title = activeM?.title
+            )
+            saveTabsStateToPrefs()
+            viewModelScope.launch(Dispatchers.IO) {
+                repository.updateManhwa(activeM!!)
+            }
+        }
+
         checkAndTrimMemoryIfNeeded(physicalPage)
     }
 
@@ -2227,6 +2249,34 @@ class ManhwaViewModel(private val application: Application, private val reposito
             System.gc()
         }
         bitmap
+    }
+
+    suspend fun getOrRenderThumbnail(pageIndex: Int, targetWidth: Int = 200): Bitmap? = withContext(Dispatchers.IO) {
+        val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext null
+        val manhwa = tab.manhwa ?: return@withContext null
+        val file = File(manhwa.filePath)
+        if (!file.exists()) return@withContext null
+        val renderer = synchronized(renderers) {
+            renderers.getOrPut(manhwa.id) { createRenderer(file) }
+        }
+        val cached = renderer.getLowResThumbnailFromMemory(pageIndex)
+        if (cached != null && !cached.isRecycled) return@withContext cached
+        return@withContext renderer.getOrGenerateThumbnail(pageIndex) ?: renderer.renderPageLowRes(pageIndex, targetWidth, bitmapConfig = _bitmapConfigSetting.value)
+    }
+
+    fun prefetchNextChapter(nextChapter: com.example.data.Manhwa) {
+        viewModelScope.launch(Dispatchers.IO) {
+            try {
+                val file = File(nextChapter.filePath)
+                if (!file.exists()) return@launch
+                val renderer = synchronized(renderers) {
+                    renderers.getOrPut(nextChapter.id) { createRenderer(file) }
+                }
+                renderer.renderPageLowRes(0, 720, bitmapConfig = _bitmapConfigSetting.value)
+            } catch (e: Exception) {
+                e.printStackTrace()
+            }
+        }
     }
 
     // --- Bookmarking & Outlining ---
@@ -3076,6 +3126,11 @@ class ManhwaViewModel(private val application: Application, private val reposito
     }
 
     private var prefetchJob: kotlinx.coroutines.Job? = null
+
+    fun cancelPrefetching() {
+        prefetchJob?.cancel()
+        aotJob?.cancel()
+    }
 
     fun warmCacheForDirectionalScroll(currentPage: Int, targetWidth: Int, direction: Int) {
         val countToPreload = 2 // Exactly 2 pages in the detected direction

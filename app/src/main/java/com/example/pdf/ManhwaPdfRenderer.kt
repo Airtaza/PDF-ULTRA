@@ -128,19 +128,23 @@ class ManhwaPdfRenderer(
             val renderer = pdfRenderer
             if (renderer != null) {
                 val count = renderer.pageCount
-                synchronized(this@ManhwaPdfRenderer) {
-                    for (i in 0 until count) {
-                        try {
-                            val page = renderer.openPage(i)
-                            if (page.width > 0 && page.height > 0) {
-                                val ratio = page.height.toFloat() / page.width.toFloat()
-                                aspectRatios["${i}_${AspectCalcMethod.DYNAMIC_AUTO.name}"] = ratio
-                                aspectRatios["${i}_${AspectCalcMethod.PDF_BOUNDS.name}"] = ratio
-                            }
+                for (i in 0 until count) {
+                    try {
+                        val ratio = synchronized(this@ManhwaPdfRenderer) {
+                            if (isClosed || pdfRenderer == null) return@synchronized null
+                            val page = try { renderer.openPage(i) } catch (e: Throwable) { null } ?: return@synchronized null
+                            val r = if (page.width > 0 && page.height > 0) page.height.toFloat() / page.width.toFloat() else null
                             page.close()
-                        } catch (e: Throwable) {
-                            e.printStackTrace()
+                            r
                         }
+                        if (ratio != null && ratio in 0.1f..25f) {
+                            aspectRatios["${i}_${AspectCalcMethod.DYNAMIC_AUTO.name}"] = ratio
+                            aspectRatios["${i}_${AspectCalcMethod.PDF_BOUNDS.name}"] = ratio
+                            aspectRatios["${i}_${AspectCalcMethod.CUSTOM_TUNING.name}"] = ratio
+                            aspectRatios["${i}_${AspectCalcMethod.STANDARD_A4_PORTRAIT.name}"] = 1.414f
+                        }
+                    } catch (e: Throwable) {
+                        e.printStackTrace()
                     }
                 }
             }
@@ -159,6 +163,10 @@ class ManhwaPdfRenderer(
             "${pageIndex}_${method.name}"
         }
         val cached = aspectRatios[cacheKey]
+            ?: aspectRatios["${pageIndex}_DYNAMIC_AUTO"]
+            ?: aspectRatios["${pageIndex}_PDF_BOUNDS"]
+            ?: aspectRatios["0_DYNAMIC_AUTO"]
+            ?: aspectRatios["0_PDF_BOUNDS"]
         if (cached != null && cached > 0.05f) {
             return@withContext cached
         }
@@ -550,7 +558,11 @@ class ManhwaPdfRenderer(
         } else {
             "${pageIndex}_${method.name}"
         }
-        return aspectRatios[cacheKey] ?: aspectRatios["${pageIndex}_DYNAMIC_AUTO"] ?: aspectRatios["${pageIndex}_PDF_BOUNDS"]
+        return aspectRatios[cacheKey] 
+            ?: aspectRatios["${pageIndex}_DYNAMIC_AUTO"] 
+            ?: aspectRatios["${pageIndex}_PDF_BOUNDS"]
+            ?: aspectRatios["0_DYNAMIC_AUTO"]
+            ?: aspectRatios["0_PDF_BOUNDS"]
     }
 
     fun getLowResThumbnailFromMemory(pageIndex: Int): Bitmap? {
