@@ -70,6 +70,7 @@ import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
 import androidx.compose.ui.input.nestedscroll.NestedScrollSource
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInWindow
@@ -1765,14 +1766,43 @@ fun ComicReaderScreen(
         ) {
             val touchSlop = viewConfiguration.touchSlop
             awaitEachGesture {
-                val firstDown = awaitFirstDown(requireUnconsumed = false)
+                val firstDown = awaitFirstDown(requireUnconsumed = false, pass = PointerEventPass.Initial)
                 val firstDownTime = System.currentTimeMillis()
                 val startPosition = firstDown.position
 
-                if (isAnyMenuOrSettingsOpen || isScreenLocked) {
+                if (isAnyMenuOrSettingsOpen) {
                     do {
                         val event = awaitPointerEvent()
                     } while (event.changes.any { it.pressed })
+                    return@awaitEachGesture
+                }
+
+                if (isScreenLocked) {
+                    var hasMoved = false
+                    do {
+                        val event = awaitPointerEvent(PointerEventPass.Initial)
+                        event.changes.forEach { c ->
+                            val dist = kotlin.math.hypot(
+                                (c.position.x - startPosition.x).toDouble(),
+                                (c.position.y - startPosition.y).toDouble()
+                            ).toFloat()
+                            if (dist > touchSlop) {
+                                hasMoved = true
+                            }
+                        }
+                    } while (event.changes.any { it.pressed })
+
+                    val clickDuration = System.currentTimeMillis() - firstDownTime
+                    // Do not show title toast if user clicked specifically on bottom-right lock button to unlock
+                    val isNearLockButton = startPosition.x > (size.width - 240) && startPosition.y > (size.height - 240)
+                    if (!hasMoved && clickDuration < 500 && !isNearLockButton) {
+                        showPdfTitleToast = true
+                        pdfTitleToastJob?.cancel()
+                        pdfTitleToastJob = coroutineScope.launch {
+                            kotlinx.coroutines.delay(1000L)
+                            showPdfTitleToast = false
+                        }
+                    }
                     return@awaitEachGesture
                 }
 
@@ -1990,43 +2020,34 @@ fun ComicReaderScreen(
                                         }
                                     }
                                 } else {
-                                    if (isScreenLocked) {
-                                        showPdfTitleToast = true
-                                        pdfTitleToastJob?.cancel()
-                                        pdfTitleToastJob = coroutineScope.launch {
-                                            kotlinx.coroutines.delay(1000L)
-                                            showPdfTitleToast = false
-                                        }
-                                    } else {
-                                        // --- FIRST TAP CANDIDATE ---
-                                        lastTapTime = now
-                                        lastTapPosition = startPosition
-                                        val tapX = startPosition.x
-                                        val widthPx = componentWidth.coerceAtLeast(1)
-                                        val tapActionToPerform = when {
-                                            tapX < widthPx * 0.3f -> leftTapAction
-                                            tapX > widthPx * 0.7f -> rightTapAction
-                                            else -> centerTapAction
-                                        }
-                                        coroutineScope.launch {
-                                                kotlinx.coroutines.delay(260)
-                                                if (lastTapTime == now && !isAnyMenuOrSettingsOpen) {
-                                                when (tapActionToPerform) {
-                                                    "PREV_PAGE" -> {
-                                                        val currIdx = lazyListState.firstVisibleItemIndex
-                                                        if (currIdx > 0) {
-                                                            lazyListState.animateScrollToItem(currIdx - 1)
-                                                        }
+                                    // --- FIRST TAP CANDIDATE ---
+                                    lastTapTime = now
+                                    lastTapPosition = startPosition
+                                    val tapX = startPosition.x
+                                    val widthPx = componentWidth.coerceAtLeast(1)
+                                    val tapActionToPerform = when {
+                                        tapX < widthPx * 0.3f -> leftTapAction
+                                        tapX > widthPx * 0.7f -> rightTapAction
+                                        else -> centerTapAction
+                                    }
+                                    coroutineScope.launch {
+                                        kotlinx.coroutines.delay(260)
+                                        if (lastTapTime == now && !isAnyMenuOrSettingsOpen) {
+                                            when (tapActionToPerform) {
+                                                "PREV_PAGE" -> {
+                                                    val currIdx = lazyListState.firstVisibleItemIndex
+                                                    if (currIdx > 0) {
+                                                        lazyListState.animateScrollToItem(currIdx - 1)
                                                     }
-                                                    "NEXT_PAGE" -> {
-                                                        val currIdx = lazyListState.firstVisibleItemIndex
-                                                        if (currIdx < virtualPages.size - 1) {
-                                                            lazyListState.animateScrollToItem(currIdx + 1)
-                                                        }
+                                                }
+                                                "NEXT_PAGE" -> {
+                                                    val currIdx = lazyListState.firstVisibleItemIndex
+                                                    if (currIdx < virtualPages.size - 1) {
+                                                        lazyListState.animateScrollToItem(currIdx + 1)
                                                     }
-                                                    else -> {
-                                                        areControlsVisible = !areControlsVisible
-                                                    }
+                                                }
+                                                else -> {
+                                                    areControlsVisible = !areControlsVisible
                                                 }
                                             }
                                         }
@@ -2320,7 +2341,7 @@ fun ComicReaderScreen(
 
         LazyColumn(
             state = lazyListState,
-            userScrollEnabled = !isDrawModeOn && !isScaling && zoomScaleTarget <= 1.05f && !isDraggingScrollbar, // Freeze standard scrolling when scaling, zoomed, or dragging scrollbar
+            userScrollEnabled = !isScreenLocked && !isDrawModeOn && !isScaling && zoomScaleTarget <= 1.05f && !isDraggingScrollbar, // Freeze standard scrolling when locked, scaling, zoomed, or dragging scrollbar
             modifier = Modifier
                 .width(with(LocalDensity.current) { (componentWidth * animatedZoomScale).toDp() })
                 .fillMaxHeight()
