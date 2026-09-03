@@ -3390,7 +3390,8 @@ fun PdfPageSliceItem(
     mangaScanCrisper: Boolean,
     colorMode: ManhwaViewModel.ColorMode,
     landscapeSplitMode: String = "NONE",
-    numSlices: Int = 1
+    numSlices: Int = 1,
+    pageAspect: Float = 1.414f
 ) {
     val hdScrollDelay by viewModel.hdScrollDelay.collectAsStateWithLifecycle()
     val staggerDelay by viewModel.staggerDelay.collectAsStateWithLifecycle()
@@ -3413,16 +3414,16 @@ fun PdfPageSliceItem(
         (Math.round(zoomScale * 2f) / 2f).coerceIn(1.0f, 4.0f)
     }
 
-    var sliceBitmap by remember(pageIndex, sliceIndex, sliceHeight, qualityLevel, scaleFactor, renderZoomStep, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
+    var sliceBitmap by remember(pageIndex, sliceIndex, numSlices, totalHeight, pageAspect, sliceHeight, qualityLevel, scaleFactor, renderZoomStep, landscapeSplitMode) { mutableStateOf<Bitmap?>(null) }
     var isRendering by remember { mutableStateOf(false) }
 
-    DisposableEffect(pageIndex, sliceIndex, sliceHeight, qualityLevel, scaleFactor, renderZoomStep, landscapeSplitMode) {
+    DisposableEffect(pageIndex, sliceIndex, numSlices, totalHeight, pageAspect, sliceHeight, qualityLevel, scaleFactor, renderZoomStep, landscapeSplitMode) {
         onDispose {
             sliceBitmap = null
         }
     }
 
-    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, scaleFactor, renderZoomStep, qualityLevel, viewModel, landscapeSplitMode, isNearViewport, isScrollInProgress, scrollVelocity) {
+    LaunchedEffect(pageIndex, targetWidth, sliceIndex, sliceHeight, totalHeight, numSlices, pageAspect, scaleFactor, renderZoomStep, qualityLevel, viewModel, landscapeSplitMode, isNearViewport) {
         if (sliceBitmap != null) {
             return@LaunchedEffect
         }
@@ -3438,7 +3439,9 @@ fun PdfPageSliceItem(
             sliceIndex = sliceIndex,
             sliceHeight = sliceHeight,
             scaleFactor = scaleFactor * renderZoomStep,
-            landscapeSplitMode = landscapeSplitMode
+            landscapeSplitMode = landscapeSplitMode,
+            expectedNumSlices = numSlices,
+            expectedPageAspect = pageAspect
         )
         if (bitmap != null) {
             sliceBitmap = bitmap
@@ -3451,8 +3454,8 @@ fun PdfPageSliceItem(
             .onGloballyPositioned { coordinates ->
                 val top = coordinates.positionInWindow().y
                 val bottom = top + coordinates.size.height
-                // Generous 1500px pre-render buffer above and below viewport so view area renders instantly
-                val isVisibleOrBuffered = (bottom >= -1500f && top <= screenHeightPx + 1500f)
+                // Generous 3000px pre-render buffer above and below viewport so view area renders instantly
+                val isVisibleOrBuffered = (bottom >= -3000f && top <= screenHeightPx + 3000f)
                 if (isNearViewport != isVisibleOrBuffered) {
                     isNearViewport = isVisibleOrBuffered
                 }
@@ -3520,7 +3523,7 @@ fun PdfPageItem(
     val isSlowScroll = !isScrollInProgress || absVelocity < 1.0f
 
     val initialCachedAspect = remember(pageIndex, aspectCalcMethod) {
-        viewModel.getCachedPageAspectRatio(pageIndex) ?: viewModel.getCachedPageAspectRatio(0)
+        viewModel.getCachedPageAspectRatio(pageIndex)
     }
     var aspectRatio by remember(pageIndex, aspectCalcMethod) { mutableStateOf(initialCachedAspect) }
 
@@ -3605,35 +3608,38 @@ fun PdfPageItem(
             modifier = Modifier.fillMaxSize()
         ) {
             for (sliceIndex in 0 until numSlices) {
-                PdfPageSliceItem(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .weight(1f, fill = true),
-                    pageIndex = pageIndex,
-                    targetWidth = targetWidth,
-                    sliceIndex = sliceIndex,
-                    sliceHeight = sliceHeight,
-                    totalHeight = totalHeight,
-                    totalWidth = totalWidth,
-                    scaleFactor = scaleFactor,
-                    qualityLevel = qualityLevel,
-                    zoomScale = zoomScale,
-                    isScrollInProgress = isScrollInProgress,
-                    hasLowResPreview = (lowResBitmap != null),
-                    viewModel = viewModel,
-                    brightness = brightness,
-                    contrast = contrast,
-                    saturation = saturation,
-                    warmth = warmth,
-                    gamma = gamma,
-                    autoGammaEnabled = autoGammaEnabled,
-                    customTint = customTint,
-                    autoNightShift = autoNightShift,
-                    mangaScanCrisper = mangaScanCrisper,
-                    colorMode = colorMode,
-                    landscapeSplitMode = "NONE",
-                    numSlices = numSlices
-                )
+                key(pageIndex, sliceIndex, numSlices, totalHeight) {
+                    PdfPageSliceItem(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .weight(1f, fill = true),
+                        pageIndex = pageIndex,
+                        targetWidth = targetWidth,
+                        sliceIndex = sliceIndex,
+                        sliceHeight = sliceHeight,
+                        totalHeight = totalHeight,
+                        totalWidth = totalWidth,
+                        scaleFactor = scaleFactor,
+                        qualityLevel = qualityLevel,
+                        zoomScale = zoomScale,
+                        isScrollInProgress = isScrollInProgress,
+                        hasLowResPreview = (lowResBitmap != null),
+                        viewModel = viewModel,
+                        brightness = brightness,
+                        contrast = contrast,
+                        saturation = saturation,
+                        warmth = warmth,
+                        gamma = gamma,
+                        autoGammaEnabled = autoGammaEnabled,
+                        customTint = customTint,
+                        autoNightShift = autoNightShift,
+                        mangaScanCrisper = mangaScanCrisper,
+                        colorMode = colorMode,
+                        landscapeSplitMode = "NONE",
+                        numSlices = numSlices,
+                        pageAspect = aspect
+                    )
+                }
             }
         }
     }
@@ -4921,6 +4927,8 @@ fun DisplayThemeCanvasPopup(
                             onValueChange = wrapSlider(onSwipeSensitivityChange),
                             format = "%.1fx",
                             snapPoints = listOf(0.5f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f),
+                            step = 0.1f,
+                            detentThreshold = 0.08f,
                             onValueChangeFinished = onSliderChangeFinished
                         )
 
@@ -4931,7 +4939,9 @@ fun DisplayThemeCanvasPopup(
                             range = 1.5f..4.0f,
                             onValueChange = wrapSlider(onDoubleTapZoomScaleChange),
                             format = "%.1fx",
-                            snapPoints = listOf(1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f),
+                            snapPoints = listOf(2.0f, 2.5f, 3.0f, 4.0f),
+                            step = 0.1f,
+                            detentThreshold = 0.08f,
                             onValueChangeFinished = onSliderChangeFinished
                         )
 
@@ -5361,6 +5371,28 @@ fun DisplayThemeCanvasPopup(
     }
 }
 
+/**
+ * Applies magnetic detent snapping with resistance around key snap points,
+ * while maintaining full continuous decimal precision across the rest of the range.
+ */
+private fun applyMagneticDetent(
+    rawVal: Float,
+    snapPoints: List<Float>?,
+    step: Float = 0.1f,
+    detentThreshold: Float = 0.08f
+): Pair<Float, Boolean> {
+    if (!snapPoints.isNullOrEmpty()) {
+        for (snap in snapPoints) {
+            if (kotlin.math.abs(rawVal - snap) <= detentThreshold) {
+                return Pair(snap, true)
+            }
+        }
+    }
+    val rounded = kotlin.math.round(rawVal / step) * step
+    val clean = (kotlin.math.round(rounded * 100f) / 100f)
+    return Pair(clean, false)
+}
+
 @Composable
 private fun CanvasSliderRow(
     label: String,
@@ -5370,26 +5402,37 @@ private fun CanvasSliderRow(
     format: String,
     enabled: Boolean = true,
     snapPoints: List<Float>? = null,
+    step: Float = 0.1f,
+    detentThreshold: Float = 0.08f,
     onValueChangeFinished: (() -> Unit)? = null
 ) {
     val hapticFeedback = androidx.compose.ui.platform.LocalHapticFeedback.current
-    var lastSnappedValue by remember { mutableStateOf(value) }
+    var lastSnappedPoint by remember { mutableStateOf<Float?>(null) }
 
     val handleValueChange: (Float) -> Unit = { rawVal ->
-        val snapped = if (!snapPoints.isNullOrEmpty()) {
-            snapPoints.minByOrNull { kotlin.math.abs(it - rawVal) } ?: rawVal
-        } else {
-            rawVal
-        }
-        if (snapped != lastSnappedValue) {
-            lastSnappedValue = snapped
-            try {
-                hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-            } catch (e: Exception) {
-                // Ignore if device does not support haptics
+        if (!snapPoints.isNullOrEmpty()) {
+            val (snapped, isSnapped) = applyMagneticDetent(
+                rawVal = rawVal,
+                snapPoints = snapPoints,
+                step = step,
+                detentThreshold = detentThreshold
+            )
+            if (isSnapped) {
+                if (lastSnappedPoint != snapped) {
+                    lastSnappedPoint = snapped
+                    try {
+                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                    } catch (e: Exception) {
+                        // Ignore if device does not support haptics
+                    }
+                }
+            } else {
+                lastSnappedPoint = null
             }
+            onValueChange(snapped)
+        } else {
+            onValueChange(rawVal)
         }
-        onValueChange(snapped)
     }
 
     Row(
@@ -6980,18 +7023,30 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                 searchKeywords = "gestures double tap zoom volume scroll haptic feedback keep screen awake auto scroll speed swipe finger sensitivity preload flow direction immersive lock tap zone gestures mapping touch controls flip flip page next prev toggle eye rest break reminder strain timer 20-20-20 alert health comfort",
                 content = {
                     Column(modifier = Modifier.fillMaxWidth()) {
+                        var lastSwipeSnapPoint by remember { mutableStateOf<Float?>(null) }
+                        var lastZoomSnapPoint by remember { mutableStateOf<Float?>(null) }
+
                         Text("TOUCH SENSITIVITY & ZOOM", fontWeight = FontWeight.Bold, fontSize = 11.sp, color = MaterialTheme.colorScheme.primary)
                         Spacer(modifier = Modifier.height(4.dp))
                         Text("SWIPE FINGER SENSITIVITY: ${String.format("%.1f", swipeSensitivity)}X", fontSize = 11.sp)
                         Slider(
                             value = swipeSensitivity,
                             onValueChange = { rawVal ->
-                                val snapPoints = listOf(0.5f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f)
-                                val snapped = snapPoints.minByOrNull { kotlin.math.abs(it - rawVal) } ?: rawVal
-                                if (snapped != swipeSensitivity) {
-                                    try {
-                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                    } catch (e: Exception) {}
+                                val (snapped, isSnapped) = applyMagneticDetent(
+                                    rawVal = rawVal,
+                                    snapPoints = listOf(0.5f, 1.0f, 2.0f, 3.0f, 4.0f, 5.0f),
+                                    step = 0.1f,
+                                    detentThreshold = 0.08f
+                                )
+                                if (isSnapped) {
+                                    if (lastSwipeSnapPoint != snapped) {
+                                        lastSwipeSnapPoint = snapped
+                                        try {
+                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                        } catch (e: Exception) {}
+                                    }
+                                } else {
+                                    lastSwipeSnapPoint = null
                                 }
                                 viewModel.setSwipeSensitivity(snapped)
                             },
@@ -7002,12 +7057,21 @@ fun LobbyScreen(viewModel: ManhwaViewModel) {
                         Slider(
                             value = doubleTapZoomScale,
                             onValueChange = { rawVal ->
-                                val snapPoints = listOf(1.5f, 2.0f, 2.5f, 3.0f, 3.5f, 4.0f)
-                                val snapped = snapPoints.minByOrNull { kotlin.math.abs(it - rawVal) } ?: rawVal
-                                if (snapped != doubleTapZoomScale) {
-                                    try {
-                                        hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
-                                    } catch (e: Exception) {}
+                                val (snapped, isSnapped) = applyMagneticDetent(
+                                    rawVal = rawVal,
+                                    snapPoints = listOf(2.0f, 2.5f, 3.0f, 4.0f),
+                                    step = 0.1f,
+                                    detentThreshold = 0.08f
+                                )
+                                if (isSnapped) {
+                                    if (lastZoomSnapPoint != snapped) {
+                                        lastZoomSnapPoint = snapped
+                                        try {
+                                            hapticFeedback.performHapticFeedback(androidx.compose.ui.hapticfeedback.HapticFeedbackType.TextHandleMove)
+                                        } catch (e: Exception) {}
+                                    }
+                                } else {
+                                    lastZoomSnapPoint = null
                                 }
                                 viewModel.setDoubleTapZoomScale(snapped)
                             },

@@ -2141,7 +2141,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
         sliceIndex: Int, 
         sliceHeight: Int, 
         scaleFactor: Float,
-        landscapeSplitMode: String = "NONE"
+        landscapeSplitMode: String = "NONE",
+        expectedNumSlices: Int? = null,
+        expectedPageAspect: Float? = null
     ): Bitmap? = withContext(Dispatchers.IO) {
         val tab = _tabs.value.find { it.id == _activeTabId.value } ?: return@withContext null
         val manhwa = tab.manhwa ?: return@withContext null
@@ -2177,7 +2179,9 @@ class ManhwaViewModel(private val application: Application, private val reposito
             qualityCompression = qualityCompression,
             maxStorageAllocationMb = maxStorage,
             bitmapConfig = _bitmapConfigSetting.value,
-            landscapeSplitMode = landscapeSplitMode
+            landscapeSplitMode = landscapeSplitMode,
+            expectedNumSlices = expectedNumSlices,
+            expectedPageAspect = expectedPageAspect
         )
         if (_aggressiveGcEnabled.value) {
             System.gc()
